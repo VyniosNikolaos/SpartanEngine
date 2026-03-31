@@ -1261,6 +1261,24 @@ namespace car
     inline static PxVec3           debug_suspension_top[wheel_count];
     inline static PxVec3           debug_suspension_bottom[wheel_count];
 
+    // pre-filter that skips the car's own body during suspension sweeps/raycasts
+    class SelfFilterCallback : public PxQueryFilterCallback
+    {
+    public:
+        PxRigidActor* ignore = nullptr;
+
+        PxQueryHitType::Enum preFilter(const PxFilterData&, const PxShape*, const PxRigidActor* actor, PxHitFlags&) override
+        {
+            return (actor == ignore) ? PxQueryHitType::eNONE : PxQueryHitType::eBLOCK;
+        }
+
+        PxQueryHitType::Enum postFilter(const PxFilterData&, const PxQueryHit&, const PxShape*, const PxRigidActor*) override
+        {
+            return PxQueryHitType::eBLOCK;
+        }
+    };
+    inline static SelfFilterCallback self_filter;
+
     inline bool  is_front(int i)                { return i == front_left || i == front_right; }
     inline bool  is_rear(int i)                 { return i == rear_left || i == rear_right; }
     inline bool  is_driven(int i)
@@ -1858,7 +1876,6 @@ namespace car
             PxShape* shape = params.physics->createShape(geometry, *material);
             if (shape)
             {
-                shape->setFlag(PxShapeFlag::eSCENE_QUERY_SHAPE, false);
                 shape->setFlag(PxShapeFlag::eVISUALIZATION, true);
                 body->attachShape(*shape);
                 shape->release();
@@ -1872,7 +1889,6 @@ namespace car
             );
             if (chassis)
             {
-                chassis->setFlag(PxShapeFlag::eSCENE_QUERY_SHAPE, false);
                 body->attachShape(*chassis);
                 chassis->release();
             }
@@ -1950,7 +1966,6 @@ namespace car
             PxShape* shape = physics->createShape(geometry, *material);
             if (shape)
             {
-                shape->setFlag(PxShapeFlag::eSCENE_QUERY_SHAPE, false);
                 shape->setFlag(PxShapeFlag::eVISUALIZATION, true);
                 body->attachShape(*shape);
                 shape->release();
@@ -2036,7 +2051,8 @@ namespace car
         PxVec3 local_right = pose.q.rotate(PxVec3(1, 0, 0));
 
         PxQueryFilterData filter;
-        filter.flags = PxQueryFlag::eSTATIC | PxQueryFlag::eDYNAMIC;
+        filter.flags = PxQueryFlag::eSTATIC | PxQueryFlag::eDYNAMIC | PxQueryFlag::ePREFILTER;
+        self_filter.ignore = body;
 
         float max_wheel_r = PxMax(cfg.front_wheel_radius, cfg.rear_wheel_radius);
         float sweep_dist = cfg.suspension_travel + max_wheel_r + 0.5f;
@@ -2058,8 +2074,8 @@ namespace car
 
             bool swept = wheel_sweep_mesh
                 && scene->sweep(cylinder_geom, sweep_pose, local_down, sweep_dist, hit,
-                    PxHitFlag::eDEFAULT, filter)
-                && hit.block.actor && hit.block.actor != body;
+                    PxHitFlag::eDEFAULT, filter, &self_filter)
+                && hit.block.actor;
 
             debug_sweep[i].origin = world_attach;
             debug_sweep[i].hit    = swept;
@@ -2096,8 +2112,8 @@ namespace car
                 for (int p = 0; p < 3; p++)
                 {
                     PxRaycastBuffer probe;
-                    if (scene->raycast(probe_origins[p], local_down, probe_len, probe, PxHitFlag::eDEFAULT, filter) &&
-                        probe.block.actor && probe.block.actor != body)
+                    if (scene->raycast(probe_origins[p], local_down, probe_len, probe, PxHitFlag::eDEFAULT, filter, &self_filter) &&
+                        probe.block.actor)
                     {
                         // TODO: map probe.block.shape material to surface_type for split-mu detection
                     }
@@ -2118,7 +2134,7 @@ namespace car
             // wheel tracking
             float compression_error  = w.target_compression - w.compression;
             float wheel_spring_force = spring_stiffness[i] * compression_error;
-            float wheel_damper_force = -spring_damping[i] * w.compression_velocity * 0.15f;
+            float wheel_damper_force = -spring_damping[i] * w.compression_velocity * 0.5f;
             float wheel_accel        = (wheel_spring_force + wheel_damper_force) / cfg.wheel_mass;
 
             w.compression_velocity += wheel_accel * dt;
@@ -2170,9 +2186,26 @@ namespace car
         apply_arb(front_left, front_right, tuning::spec.front_arb_stiffness);
         apply_arb(rear_left, rear_right, tuning::spec.rear_arb_stiffness);
         
+        // cap per-wheel forces, then scale all wheels down if the total would
+        // produce more than ~3g of net upward acceleration (prevents launch from
+        // external impulses like the player landing on the car)
+        float total_force = 0.0f;
         for (int i = 0; i < wheel_count; i++)
         {
             forces[i] = PxClamp(forces[i], 0.0f, tuning::spec.max_susp_force);
+            total_force += forces[i];
+        }
+
+        float max_total_force = cfg.mass * 9.81f * 6.0f;
+        if (total_force > max_total_force)
+        {
+            float scale = max_total_force / total_force;
+            for (int i = 0; i < wheel_count; i++)
+                forces[i] *= scale;
+        }
+
+        for (int i = 0; i < wheel_count; i++)
+        {
             wheels[i].tire_load = forces[i] + cfg.wheel_mass * 9.81f;
 
             if (forces[i] > 0.0f && wheels[i].grounded)
@@ -3079,6 +3112,8 @@ namespace car
     inline void tick(float dt)
     {
         if (!body) return;
+
+        dt = PxClamp(dt, 0.0f, 1.0f / 60.0f);
 
         update_input(dt);
         PxScene* scene = body->getScene();

@@ -128,6 +128,19 @@ namespace spartan
         }
     }
 
+    void Settings::LoadPreInitSettings()
+    {
+        if (!FileSystem::Exists(file_path))
+            return;
+
+        pugi::xml_document doc;
+        if (!doc.load_file(file_path.c_str()))
+            return;
+
+        pugi::xml_node root = doc.child("Settings");
+        ResourceCache::SetUseRootShaderDirectory(root.child("UseRootShaderDirectory").text().as_bool());
+    }
+
     void Settings::Initialize()
     {
         if (FileSystem::Exists(file_path))

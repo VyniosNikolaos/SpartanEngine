@@ -204,6 +204,25 @@ namespace spartan
         static PxPhysics* physics                 = nullptr;
         static PxScene* scene                     = nullptr;
         static PxDefaultCpuDispatcher* dispatcher = nullptr;
+
+        // word2 tags for collision filtering
+        // 1 = character controller, 2 = vehicle
+        // only suppress contacts between character and vehicle; everything else is default
+        PxFilterFlags collision_filter_shader(
+            PxFilterObjectAttributes attributes0, PxFilterData filter_data0,
+            PxFilterObjectAttributes attributes1, PxFilterData filter_data1,
+            PxPairFlags& pair_flags, const void* constant_block, PxU32 constant_block_size)
+        {
+            bool is_character_vs_vehicle =
+                (filter_data0.word2 == 1 && filter_data1.word2 == 2) ||
+                (filter_data0.word2 == 2 && filter_data1.word2 == 1);
+
+            if (is_character_vs_vehicle)
+                return PxFilterFlag::eSUPPRESS;
+
+            return PxDefaultSimulationFilterShader(attributes0, filter_data0, attributes1, filter_data1,
+                pair_flags, constant_block, constant_block_size);
+        }
     }
 
     void PhysicsWorld::Initialize()
@@ -220,7 +239,7 @@ namespace spartan
         PxSceneDesc scene_desc(physics->getTolerancesScale());
         scene_desc.gravity        = PxVec3(0.0f, settings::gravity, 0.0f);
         scene_desc.cpuDispatcher  = PxDefaultCpuDispatcherCreate(2);
-        scene_desc.filterShader   = PxDefaultSimulationFilterShader;
+        scene_desc.filterShader   = collision_filter_shader;
         scene_desc.flags         |= PxSceneFlag::eENABLE_CCD; // enable continuous collision detection to reduce tunneling
         scene                     = physics->createScene(scene_desc);
         SP_ASSERT(scene);

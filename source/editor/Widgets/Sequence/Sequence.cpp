@@ -84,7 +84,29 @@ namespace spartan
             return SequenceEventAction::Max;
         }
 
-        // catmull-rom interpolation for positions
+        const char* interpolation_mode_to_string(InterpolationMode mode)
+        {
+            switch (mode)
+            {
+                case InterpolationMode::Linear:     return "linear";
+                case InterpolationMode::CatmullRom: return "catmull_rom";
+                case InterpolationMode::EaseIn:     return "ease_in";
+                case InterpolationMode::EaseOut:    return "ease_out";
+                case InterpolationMode::EaseInOut:  return "ease_in_out";
+                default:                            return "catmull_rom";
+            }
+        }
+
+        InterpolationMode string_to_interpolation_mode(const string& str)
+        {
+            if (str == "linear")      return InterpolationMode::Linear;
+            if (str == "catmull_rom") return InterpolationMode::CatmullRom;
+            if (str == "ease_in")     return InterpolationMode::EaseIn;
+            if (str == "ease_out")    return InterpolationMode::EaseOut;
+            if (str == "ease_in_out") return InterpolationMode::EaseInOut;
+            return InterpolationMode::CatmullRom;
+        }
+
         Vector3 catmull_rom(const Vector3& p0, const Vector3& p1, const Vector3& p2, const Vector3& p3, float t)
         {
             float t2 = t * t;
@@ -96,6 +118,21 @@ namespace spartan
                 (2.0f * p0 - 5.0f * p1 + 4.0f * p2 - p3) * t2 +
                 (-p0 + 3.0f * p1 - 3.0f * p2 + p3) * t3
             );
+        }
+
+        float apply_easing(float t, InterpolationMode mode)
+        {
+            switch (mode)
+            {
+                case InterpolationMode::EaseIn:
+                    return t * t;
+                case InterpolationMode::EaseOut:
+                    return t * (2.0f - t);
+                case InterpolationMode::EaseInOut:
+                    return (t < 0.5f) ? (2.0f * t * t) : (-1.0f + (4.0f - 2.0f * t) * t);
+                default:
+                    return t;
+            }
         }
     }
 
@@ -163,8 +200,6 @@ namespace spartan
     void Sequence::SetPlaybackTime(float time)
     {
         m_playback_time = max(0.0f, min(time, m_duration));
-
-        // when scrubbing, re-evaluate but skip events
         Evaluate(m_playback_time);
     }
 
@@ -188,9 +223,26 @@ namespace spartan
 
     void Sequence::Evaluate(float time)
     {
+        // determine if any track is solo'd
+        bool any_solo = false;
+        for (const SequenceTrack& track : m_tracks)
+        {
+            if (track.solo)
+            {
+                any_solo = true;
+                break;
+            }
+        }
+
         for (uint32_t i = 0; i < static_cast<uint32_t>(m_tracks.size()); i++)
         {
             const SequenceTrack& track = m_tracks[i];
+
+            // skip muted tracks; if any track is solo'd, only evaluate solo'd tracks
+            if (track.muted)
+                continue;
+            if (any_solo && !track.solo)
+                continue;
 
             switch (track.type)
             {
@@ -207,7 +259,6 @@ namespace spartan
         if (track.camera_clips.empty())
             return;
 
-        // find the active clip
         const SequenceCameraCutClip* active_clip = nullptr;
         for (const auto& clip : track.camera_clips)
         {
@@ -252,7 +303,6 @@ namespace spartan
 
         const auto& kfs = track.keyframes;
 
-        // clamp to range
         if (time <= kfs.front().time)
         {
             entity->SetPosition(kfs.front().position);
@@ -266,7 +316,6 @@ namespace spartan
             return;
         }
 
-        // find the segment
         uint32_t seg = 0;
         for (uint32_t i = 0; i < static_cast<uint32_t>(kfs.size()) - 1; i++)
         {
@@ -280,17 +329,27 @@ namespace spartan
         float segment_duration = kfs[seg + 1].time - kfs[seg].time;
         float t = (segment_duration > 0.0f) ? (time - kfs[seg].time) / segment_duration : 0.0f;
 
-        // catmull-rom for position (clamp boundary control points)
+        InterpolationMode mode = kfs[seg].interpolation;
+
         uint32_t i0 = (seg > 0) ? seg - 1 : 0;
         uint32_t i1 = seg;
         uint32_t i2 = seg + 1;
         uint32_t i3 = (seg + 2 < static_cast<uint32_t>(kfs.size())) ? seg + 2 : static_cast<uint32_t>(kfs.size()) - 1;
 
-        Vector3 position = catmull_rom(kfs[i0].position, kfs[i1].position, kfs[i2].position, kfs[i3].position, t);
+        Vector3 position;
+        if (mode == InterpolationMode::CatmullRom)
+        {
+            position = catmull_rom(kfs[i0].position, kfs[i1].position, kfs[i2].position, kfs[i3].position, t);
+        }
+        else
+        {
+            float eased_t = apply_easing(t, mode);
+            position = Vector3::Lerp(kfs[i1].position, kfs[i2].position, eased_t);
+        }
         entity->SetPosition(position);
 
-        // normalized lerp for rotation
-        Quaternion rotation = Quaternion::Lerp(kfs[i1].rotation, kfs[i2].rotation, t);
+        float rotation_t = (mode == InterpolationMode::Linear || mode == InterpolationMode::CatmullRom) ? t : apply_easing(t, mode);
+        Quaternion rotation = Quaternion::Lerp(kfs[i1].rotation, kfs[i2].rotation, rotation_t);
         entity->SetRotation(rotation);
     }
 
@@ -299,7 +358,6 @@ namespace spartan
         if (track.event_clips.empty())
             return;
 
-        // find the track's index in m_tracks so we can use the matching fire index
         uint32_t track_index = 0;
         uint32_t event_track_counter = 0;
         for (uint32_t i = 0; i < static_cast<uint32_t>(m_tracks.size()); i++)
@@ -315,7 +373,6 @@ namespace spartan
             }
         }
 
-        // ensure fire index array is large enough
         while (track_index >= static_cast<uint32_t>(m_event_fire_indices.size()))
         {
             m_event_fire_indices.push_back(-1);
@@ -330,7 +387,6 @@ namespace spartan
             if (evt.time > time)
                 break;
 
-            // fire this event
             Entity* target = World::GetEntityById(evt.target_entity_id);
 
             switch (evt.action)
@@ -425,6 +481,15 @@ namespace spartan
             track_node.append_attribute("type")             = track_type_to_string(track.type);
             track_node.append_attribute("target_entity_id") = track.target_entity_id;
             track_node.append_attribute("name")             = track.name.c_str();
+            track_node.append_attribute("muted")            = track.muted;
+            track_node.append_attribute("solo")             = track.solo;
+
+            if (track.custom_color.x != 0.0f || track.custom_color.y != 0.0f || track.custom_color.z != 0.0f || track.custom_color.w != 0.0f)
+            {
+                stringstream ss_color;
+                ss_color << track.custom_color.x << " " << track.custom_color.y << " " << track.custom_color.z << " " << track.custom_color.w;
+                track_node.append_attribute("custom_color") = ss_color.str().c_str();
+            }
 
             switch (track.type)
             {
@@ -445,7 +510,8 @@ namespace spartan
                     for (const auto& kf : track.keyframes)
                     {
                         pugi::xml_node kf_node = track_node.append_child("keyframe");
-                        kf_node.append_attribute("time") = kf.time;
+                        kf_node.append_attribute("time")          = kf.time;
+                        kf_node.append_attribute("interpolation") = interpolation_mode_to_string(kf.interpolation);
 
                         stringstream ss_pos;
                         ss_pos << kf.position.x << " " << kf.position.y << " " << kf.position.z;
@@ -491,6 +557,15 @@ namespace spartan
             track.type             = string_to_track_type(track_node.attribute("type").as_string());
             track.target_entity_id = track_node.attribute("target_entity_id").as_ullong(0);
             track.name             = track_node.attribute("name").as_string();
+            track.muted            = track_node.attribute("muted").as_bool(false);
+            track.solo             = track_node.attribute("solo").as_bool(false);
+
+            string color_str = track_node.attribute("custom_color").as_string();
+            if (!color_str.empty())
+            {
+                stringstream ss(color_str);
+                ss >> track.custom_color.x >> track.custom_color.y >> track.custom_color.z >> track.custom_color.w;
+            }
 
             switch (track.type)
             {
@@ -512,7 +587,8 @@ namespace spartan
                     for (pugi::xml_node kf_node = track_node.child("keyframe"); kf_node; kf_node = kf_node.next_sibling("keyframe"))
                     {
                         SequenceKeyframe kf;
-                        kf.time = kf_node.attribute("time").as_float(0.0f);
+                        kf.time          = kf_node.attribute("time").as_float(0.0f);
+                        kf.interpolation = string_to_interpolation_mode(kf_node.attribute("interpolation").as_string("catmull_rom"));
 
                         {
                             string pos_str = kf_node.attribute("position").as_string();

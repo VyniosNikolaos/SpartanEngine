@@ -66,6 +66,7 @@ namespace spartan
         Stopwatch timer_initialize;
         {
             Log::Initialize();
+            Settings::LoadPreInitSettings();
             FontImporter::Initialize();
             ImageImporter::Initialize();
             ModelImporter::Initialize();

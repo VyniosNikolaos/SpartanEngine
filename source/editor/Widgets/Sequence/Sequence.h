@@ -26,6 +26,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <vector>
 #include <string>
 #include "Math/Vector3.h"
+#include "Math/Vector4.h"
 #include "Math/Quaternion.h"
 //=============================
 
@@ -51,12 +52,23 @@ namespace spartan
         Max
     };
 
+    enum class InterpolationMode : uint8_t
+    {
+        Linear,
+        CatmullRom,
+        EaseIn,
+        EaseOut,
+        EaseInOut,
+        Max
+    };
+
     struct SequenceKeyframe
     {
-        float            time     = 0.0f;
-        math::Vector3    position = math::Vector3::Zero;
-        math::Quaternion rotation = math::Quaternion::Identity;
-        float            value    = 0.0f;
+        float             time          = 0.0f;
+        math::Vector3     position      = math::Vector3::Zero;
+        math::Quaternion  rotation      = math::Quaternion::Identity;
+        float             value         = 0.0f;
+        InterpolationMode interpolation = InterpolationMode::CatmullRom;
     };
 
     struct SequenceCameraCutClip
@@ -83,6 +95,12 @@ namespace spartan
         std::vector<SequenceKeyframe>      keyframes;
         std::vector<SequenceCameraCutClip> camera_clips;
         std::vector<SequenceEventClip>     event_clips;
+
+        bool muted = false;
+        bool solo  = false;
+
+        // zero means use the default type accent color
+        math::Vector4 custom_color = math::Vector4::Zero;
     };
 
     class Sequence : public SpartanObject

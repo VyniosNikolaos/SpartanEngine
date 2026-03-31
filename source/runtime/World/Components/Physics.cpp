@@ -72,6 +72,20 @@ namespace spartan
 
         PxControllerManager* controller_manager = nullptr;
 
+        // tag all shapes on an actor with a collision type in word2
+        // used by the simulation filter shader to suppress specific pairs
+        void tag_actor_shapes(PxRigidActor* actor, PxU32 collision_type)
+        {
+            PxShape* shapes[16];
+            PxU32 count = actor->getShapes(shapes, 16);
+            for (PxU32 i = 0; i < count; i++)
+            {
+                PxFilterData fd = shapes[i]->getSimulationFilterData();
+                fd.word2 = collision_type;
+                shapes[i]->setSimulationFilterData(fd);
+            }
+        }
+
         // helper to build lock flags from position and rotation lock vectors
         PxRigidDynamicLockFlags build_lock_flags(const Vector3& position_lock, const Vector3& rotation_lock)
         {
@@ -338,8 +352,18 @@ namespace spartan
                 m_wheel_offsets_synced = true;
             }
 
-            // update vehicle physics
-            car::tick(delta_time);
+            // sub-step vehicle physics at a fixed rate to keep the spring-damper
+            // integration stable regardless of rendering framerate
+            constexpr float vehicle_fixed_step = 1.0f / 200.0f;
+            constexpr int   max_steps          = 8;
+            m_vehicle_accumulated_time += delta_time;
+            int steps = 0;
+            while (m_vehicle_accumulated_time >= vehicle_fixed_step && steps < max_steps)
+            {
+                car::tick(vehicle_fixed_step);
+                m_vehicle_accumulated_time -= vehicle_fixed_step;
+                steps++;
+            }
 
             // get current physics state
             Vector3 physics_pos;
@@ -411,6 +435,7 @@ namespace spartan
             // editor mode: sync entity -> physx, reset velocities
             m_wheel_offsets_synced      = false;
             m_interpolation_initialized = false;
+            m_vehicle_accumulated_time  = 0.0f;
 
             actor->setGlobalPose(to_px_transform(GetEntity()->GetPosition(), GetEntity()->GetRotation()));
 
@@ -1359,6 +1384,10 @@ namespace spartan
 
             // build convex hull shapes from the chassis mesh hierarchy
             BuildChassisConvexShapes(entity, entities_to_exclude);
+
+            // re-tag after shape replacement
+            if (car::body)
+                tag_actor_shapes(car::body, 2);
         }
         else
         {
@@ -2313,6 +2342,12 @@ namespace spartan
 
             // note: the controller internally references the material, so don't release m_material here
             // it will be released in Remove() when the controller is destroyed
+
+            // tag the cct's internal actor so the simulation filter shader can
+            // suppress contacts between the character controller and the vehicle
+            PxRigidActor* cct_actor = static_cast<PxController*>(m_controller)->getActor();
+            if (cct_actor)
+                tag_actor_shapes(cct_actor, 1);
         }
         else if (m_body_type == BodyType::Vehicle)
         {
@@ -2330,6 +2365,7 @@ namespace spartan
                 PxTransform current_pose = car::body->getGlobalPose();
                 car::body->setGlobalPose(PxTransform(PxVec3(pos.x, current_pose.p.y, pos.z)));
                 car::body->userData = reinterpret_cast<void*>(GetEntity());
+                tag_actor_shapes(car::body, 2);
             }
             else
             {

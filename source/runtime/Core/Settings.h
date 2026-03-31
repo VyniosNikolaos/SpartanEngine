@@ -30,6 +30,7 @@ namespace spartan
     class Settings
     {
     public:
+        static void LoadPreInitSettings();
         static void Initialize();
         static void Shutdown();
         static bool HasLoadedUserSettingsFromFile();
