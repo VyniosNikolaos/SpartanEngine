@@ -160,7 +160,8 @@ function spartan_project_configuration()
             targetdir(TARGET_DIR)
             debugdir(TARGET_DIR)
             links { "dxcompiler" }
-
+            linkoptions { "/IGNORE:4099" }
+            
         filter { "configurations:debug", "system:windows" }
             links { "assimp_debug", "FreeImageLib_debug", "freetype_debug", "SDL3_debug", "Compressonator_MT_debug", "meshoptimizer_debug", "NRD_debug", "ShaderMakeBlob_debug", "openxr_loader_debug", "lua_debug" }
             links {
