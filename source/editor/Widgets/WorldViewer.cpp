@@ -1082,6 +1082,7 @@ void WorldViewer::ActionEntityCreateCube()
     auto renderable = entity->AddComponent<spartan::Render>();
     renderable->SetMesh(spartan::MeshType::Cube);
     renderable->SetDefaultMaterial();
+    entity->AddComponent<Physics>()->SetBodyType(BodyType::Box);
     entity->SetObjectName("Cube");
 }
 
@@ -1091,6 +1092,7 @@ void WorldViewer::ActionEntityCreateQuad()
     auto renderable = entity->AddComponent<spartan::Render>();
     renderable->SetMesh(spartan::MeshType::Quad);
     renderable->SetDefaultMaterial();
+    entity->AddComponent<Physics>()->SetBodyType(BodyType::Plane);
     entity->SetObjectName("Quad");
 }
 
@@ -1100,6 +1102,7 @@ void WorldViewer::ActionEntityCreateSphere()
     auto renderable = entity->AddComponent<spartan::Render>();
     renderable->SetMesh(spartan::MeshType::Sphere);
     renderable->SetDefaultMaterial();
+    entity->AddComponent<Physics>()->SetBodyType(BodyType::Sphere);
     entity->SetObjectName("Sphere");
 }
 
@@ -1109,6 +1112,7 @@ void WorldViewer::ActionEntityCreateCylinder()
     auto renderable = entity->AddComponent<spartan::Render>();
     renderable->SetMesh(spartan::MeshType::Cylinder);
     renderable->SetDefaultMaterial();
+    entity->AddComponent<Physics>()->SetBodyType(BodyType::Capsule);
     entity->SetObjectName("Cylinder");
 }
 
@@ -1118,6 +1122,7 @@ void WorldViewer::ActionEntityCreateCone()
     auto renderable = entity->AddComponent<spartan::Render>();
     renderable->SetMesh(spartan::MeshType::Cone);
     renderable->SetDefaultMaterial();
+    entity->AddComponent<Physics>()->SetBodyType(BodyType::Mesh);
     entity->SetObjectName("Cone");
 }
 
