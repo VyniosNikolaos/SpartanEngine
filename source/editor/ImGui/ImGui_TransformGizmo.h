@@ -36,7 +36,9 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 namespace ImGui::TransformGizmo
 {
-    const  spartan::math::Vector3 snap = spartan::math::Vector3(0.1f, 0.1f, 0.1f);
+    const spartan::math::Vector3 snap_translate = spartan::math::Vector3(0.1f, 0.1f, 0.1f);
+    const spartan::math::Vector3 snap_rotate    = spartan::math::Vector3(10.0f, 10.0f, 10.0f); // degrees
+    const spartan::math::Vector3 snap_scale     = spartan::math::Vector3(0.1f, 0.1f, 0.1f);
 
     bool first_use = true;
     std::vector<spartan::Entity*> entities_being_transformed;
@@ -164,6 +166,8 @@ namespace ImGui::TransformGizmo
         // set viewport rectangle
         ImGuizmo::SetDrawlist();
         ImGuizmo::SetRect(ImGui::GetWindowPos().x, ImGui::GetWindowPos().y, ImGui::GetWindowWidth(), ImGui::GetWindowHeight());
+        const spartan::math::Vector3& snap = (transform_operation == ImGuizmo::ROTATE) ? snap_rotate :
+                                              (transform_operation == ImGuizmo::SCALE)  ? snap_scale  : snap_translate;
         ImGuizmo::Manipulate(
             &matrix_view.m00,
             &matrix_projection.m00,
