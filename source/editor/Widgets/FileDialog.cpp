@@ -628,6 +628,12 @@ void FileDialog::ShowMiddle()
 
 void FileDialog::RenderGridView()
 {
+    // reset drag tracking at the start of a new press
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+    {
+        m_was_dragging = false;
+    }
+
     const float content_width = ImGui::GetContentRegionAvail().x;
     const float icon_size     = m_item_size.x;
     const float label_height  = 20.0f;
@@ -752,10 +758,7 @@ void FileDialog::RenderGridView()
         }
 
         // handle click on release, but only if the user didn't drag
-        // this prevents the click callback from firing when starting a drag-and-drop operation
-        bool released = ImGui::IsMouseReleased(ImGuiMouseButton_Left) && is_hovered;
-        bool dragged  = ImGui::IsMouseDragging(ImGuiMouseButton_Left, 1.0f);
-        if (released && !dragged)
+        if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && is_hovered && !m_was_dragging)
         {
             item.Clicked();
             const bool is_single_click = item.GetTimeSinceLastClickMs() > 400;
@@ -853,7 +856,7 @@ void FileDialog::RenderListView()
             bool is_selected = (m_selected_item_id == item.GetId());
 
             // selectable for the entire row
-            if (ImGui::Selectable("##row", is_selected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick, ImVec2(0, list_row_height)))
+            if (ImGui::Selectable("##row", is_selected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick, ImVec2(0, list_row_height)) && !m_was_dragging)
             {
                 item.Clicked();
                 const bool is_single_click = item.GetTimeSinceLastClickMs() > 400;
@@ -1014,13 +1017,14 @@ void FileDialog::RenderItem(FileDialogItem* item, const ImVec2& size, bool is_li
     // legacy function kept for compatibility - actual rendering is now in RenderGridView/RenderListView
 }
 
-void FileDialog::ItemDrag(FileDialogItem* item) const
+void FileDialog::ItemDrag(FileDialogItem* item)
 {
     if (!item || m_type != FileDialog_Type_Browser)
         return;
 
     if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
     {
+        m_was_dragging = true;
         const auto set_payload = [this](const ImGuiSp::DragPayloadType type, const string& path_full, const string& path_relative)
         {
             m_drag_drop_payload.type          = type;

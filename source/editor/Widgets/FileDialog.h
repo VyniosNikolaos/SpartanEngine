@@ -135,7 +135,7 @@ private:
     void RenderItem(FileDialogItem* item, const ImVec2& size, bool is_list_view);
 
     // item functionality handling
-    void ItemDrag(FileDialogItem* item) const;
+    void ItemDrag(FileDialogItem* item);
     void ItemClick(FileDialogItem* item) const;
     void ItemContextMenu(FileDialogItem* item);
 
@@ -181,6 +181,7 @@ private:
     // selection
     uint32_t m_selected_item_id;
     float m_hover_animation;
+    bool m_was_dragging = false;
 
     // renaming
     bool m_is_renaming;

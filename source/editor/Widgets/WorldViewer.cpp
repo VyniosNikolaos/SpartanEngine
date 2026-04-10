@@ -50,20 +50,20 @@ namespace
     Entity* entity_clicked = nullptr;
     Entity* entity_hovered = nullptr;
     ImGuiSp::DragDropPayload drag_drop_payload;
-    bool popup_rename_entity       = false;
-    Entity* entity_copied = nullptr;
+    bool popup_rename_entity = false;
+    Entity* entity_copied    = nullptr;
     ImRect selected_entity_rect;
     uint64_t last_selected_entity_id = 0;
-    bool selection_from_click        = false; // track if selection came from user click (no scroll needed)
-    Entity* entity_shift_anchor = nullptr; // anchor entity for shift-click range selection
-    vector<Entity*> entities_in_tree_order; // cached list of entities in display order
+    bool selection_from_click        = false;   // track if selection came from user click (no scroll needed)
+    Entity* entity_shift_anchor      = nullptr; // anchor entity for shift-click range selection
+    vector<Entity*> entities_in_tree_order;     // cached list of entities in display order
 
     // reorder drag-drop state
     Entity* reorder_target_entity = nullptr; // entity to insert before/after
-    bool reorder_insert_after              = false;   // true = insert after, false = insert before
-    float reorder_line_y                   = 0.0f;    // y position to draw the insertion line
-    float reorder_line_x_min               = 0.0f;    // x start of insertion line
-    float reorder_line_x_max               = 0.0f;    // x end of insertion line
+    bool reorder_insert_after     = false;   // true = insert after, false = insert before
+    float reorder_line_y          = 0.0f;    // y position to draw the insertion line
+    float reorder_line_x_min      = 0.0f;    // x start of insertion line
+    float reorder_line_x_max      = 0.0f;    // x end of insertion line
 
     // helper function to collect all active entities in tree display order (depth-first)
     void CollectEntitiesInTreeOrder(Entity* entity, vector<Entity*>& out_entities)
