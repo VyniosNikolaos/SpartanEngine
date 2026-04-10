@@ -751,8 +751,11 @@ void FileDialog::RenderGridView()
             ImGui::SetTooltip("%s", label.c_str());
         }
 
-        // handle click
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
+        // handle click on release, but only if the user didn't drag
+        // this prevents the click callback from firing when starting a drag-and-drop operation
+        bool released = ImGui::IsMouseReleased(ImGuiMouseButton_Left) && is_hovered;
+        bool dragged  = ImGui::IsMouseDragging(ImGuiMouseButton_Left, 1.0f);
+        if (released && !dragged)
         {
             item.Clicked();
             const bool is_single_click = item.GetTimeSinceLastClickMs() > 400;

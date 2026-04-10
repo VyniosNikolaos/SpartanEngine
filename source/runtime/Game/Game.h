@@ -27,7 +27,6 @@ namespace spartan
     {
         Showroom,
         Forest,
-        LiminalSpace,
         Sponza,
         SanMiguel,
         Basic,
