@@ -48,7 +48,8 @@ namespace spartan
         uint32_t height          = 720;
         float dpi_scale          = 1.0f;
         bool wants_to_close      = false;
-        SDL_Window* window       = nullptr;
+        bool fullscreen_toggle_pending = false;
+        SDL_Window* window             = nullptr;
 
         // splash-screen
         bool m_show_splash_screen              = true;
@@ -361,6 +362,21 @@ namespace spartan
 
     void Window::ToggleFullScreen()
 	{
+        fullscreen_toggle_pending = true;
+	}
+
+    bool Window::IsFullScreenTogglePending()
+    {
+        return fullscreen_toggle_pending;
+    }
+
+    void Window::ProcessFullScreenToggle()
+    {
+        if (!fullscreen_toggle_pending)
+            return;
+
+        fullscreen_toggle_pending = false;
+
         if (IsFullScreen())
         {
             Windowed();
@@ -369,7 +385,7 @@ namespace spartan
         {
             FullScreen();
         }
-	}
+    }
 
 	void Window::FullScreenBorderless()
     {

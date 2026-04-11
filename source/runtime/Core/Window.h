@@ -42,6 +42,8 @@ namespace spartan
         static void Windowed();
         static void ToggleFullScreen();
         static void FullScreenBorderless();
+        static bool IsFullScreenTogglePending();
+        static void ProcessFullScreenToggle();
         static void Minimize();
         static void Maximize();
 

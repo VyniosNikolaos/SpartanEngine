@@ -89,36 +89,46 @@ namespace spartan
 
     namespace barrier_helpers
     {
-        unordered_map<void*, array<RHI_Image_Layout, rhi_max_mip_count>> image_layouts;
-        mutex image_layouts_mutex;
+        // fallback map for raw image handles (swapchain images) that have no RHI_Texture
+        unordered_map<void*, array<RHI_Image_Layout, rhi_max_mip_count>> raw_image_layouts;
+        mutex raw_image_layouts_mutex;
 
-        RHI_Image_Layout get_layout(void* image, uint32_t mip_index)
+        RHI_Image_Layout get_layout(RHI_Texture* texture, void* image, uint32_t mip_index)
         {
-            SP_ASSERT(image != nullptr);
-            lock_guard<mutex> lock(image_layouts_mutex);
+            SP_ASSERT(mip_index < rhi_max_mip_count);
 
-            auto it = image_layouts.find(image);
-            if (it == image_layouts.end())
+            if (texture)
+                return texture->GetLayout(mip_index);
+
+            SP_ASSERT(image != nullptr);
+            lock_guard<mutex> lock(raw_image_layouts_mutex);
+            auto it = raw_image_layouts.find(image);
+            if (it == raw_image_layouts.end())
                 return RHI_Image_Layout::Max;
 
-            SP_ASSERT(mip_index < rhi_max_mip_count);
             return it->second[mip_index];
         }
 
-        void set_layout(void* image, uint32_t mip_index, uint32_t mip_range, RHI_Image_Layout layout)
+        void set_layout(RHI_Texture* texture, void* image, uint32_t mip_index, uint32_t mip_range, RHI_Image_Layout layout)
         {
-            SP_ASSERT(image != nullptr);
             SP_ASSERT(mip_index < rhi_max_mip_count);
             SP_ASSERT(mip_index + mip_range <= rhi_max_mip_count);
-            lock_guard<mutex> lock(image_layouts_mutex);
 
-            auto it = image_layouts.find(image);
-            if (it == image_layouts.end())
+            if (texture)
+            {
+                texture->SetLayoutDirect(mip_index, mip_range, layout);
+                return;
+            }
+
+            SP_ASSERT(image != nullptr);
+            lock_guard<mutex> lock(raw_image_layouts_mutex);
+            auto it = raw_image_layouts.find(image);
+            if (it == raw_image_layouts.end())
             {
                 array<RHI_Image_Layout, rhi_max_mip_count> layouts;
                 layouts.fill(RHI_Image_Layout::Max);
-                image_layouts[image] = layouts;
-                it = image_layouts.find(image);
+                raw_image_layouts[image] = layouts;
+                it = raw_image_layouts.find(image);
             }
 
             uint32_t mip_end = min(mip_index + mip_range, rhi_max_mip_count);
@@ -128,10 +138,10 @@ namespace spartan
             }
         }
 
-        void remove_layout(void* image)
+        void remove_raw_layout(void* image)
         {
-            lock_guard<mutex> lock(image_layouts_mutex);
-            image_layouts.erase(image);
+            lock_guard<mutex> lock(raw_image_layouts_mutex);
+            raw_image_layouts.erase(image);
         }
 
         // convert scope enum to vulkan pipeline stages
@@ -306,11 +316,11 @@ namespace spartan
         {
             case RHI_Barrier::Type::ImageLayout:
             {
-                // get image and format from either texture or raw handle
-                void* image           = barrier.texture ? barrier.texture->GetRhiResource() : barrier.image;
-                RHI_Format format     = barrier.texture ? barrier.texture->GetFormat() : barrier.format;
-                uint32_t array_length = barrier.texture ? barrier.texture->GetArrayLength() : barrier.array_length;
-                uint32_t mip_count    = barrier.texture ? barrier.texture->GetMipCount() : rhi_max_mip_count;
+                RHI_Texture* texture  = barrier.texture;
+                void* image           = texture ? texture->GetRhiResource() : barrier.image;
+                RHI_Format format     = texture ? texture->GetFormat() : barrier.format;
+                uint32_t array_length = texture ? texture->GetArrayLength() : barrier.array_length;
+                uint32_t mip_count    = texture ? texture->GetMipCount() : rhi_max_mip_count;
 
                 SP_ASSERT(image != nullptr);
 
@@ -330,10 +340,10 @@ namespace spartan
                 layouts.clear();
                 layouts.resize(mip_range);
                 bool all_mips_same_layout     = true;
-                RHI_Image_Layout first_layout = barrier_helpers::get_layout(image, mip_index);
+                RHI_Image_Layout first_layout = barrier_helpers::get_layout(texture, image, mip_index);
                 for (uint32_t i = 0; i < mip_range; i++)
                 {
-                    layouts[i] = barrier_helpers::get_layout(image, mip_index + i);
+                    layouts[i] = barrier_helpers::get_layout(texture, image, mip_index + i);
                     if (layouts[i] != first_layout || layouts[i] == barrier.layout)
                         all_mips_same_layout = false;
                 }
@@ -403,7 +413,7 @@ namespace spartan
                             pending.is_depth            = is_depth;
                             m_pending_barriers.push_back(pending);
                         }
-                        barrier_helpers::set_layout(image, mip_index, mip_range, barrier.layout);
+                        barrier_helpers::set_layout(texture, image, mip_index, mip_range, barrier.layout);
                         return;
                     }
                 }
@@ -442,7 +452,7 @@ namespace spartan
                 RenderPassEnd();
                 vkCmdPipelineBarrier2(static_cast<VkCommandBuffer>(m_rhi_resource), &dependency_info);
                 Profiler::m_rhi_pipeline_barriers++;
-                barrier_helpers::set_layout(image, mip_index, mip_range, barrier.layout);
+                barrier_helpers::set_layout(texture, image, mip_index, mip_range, barrier.layout);
                 break;
             }
 
@@ -465,11 +475,11 @@ namespace spartan
                 if (pending.has_per_mip_views)
                 {
                     for (uint32_t mip = 0; mip < pending.per_mip_count; ++mip)
-                        pending.per_mip_layouts[mip] = barrier_helpers::get_layout(pending.image, mip);
+                        pending.per_mip_layouts[mip] = barrier.texture->GetLayout(mip);
                 }
                 else
                 {
-                    pending.per_mip_layouts[0] = barrier_helpers::get_layout(pending.image, 0);
+                    pending.per_mip_layouts[0] = barrier.texture->GetLayout(0);
                 }
 
                 m_pending_barriers.push_back(pending);
@@ -731,72 +741,80 @@ namespace spartan
 
     void RHI_CommandList::RemoveLayout(void* image)
     {
-        barrier_helpers::remove_layout(image);
+        barrier_helpers::remove_raw_layout(image);
     }
 
     RHI_Image_Layout RHI_CommandList::GetImageLayout(void* image, const uint32_t mip_index)
     {
-        return barrier_helpers::get_layout(image, mip_index);
+        return barrier_helpers::get_layout(nullptr, image, mip_index);
     }
 
     namespace descriptor_sets
     {
         bool bind_dynamic = false;
 
+        VkShaderStageFlags get_stage_flags(const RHI_PipelineState& pso)
+        {
+            if (pso.IsGraphics())
+            {
+                return VK_SHADER_STAGE_VERTEX_BIT                  |
+                       VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT    |
+                       VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT |
+                       VK_SHADER_STAGE_FRAGMENT_BIT;
+            }
+
+            if (pso.IsRayTracing())
+            {
+                return VK_SHADER_STAGE_RAYGEN_BIT_KHR      |
+                       VK_SHADER_STAGE_MISS_BIT_KHR        |
+                       VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+            }
+
+            return VK_SHADER_STAGE_COMPUTE_BIT;
+        }
+
         void set_dynamic(const RHI_PipelineState pso, void* resource, void* pipeline_layout, RHI_DescriptorSetLayout* layout)
         {
-            array<void*, 1> resources =
-            {
-                layout->GetOrCreateDescriptorSet()
-            };
+            VkDescriptorSet descriptor_set = static_cast<VkDescriptorSet>(layout->GetOrCreateDescriptorSet());
 
-            // get dynamic offsets
             array<uint32_t, 10> dynamic_offsets;
             uint32_t dynamic_offset_count = 0;
             layout->GetDynamicOffsets(&dynamic_offsets, &dynamic_offset_count);
 
-            VkPipelineBindPoint bind_point = VK_PIPELINE_BIND_POINT_COMPUTE;
-            bind_point                     = pso.IsGraphics()   ? VK_PIPELINE_BIND_POINT_GRAPHICS        : bind_point;
-            bind_point                     = pso.IsRayTracing() ? VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR : bind_point;
+            VkBindDescriptorSetsInfo bind_info = {};
+            bind_info.sType              = VK_STRUCTURE_TYPE_BIND_DESCRIPTOR_SETS_INFO;
+            bind_info.stageFlags         = get_stage_flags(pso);
+            bind_info.layout             = static_cast<VkPipelineLayout>(pipeline_layout);
+            bind_info.firstSet           = 0;
+            bind_info.descriptorSetCount = 1;
+            bind_info.pDescriptorSets    = &descriptor_set;
+            bind_info.dynamicOffsetCount = dynamic_offset_count;
+            bind_info.pDynamicOffsets    = dynamic_offsets.data();
 
-            vkCmdBindDescriptorSets
-            (
-                static_cast<VkCommandBuffer>(resource),               // commandBuffer
-                bind_point,                                           // pipelineBindPoint
-                static_cast<VkPipelineLayout>(pipeline_layout),       // layout
-                0,                                                    // firstSet
-                static_cast<uint32_t>(resources.size()),              // descriptorSetCount
-                reinterpret_cast<VkDescriptorSet*>(resources.data()), // pDescriptorSets
-                dynamic_offset_count,                                 // dynamicOffsetCount
-                dynamic_offsets.data()                                // pDynamicOffsets
-            );
+            vkCmdBindDescriptorSets2(static_cast<VkCommandBuffer>(resource), &bind_info);
 
             bind_dynamic = false;
         }
 
         void set_bindless(const RHI_PipelineState pso, void* resource, void* pipeline_layout)
         {
-            array<void*, static_cast<size_t>(RHI_Device_Bindless_Resource::Max)> resources;
-            for (size_t i = 0; i < static_cast<size_t>(resources.size()); i++)
+            array<VkDescriptorSet, static_cast<size_t>(RHI_Device_Bindless_Resource::Max)> sets;
+            for (size_t i = 0; i < sets.size(); i++)
             {
-                resources[i] = RHI_Device::GetDescriptorSet(static_cast<RHI_Device_Bindless_Resource>(i));
+                sets[i] = static_cast<VkDescriptorSet>(RHI_Device::GetDescriptorSet(static_cast<RHI_Device_Bindless_Resource>(i)));
             }
 
-            VkPipelineBindPoint bind_point = VK_PIPELINE_BIND_POINT_COMPUTE;
-            bind_point                     = pso.IsGraphics()   ? VK_PIPELINE_BIND_POINT_GRAPHICS        : bind_point;
-            bind_point                     = pso.IsRayTracing() ? VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR : bind_point;
+            VkBindDescriptorSetsInfo bind_info = {};
+            bind_info.sType              = VK_STRUCTURE_TYPE_BIND_DESCRIPTOR_SETS_INFO;
+            bind_info.stageFlags         = get_stage_flags(pso);
+            bind_info.layout             = static_cast<VkPipelineLayout>(pipeline_layout);
+            bind_info.firstSet           = 1;
+            bind_info.descriptorSetCount = static_cast<uint32_t>(sets.size());
+            bind_info.pDescriptorSets    = sets.data();
+            bind_info.dynamicOffsetCount = 0;
+            bind_info.pDynamicOffsets    = nullptr;
 
-            vkCmdBindDescriptorSets
-            (
-                static_cast<VkCommandBuffer>(resource),               // commandBuffer
-                bind_point,                                           // pipelineBindPoint
-                static_cast<VkPipelineLayout>(pipeline_layout),       // layout
-                1,                                                    // firstSet - 0 is reserved for the old-school/dynamic/bind based descriptor sets
-                static_cast<uint32_t>(resources.size()),              // descriptorSetCount
-                reinterpret_cast<VkDescriptorSet*>(resources.data()), // pDescriptorSets
-                0,                                                    // dynamicOffsetCount
-                nullptr                                               // pDynamicOffsets
-            );
+            vkCmdBindDescriptorSets2(static_cast<VkCommandBuffer>(resource), &bind_info);
         }
     }
 
@@ -2210,10 +2228,11 @@ namespace spartan
 
         bool is_16bit = buffer->GetStride() == sizeof(uint16_t);
 
-        vkCmdBindIndexBuffer(
+        vkCmdBindIndexBuffer2(
             static_cast<VkCommandBuffer>(m_rhi_resource),          // commandBuffer
             static_cast<VkBuffer>(buffer->GetRhiResource()),       // buffer
             0,                                                     // offset
+            buffer->GetObjectSize(),                               // size
             is_16bit ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32 // indexType
         );
 
@@ -2227,20 +2246,19 @@ namespace spartan
         SP_ASSERT(size <= RHI_Device::PropertyGetMaxPushConstantSize());
         SP_ASSERT(m_pipeline != nullptr);
 
-        // use the stages that were actually defined in the pipeline layout's push constant range
-        // this avoids validation errors when a shader (e.g., vertex) doesn't use push constants
         uint32_t stages = m_pipeline->GetPushConstantStages();
         if (stages == 0)
-            return; // no push constants defined in pipeline
-    
-        vkCmdPushConstants(
-            static_cast<VkCommandBuffer>(m_rhi_resource),
-            static_cast<VkPipelineLayout>(m_pipeline->GetRhiResourceLayout()),
-            stages,
-            offset,
-            size,
-            data
-        );
+            return;
+
+        VkPushConstantsInfo push_info = {};
+        push_info.sType      = VK_STRUCTURE_TYPE_PUSH_CONSTANTS_INFO;
+        push_info.layout     = static_cast<VkPipelineLayout>(m_pipeline->GetRhiResourceLayout());
+        push_info.stageFlags = stages;
+        push_info.offset     = offset;
+        push_info.size       = size;
+        push_info.pValues    = data;
+
+        vkCmdPushConstants2(static_cast<VkCommandBuffer>(m_rhi_resource), &push_info);
     }
 
     void RHI_CommandList::SetConstantBuffer(const uint32_t slot, RHI_Buffer* constant_buffer) const

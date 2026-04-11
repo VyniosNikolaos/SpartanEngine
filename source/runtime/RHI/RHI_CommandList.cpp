@@ -51,7 +51,7 @@ namespace spartan
         Dispatch(dispatch_x, dispatch_y, dispatch_z);
 
         // synchronize writes to the texture
-        if (GetImageLayout(texture->GetRhiResource(), 0) == RHI_Image_Layout::General)
+        if (texture->GetLayout(0) == RHI_Image_Layout::General)
         {
             InsertBarrier(texture, RHI_BarrierType::EnsureWriteThenRead);
         }

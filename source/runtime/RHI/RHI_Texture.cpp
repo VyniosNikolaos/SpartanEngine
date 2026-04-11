@@ -606,7 +606,7 @@ namespace spartan
 
     RHI_Texture::RHI_Texture() : IResource(ResourceType::Texture)
     {
-
+        m_layouts.fill(RHI_Image_Layout::Max);
     }
 
     RHI_Texture::RHI_Texture(
@@ -633,6 +633,7 @@ namespace spartan
         m_viewport         = RHI_Viewport(0, 0, static_cast<float>(width), static_cast<float>(height));
         m_channel_count    = rhi_to_format_channel_count(format);
         m_bits_per_channel = rhi_format_to_bits_per_channel(m_format);
+        m_layouts.fill(RHI_Image_Layout::Max);
 
         // render targets need gpu resource immediately even without cpu data
         // other textures with empty slices will have data filled later
@@ -647,6 +648,7 @@ namespace spartan
 
     RHI_Texture::RHI_Texture(const string& file_path) : IResource(ResourceType::Texture)
     {
+        m_layouts.fill(RHI_Image_Layout::Max);
         LoadFromFile(file_path);
     }
 
@@ -901,34 +903,31 @@ namespace spartan
 
     void RHI_Texture::SetLayout(const RHI_Image_Layout new_layout, RHI_CommandList* cmd_list, uint32_t mip_index /*= all_mips*/, uint32_t mip_range /*= 0*/)
     {
-        const bool mip_specified = mip_index != rhi_all_mips;
-        mip_index                = mip_specified ? mip_index : 0;
-        mip_range                = mip_specified ? mip_range : m_mip_count;
-    
-        if (mip_specified)
+        if (mip_index != rhi_all_mips)
         {
             SP_ASSERT(HasPerMipViews());
             SP_ASSERT(mip_range != 0);
             SP_ASSERT(mip_index + mip_range <= m_mip_count);
         }
 
-        cmd_list->InsertBarrier(m_rhi_resource, m_format, mip_index, mip_range, GetArrayLength(), new_layout);
+        cmd_list->InsertBarrier(this, new_layout, mip_index, mip_range);
     }
 
-    RHI_Image_Layout RHI_Texture::GetLayout(const uint32_t mip) const
+    void RHI_Texture::SetLayoutDirect(uint32_t mip_index, uint32_t mip_range, RHI_Image_Layout layout)
     {
-        return m_rhi_resource ? RHI_CommandList::GetImageLayout(m_rhi_resource, mip) : RHI_Image_Layout::Max;
-    }
+        SP_ASSERT(mip_index < rhi_max_mip_count);
+        SP_ASSERT(mip_index + mip_range <= rhi_max_mip_count);
 
-    array<RHI_Image_Layout, rhi_max_mip_count> RHI_Texture::GetLayouts()
-    {
-        array<RHI_Image_Layout, rhi_max_mip_count> layouts;
-        for (uint32_t i = 0; i < rhi_max_mip_count; i++)
+        uint32_t mip_end = min(mip_index + mip_range, rhi_max_mip_count);
+        for (uint32_t i = mip_index; i < mip_end; ++i)
         {
-            layouts[i] = GetLayout(i);
+            m_layouts[i] = layout;
         }
+    }
 
-        return layouts;
+    void RHI_Texture::ClearLayouts()
+    {
+        m_layouts.fill(RHI_Image_Layout::Max);
     }
 
     void RHI_Texture::ClearData()

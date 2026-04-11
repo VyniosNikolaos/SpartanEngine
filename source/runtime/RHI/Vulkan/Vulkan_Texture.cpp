@@ -295,7 +295,7 @@ namespace spartan
             {
                 RHI_Image_Layout layout = RHI_Image_Layout::Transfer_Destination;
         
-                cmd_list->InsertBarrier(texture->GetRhiResource(), texture->GetFormat(), 0, mip_count, depth, layout);
+                cmd_list->InsertBarrier(texture, layout, 0, mip_count);
                 cmd_list->FlushBarriers();
         
                 vkCmdCopyBufferToImage(
@@ -364,14 +364,7 @@ namespace spartan
                 target_layout = RHI_Image_Layout::General;
             }
 
-            cmd_list->InsertBarrier(
-                m_rhi_resource,
-                m_format,
-                0,            // mip start
-                m_mip_count,  // mip count
-                array_length, // array length
-                target_layout
-            );
+            cmd_list->InsertBarrier(this, target_layout, 0, m_mip_count);
         
             // flush
             RHI_CommandList::ImmediateExecutionEnd(cmd_list);
@@ -495,7 +488,7 @@ namespace spartan
         m_rhi_dsv_multiview = nullptr;
 
         // rhi resource
-        RHI_CommandList::RemoveLayout(m_rhi_resource);
+        ClearLayouts();
         RHI_Device::DeletionQueueAdd(RHI_Resource_Type::Image, m_rhi_resource);
         m_rhi_resource = nullptr;
     }

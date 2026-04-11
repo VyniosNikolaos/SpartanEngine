@@ -460,6 +460,11 @@ namespace spartan
         // todo: implement deletion queue for d3d12
     }
 
+    void RHI_Device::DeletionQueueFlush()
+    {
+        // todo: implement deletion queue for d3d12
+    }
+
     bool RHI_Device::DeletionQueueNeedsToParse()
     {
         return false;

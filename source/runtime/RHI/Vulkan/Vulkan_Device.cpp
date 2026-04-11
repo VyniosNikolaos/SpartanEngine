@@ -1912,6 +1912,17 @@ namespace spartan
         }
     }
 
+    void RHI_Device::DeletionQueueFlush()
+    {
+        {
+            lock_guard<mutex> guard(mutex_deletion_queue);
+            for (auto& entry : deletion_queue)
+                entry.frame = 0;
+        }
+
+        DeletionQueueParse();
+    }
+
     bool RHI_Device::DeletionQueueNeedsToParse()
     {
         lock_guard<mutex> guard(mutex_deletion_queue);

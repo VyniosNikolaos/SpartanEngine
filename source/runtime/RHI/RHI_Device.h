@@ -68,6 +68,7 @@ namespace spartan
         // deletion queue
         static void DeletionQueueAdd(const RHI_Resource_Type resource_type, void* resource);
         static void DeletionQueueParse();
+        static void DeletionQueueFlush();
         static bool DeletionQueueNeedsToParse();
 
         // memory

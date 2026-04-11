@@ -153,8 +153,10 @@ namespace spartan
 
         // layout
         void SetLayout(const RHI_Image_Layout layout, RHI_CommandList* cmd_list, uint32_t mip_index = rhi_all_mips,  uint32_t mip_range = 0);
-        RHI_Image_Layout GetLayout(const uint32_t mip) const;
-        std::array<RHI_Image_Layout, rhi_max_mip_count> GetLayouts();
+        RHI_Image_Layout GetLayout(const uint32_t mip) const { return m_layouts[mip]; }
+        const std::array<RHI_Image_Layout, rhi_max_mip_count>& GetLayouts() const { return m_layouts; }
+        void SetLayoutDirect(uint32_t mip_index, uint32_t mip_range, RHI_Image_Layout layout);
+        void ClearLayouts();
 
         // viewport
         const auto& GetViewport() const { return m_viewport; }
@@ -185,6 +187,7 @@ namespace spartan
         RHI_Format m_compression_format = RHI_Format::Max;
         RHI_Texture_Type m_type         = RHI_Texture_Type::Max;
         RHI_Viewport m_viewport;
+        std::array<RHI_Image_Layout, rhi_max_mip_count> m_layouts;
         std::vector<RHI_Texture_Slice> m_slices;
 
         // api resources

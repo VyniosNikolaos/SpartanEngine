@@ -313,6 +313,55 @@ namespace spartan
 
     void Renderer::CreateRenderTargets(const bool create_render, const bool create_output, const bool create_dynamic)
     {
+        // release old render targets before allocating new ones so that the gpu resources
+        // (and their layout tracking entries) are fully retired first; without this, the
+        // old shared_ptr destructor runs after the new texture is constructed, and if the
+        // driver happens to reuse a vkimage handle the destructor's RemoveLayout call
+        // erases the freshly-inserted entry for the new image
+        if (create_render)
+        {
+            at(render_targets, Renderer_RenderTarget::frame_render)                = nullptr;
+            at(render_targets, Renderer_RenderTarget::frame_render_opaque)         = nullptr;
+            at(render_targets, Renderer_RenderTarget::gbuffer_color)               = nullptr;
+            at(render_targets, Renderer_RenderTarget::gbuffer_normal)              = nullptr;
+            at(render_targets, Renderer_RenderTarget::gbuffer_material)            = nullptr;
+            at(render_targets, Renderer_RenderTarget::gbuffer_velocity)            = nullptr;
+            at(render_targets, Renderer_RenderTarget::gbuffer_depth)               = nullptr;
+            at(render_targets, Renderer_RenderTarget::light_diffuse)               = nullptr;
+            at(render_targets, Renderer_RenderTarget::light_specular)              = nullptr;
+            at(render_targets, Renderer_RenderTarget::light_volumetric)            = nullptr;
+            at(render_targets, Renderer_RenderTarget::gbuffer_depth_occluders)     = nullptr;
+            at(render_targets, Renderer_RenderTarget::gbuffer_depth_occluders_hiz) = nullptr;
+            at(render_targets, Renderer_RenderTarget::sss)                         = nullptr;
+            at(render_targets, Renderer_RenderTarget::ssao)                        = nullptr;
+            at(render_targets, Renderer_RenderTarget::reflections)                 = nullptr;
+            at(render_targets, Renderer_RenderTarget::gbuffer_reflections_position)= nullptr;
+            at(render_targets, Renderer_RenderTarget::gbuffer_reflections_normal)  = nullptr;
+            at(render_targets, Renderer_RenderTarget::gbuffer_reflections_albedo)  = nullptr;
+            at(render_targets, Renderer_RenderTarget::ray_traced_shadows)             = nullptr;
+            at(render_targets, Renderer_RenderTarget::restir_output)                = nullptr;
+            for (uint32_t i = 0; i < 15; i++)
+                at(render_targets, static_cast<Renderer_RenderTarget>(static_cast<uint32_t>(Renderer_RenderTarget::restir_reservoir0) + i)) = nullptr;
+            at(render_targets, Renderer_RenderTarget::nrd_viewz)                    = nullptr;
+            at(render_targets, Renderer_RenderTarget::nrd_normal_roughness)         = nullptr;
+            at(render_targets, Renderer_RenderTarget::nrd_diff_radiance_hitdist)    = nullptr;
+            at(render_targets, Renderer_RenderTarget::nrd_spec_radiance_hitdist)    = nullptr;
+            at(render_targets, Renderer_RenderTarget::nrd_out_diff_radiance_hitdist)= nullptr;
+            at(render_targets, Renderer_RenderTarget::nrd_out_spec_radiance_hitdist)= nullptr;
+            at(render_targets, Renderer_RenderTarget::shading_rate)                 = nullptr;
+            at(render_targets, Renderer_RenderTarget::shadow_atlas)                 = nullptr;
+        }
+        if (create_output)
+        {
+            at(render_targets, Renderer_RenderTarget::frame_output)                = nullptr;
+            at(render_targets, Renderer_RenderTarget::frame_output_2)              = nullptr;
+            at(render_targets, Renderer_RenderTarget::frame_output_stereo)         = nullptr;
+            at(render_targets, Renderer_RenderTarget::debug_output)                = nullptr;
+            at(render_targets, Renderer_RenderTarget::bloom)                       = nullptr;
+            at(render_targets, Renderer_RenderTarget::outline)                     = nullptr;
+            at(render_targets, Renderer_RenderTarget::gbuffer_depth_opaque_output) = nullptr;
+        }
+
         uint32_t width_render  = static_cast<uint32_t>(GetResolutionRender().x);
         uint32_t height_render = static_cast<uint32_t>(GetResolutionRender().y);
         uint32_t width_output  = static_cast<uint32_t>(GetResolutionOutput().x);

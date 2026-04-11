@@ -335,8 +335,8 @@ namespace spartan
         // debug visualization (editor only, skip during play)
         if (cvar_physics.GetValueAs<bool>() && !Engine::IsFlagSet(EngineMode::Playing))
         {
-            // run a zero-timestep step so physx populates the render buffer
-            scene->simulate(0.0f);
+            // run a near-zero step so physx populates the render buffer (physx requires dt > 0)
+            scene->simulate(numeric_limits<float>::min());
             scene->fetchResults(true);
 
             const PxRenderBuffer& rb = scene->getRenderBuffer();

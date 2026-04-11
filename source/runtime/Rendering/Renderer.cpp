@@ -263,6 +263,13 @@ namespace spartan
     {
         Profiler::FrameStart();
 
+        // process deferred fullscreen toggle at a safe point where no command lists are in flight
+        if (Window::IsFullScreenTogglePending())
+        {
+            RHI_Device::QueueWaitAll();
+            Window::ProcessFullScreenToggle();
+        }
+
         {
             swapchain->AcquireNextImage();
             RHI_Device::Tick(frame_num);
@@ -597,6 +604,13 @@ namespace spartan
             }
 
             CreateRenderTargets(create_render, create_output, true);
+
+            // the gpu is idle at this point so it's safe to destroy all deferred resources
+            // immediately; this ensures old vkimage handles are freed before any new frame
+            // starts, preventing the driver from reusing handles that still have stale
+            // entries in the layout tracking map
+            RHI_Device::DeletionQueueFlush();
+
             CreateSamplers();
         }
 
@@ -774,10 +788,10 @@ namespace spartan
 
             width_previous_viewport  = m_viewport.width;
             height_previous_viewport = m_viewport.height;
-            SetViewport(static_cast<float>(width), static_cast<float>(height));
+            width_previous_output    = static_cast<uint32_t>(GetResolutionOutput().x);
+            height_previous_output   = static_cast<uint32_t>(GetResolutionOutput().y);
 
-            width_previous_output  = static_cast<uint32_t>(m_viewport.width);
-            height_previous_output = static_cast<uint32_t>(m_viewport.height);
+            SetViewport(static_cast<float>(width), static_cast<float>(height));
             SetResolutionOutput(width, height);
         }
         else

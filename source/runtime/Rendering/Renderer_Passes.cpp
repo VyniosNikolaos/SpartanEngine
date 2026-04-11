@@ -1517,7 +1517,7 @@ namespace spartan
             cmd_list->Dispatch(tex_lut_brdf_specular);
 
             // permanent srv transition
-            cmd_list->InsertBarrier(tex_lut_brdf_specular->GetRhiResource(), tex_lut_brdf_specular->GetFormat(), 0, 1, 1, RHI_Image_Layout::Shader_Read);
+            cmd_list->InsertBarrier(tex_lut_brdf_specular, RHI_Image_Layout::Shader_Read, 0, 1);
         }
         cmd_list->EndTimeblock();
     }
