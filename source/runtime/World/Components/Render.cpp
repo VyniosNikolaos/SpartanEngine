@@ -236,9 +236,10 @@ namespace spartan
     void Render::RegisterForScripting(sol::state_view State)
     {
         State.new_usertype<Render>("Renderable",
-        sol::base_classes,              sol::bases<Component>()
+            sol::base_classes,              sol::bases<Component>(),
+            "GetMaterialName",              &Render::GetMaterialName,
+            "GetBoundingBox",               &Render::GetBoundingBox
         );
-
     }
 
     sol::reference Render::AsLua(sol::state_view state)

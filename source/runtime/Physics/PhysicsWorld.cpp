@@ -26,6 +26,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "../Profiling/Profiler.h"
 #include "../Rendering/Renderer.h"
 #include "../Input/Input.h"
+#include "../World/Entity.h"
 #include "../World/Components/Camera.h"
 #include "../World/Components/Physics.h"
 #include "../World/World.h"
@@ -398,6 +399,14 @@ namespace spartan
 
     bool PhysicsWorld::RaycastStatic(const Vector3& origin, const Vector3& direction, float max_distance, Vector3& hit_position)
     {
+        Entity* unused = nullptr;
+        return RaycastStatic(origin, direction, max_distance, hit_position, unused);
+    }
+
+    bool PhysicsWorld::RaycastStatic(const Vector3& origin, const Vector3& direction, float max_distance, Vector3& hit_position, Entity*& hit_entity)
+    {
+        hit_entity = nullptr;
+
         if (!scene)
             return false;
 
@@ -412,6 +421,12 @@ namespace spartan
         if (scene->raycast(px_origin, px_direction, max_distance, hit, PxHitFlag::eDEFAULT, filter_data) && hit.hasBlock)
         {
             hit_position = Vector3(hit.block.position.x, hit.block.position.y, hit.block.position.z);
+
+            if (hit.block.actor && hit.block.actor->userData)
+            {
+                hit_entity = static_cast<Entity*>(hit.block.actor->userData);
+            }
+
             return true;
         }
 

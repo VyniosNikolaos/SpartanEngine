@@ -33,6 +33,8 @@ namespace physx
 
 namespace spartan
 {
+    class Entity;
+
     class PhysicsWorld
     {
     public:
@@ -53,5 +55,8 @@ namespace spartan
 
         // cast a ray against static geometry and return the closest hit position
         static bool RaycastStatic(const math::Vector3& origin, const math::Vector3& direction, float max_distance, math::Vector3& hit_position);
+
+        // cast a ray against static geometry and return the closest hit position + the entity that was hit
+        static bool RaycastStatic(const math::Vector3& origin, const math::Vector3& direction, float max_distance, math::Vector3& hit_position, Entity*& hit_entity);
     };
 }

@@ -195,8 +195,14 @@ namespace spartan
             "StopSynthesis",                &AudioSource::StopSynthesis,
 
             "GetPitch",                     &AudioSource::GetPitch,
-            "SetPitch",                     &AudioSource::SetPitch
+            "SetPitch",                     &AudioSource::SetPitch,
 
+            "GetLoop",                      &AudioSource::GetLoop,
+            "SetLoop",                      &AudioSource::SetLoop,
+            "GetVolume",                    &AudioSource::GetVolume,
+            "SetVolume",                    &AudioSource::SetVolume,
+            "GetPlayOnStart",               &AudioSource::GetPlayOnStart,
+            "SetPlayOnStart",               &AudioSource::SetPlayOnStart
             );
     }
 

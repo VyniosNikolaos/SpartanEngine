@@ -336,6 +336,11 @@ namespace spartan
         // deferred creation flag for loading (wait until renderable is available)
         bool m_needs_creation = false;
 
+        // cached scale for detecting editor-time scale changes
+        math::Vector3 m_scale_previous = math::Vector3::Zero;
+
+        void UpdateShapeGeometry();
+
         // interpolation state for smooth rendering between fixed physics timesteps
         math::Vector3 m_prev_position     = math::Vector3::Zero; // position at previous physics step
         math::Quaternion m_prev_rotation;                        // rotation at previous physics step
