@@ -26,6 +26,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "Source/imgui.h"
 #include "World/Entity.h"
 #include "World/Components/Camera.h"
+#include "World/Components/Render.h"
 #include "Input/Input.h"
 #include "Commands/CommandStack.h"
 #include "Commands/CommandTransform.h"
@@ -39,6 +40,7 @@ namespace ImGui::TransformGizmo
     const spartan::math::Vector3 snap_translate = spartan::math::Vector3(0.1f, 0.1f, 0.1f);
     const spartan::math::Vector3 snap_rotate    = spartan::math::Vector3(10.0f, 10.0f, 10.0f); // degrees
     const spartan::math::Vector3 snap_scale     = spartan::math::Vector3(0.1f, 0.1f, 0.1f);
+    const float snap_edge_threshold             = 0.3f; // aabb face-to-face snap distance in world units
 
     bool first_use = true;
     std::vector<spartan::Entity*> entities_being_transformed;
@@ -203,7 +205,84 @@ namespace ImGui::TransformGizmo
             }
 
             transform_matrix.Transposed().Decompose(scale, rotation, position);
-            
+
+            // aabb edge snap: when translating, snap the dragged entity's bounding box
+            // faces to nearby entity faces so objects click together flush
+            if (transform_operation == ImGuizmo::TRANSLATE)
+            {
+                spartan::Render* primary_render = primary_entity->GetComponent<spartan::Render>();
+                if (primary_render)
+                {
+                    spartan::math::Vector3 tentative_delta    = position - initial_position;
+                    const spartan::math::BoundingBox& cur_box = primary_render->GetBoundingBox();
+                    spartan::math::Vector3 aabb_min           = cur_box.GetMin() + tentative_delta;
+                    spartan::math::Vector3 aabb_max           = cur_box.GetMax() + tentative_delta;
+
+                    float best_correction[3] = { 0.0f, 0.0f, 0.0f };
+                    float best_dist[3]       = { FLT_MAX, FLT_MAX, FLT_MAX };
+
+                    for (spartan::Entity* other : spartan::World::GetEntitiesRenderables())
+                    {
+                        bool is_selected = false;
+                        for (spartan::Entity* sel : selected_entities)
+                        {
+                            if (sel == other) { is_selected = true; break; }
+                        }
+                        if (is_selected)
+                            continue;
+
+                        spartan::Render* other_render = other->GetComponent<spartan::Render>();
+                        if (!other_render)
+                            continue;
+
+                        const spartan::math::BoundingBox& other_box = other_render->GetBoundingBox();
+                        float o_min[3] = { other_box.GetMin().x, other_box.GetMin().y, other_box.GetMin().z };
+                        float o_max[3] = { other_box.GetMax().x, other_box.GetMax().y, other_box.GetMax().z };
+                        float s_min[3] = { aabb_min.x, aabb_min.y, aabb_min.z };
+                        float s_max[3] = { aabb_max.x, aabb_max.y, aabb_max.z };
+
+                        for (int axis = 0; axis < 3; axis++)
+                        {
+                            // only snap faces that overlap on the perpendicular axes
+                            int a1 = (axis + 1) % 3;
+                            int a2 = (axis + 2) % 3;
+                            bool overlap = s_min[a1] < o_max[a1] && s_max[a1] > o_min[a1]
+                                        && s_min[a2] < o_max[a2] && s_max[a2] > o_min[a2];
+                            if (!overlap)
+                                continue;
+
+                            float cur_min = (&cur_box.GetMin().x)[axis];
+                            float cur_max = (&cur_box.GetMax().x)[axis];
+
+                            // my min face -> their max face
+                            float d1 = fabsf(s_min[axis] - o_max[axis]);
+                            if (d1 < snap_edge_threshold && d1 < best_dist[axis])
+                            {
+                                best_dist[axis]       = d1;
+                                best_correction[axis] = o_max[axis] - cur_min;
+                            }
+
+                            // my max face -> their min face
+                            float d2 = fabsf(s_max[axis] - o_min[axis]);
+                            if (d2 < snap_edge_threshold && d2 < best_dist[axis])
+                            {
+                                best_dist[axis]       = d2;
+                                best_correction[axis] = o_min[axis] - cur_max;
+                            }
+                        }
+                    }
+
+                    // apply corrections: override the gizmo position on axes that found a snap
+                    for (int axis = 0; axis < 3; axis++)
+                    {
+                        if (best_dist[axis] < snap_edge_threshold)
+                        {
+                            (&position.x)[axis] = (&initial_position.x)[axis] + best_correction[axis];
+                        }
+                    }
+                }
+            }
+
             // calculate deltas from primary entity
             spartan::math::Vector3 position_delta = position - initial_position;
             spartan::math::Quaternion rotation_delta = rotation * initial_rotation.Inverse();
