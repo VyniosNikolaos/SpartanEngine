@@ -561,7 +561,15 @@ namespace spartan
         bool is_grounded          = has_physics_body ? physics_body->IsGrounded() : false;
         bool is_crouching         = button_crouch && is_grounded;
         m_is_walking              = (button_move_forward || button_move_backward || button_move_left || button_move_right) && is_grounded;
-        
+
+        // when transitioning from editor to play mode, snap the camera back to the
+        // controller's eye height so any free-fly offset accumulated in editor is reset
+        if (is_playing && !m_was_playing && has_physics_body && physics_body->GetBodyType() == BodyType::Controller)
+        {
+            GetEntity()->SetPositionLocal(physics_body->GetControllerTopLocal());
+        }
+        m_was_playing = is_playing;
+
         // behavior: control activation and cursor handling
         {
             bool control_initiated  = mouse_click_right_down && mouse_in_viewport;

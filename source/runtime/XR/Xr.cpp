@@ -19,18 +19,18 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
 
-//= INCLUDES ===========================
+//= INCLUDES =========================
 #include "pch.h"
 #include "Xr.h"
 #include "../Rendering/Renderer.h"
 #include "../RHI/RHI_Implementation.h"
 #include "../RHI/RHI_Device.h"
 #if defined(API_GRAPHICS_VULKAN)
-    #define XR_USE_GRAPHICS_API_VULKAN
-    #include <openxr/openxr.h>
-    #include <openxr/openxr_platform.h>
+#define XR_USE_GRAPHICS_API_VULKAN
+#include <openxr/openxr.h>
+#include <openxr/openxr_platform.h>
 #endif
-//======================================
+//====================================
 
 //= NAMESPACES =====
 using namespace std;
@@ -50,8 +50,8 @@ namespace spartan
     uint32_t Xr::m_recommended_height       = 0;
     math::Vector3 Xr::m_head_position       = math::Vector3::Zero;
     math::Quaternion Xr::m_head_orientation = math::Quaternion::Identity;
-    array<XrEyeView, Xr::eye_count> Xr::m_eye_views;
     bool Xr::m_stereo_3d                    = false;
+    array<XrEyeView, Xr::eye_count> Xr::m_eye_views;
 
 #if defined(API_GRAPHICS_VULKAN)
     // openxr state (vulkan implementation)

@@ -196,6 +196,7 @@ namespace spartan
         math::Quaternion m_lerp_to_target_rotation   = math::Quaternion::Identity;
         math::Vector3 m_lerp_from_position           = math::Vector3::Zero;
         math::Quaternion m_lerp_from_rotation        = math::Quaternion::Identity;
+        bool m_was_playing                           = false;
         Entity* m_flashlight                         = nullptr;
         RHI_Viewport m_last_known_viewport;
         math::Frustum m_frustum;
