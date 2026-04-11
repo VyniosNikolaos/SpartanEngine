@@ -332,15 +332,12 @@ namespace spartan
             }
         }
 
-        // debug visualization
-        if (cvar_physics.GetValueAs<bool>())
+        // debug visualization (editor only, skip during play)
+        if (cvar_physics.GetValueAs<bool>() && !Engine::IsFlagSet(EngineMode::Playing))
         {
-            // in editor mode, run a zero-timestep step so physx populates the render buffer
-            if (!Engine::IsFlagSet(EngineMode::Playing))
-            {
-                scene->simulate(0.0f);
-                scene->fetchResults(true);
-            }
+            // run a zero-timestep step so physx populates the render buffer
+            scene->simulate(0.0f);
+            scene->fetchResults(true);
 
             const PxRenderBuffer& rb = scene->getRenderBuffer();
             for (PxU32 i = 0; i < rb.getNbLines(); i++)
