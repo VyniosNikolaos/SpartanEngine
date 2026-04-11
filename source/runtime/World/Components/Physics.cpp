@@ -1,3 +1,4 @@
+
 /*
 Copyright(c) 2015-2026 Panos Karabelas
 
@@ -278,6 +279,16 @@ namespace spartan
                 if (!m_is_static)
                 {
                     TickDynamicBodies(is_playing);
+                }
+                else if (!is_playing)
+                {
+                    for (uint32_t i = 0; i < static_cast<uint32_t>(m_actors.size()); i++)
+                    {
+                        if (PxRigidActor* actor = static_cast<PxRigidActor*>(m_actors[i]))
+                        {
+                            actor->setGlobalPose(to_px_transform(GetEntity()->GetMatrix()));
+                        }
+                    }
                 }
                 break;
         }

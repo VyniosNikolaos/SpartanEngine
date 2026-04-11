@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <World name="liminal_space" description="Shifts your frequency to a nearby reality">
  <Entities>
-  <Entity name="physics_body_camera" id="96622692557092671" active="true" position="-9.6397 -8.35158 -14.2749" rotation="0 0 0 1" scale="1 1 1">
+  <Entity name="physics_body_camera" id="96622692557092671" active="true" position="-3.69608 5.60009 -2.79566" rotation="0 0 0 1" scale="1 1 1">
    <physics mass="1" friction="0.400000006" friction_rolling="0.400000006" restitution="0.200000003" is_static="true" is_kinematic="false" position_lock_x="0" position_lock_y="0" position_lock_z="0" rotation_lock_x="0" rotation_lock_y="0" rotation_lock_z="0" center_of_mass_x="0" center_of_mass_y="0" center_of_mass_z="0" body_type="6" cloth_stiffness="0.899999976" cloth_damping="0.00999999978" cloth_iterations="8" cloth_wind_enabled="true" />
-   <Entity name="component_camera" id="96799266697307222" active="true" position="4.4482 12.5537 9.13868" rotation="-0.0651734 -0.28723 0.0195928 -0.955441" scale="1 1 1">
+   <Entity name="component_camera" id="96799266697307222" active="true" position="0 0.77 0" rotation="-0.0277909 -0.110248 0.00308418 -0.993511" scale="1 1 1">
     <camera aperture="11" shutter_speed="0.00800000038" iso="100" fov_horizontal="1.57079637" near_plane="0.100000001" far_plane="10000" projection="0" flags="17" />
    </Entity>
   </Entity>

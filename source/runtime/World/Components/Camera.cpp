@@ -785,6 +785,13 @@ namespace spartan
             else if (has_physics_body)
             {
                 physics_body->Move(m_movement_speed);
+
+                // keep the camera at eye height on the controller capsule so flying in
+                // editor mode doesn't let the local offset drift from the proper position
+                if (physics_body->GetBodyType() == BodyType::Controller)
+                {
+                    GetEntity()->SetPositionLocal(physics_body->GetControllerTopLocal());
+                }
             }
             else
             {

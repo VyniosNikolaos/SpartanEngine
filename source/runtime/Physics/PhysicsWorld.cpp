@@ -330,9 +330,17 @@ namespace spartan
                 picking::MovePickedBody();
             }
         }
-        else if (cvar_physics.GetValueAs<bool>())
+
+        // debug visualization
+        if (cvar_physics.GetValueAs<bool>())
         {
-            // render debug visuals (accessing while the simulation is running can result in undefined behavior)
+            // in editor mode, run a zero-timestep step so physx populates the render buffer
+            if (!Engine::IsFlagSet(EngineMode::Playing))
+            {
+                scene->simulate(0.0f);
+                scene->fetchResults(true);
+            }
+
             const PxRenderBuffer& rb = scene->getRenderBuffer();
             for (PxU32 i = 0; i < rb.getNbLines(); i++)
             {
