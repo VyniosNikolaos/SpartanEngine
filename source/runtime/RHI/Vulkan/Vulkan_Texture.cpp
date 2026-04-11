@@ -308,6 +308,8 @@ namespace spartan
                 );
         
                 RHI_CommandList::ImmediateExecutionEnd(cmd_list);
+
+                SP_ASSERT_MSG(texture->GetLayout(0) != RHI_Image_Layout::Max, "Layout not set after staging barrier");
             }
             Breadcrumbs::EndMarker(); // buffer_to_image
         
@@ -368,6 +370,8 @@ namespace spartan
         
             // flush
             RHI_CommandList::ImmediateExecutionEnd(cmd_list);
+
+            SP_ASSERT_MSG(GetLayout(0) != RHI_Image_Layout::Max, "Layout not set after transition");
         }
         Breadcrumbs::EndMarker(); // layout_transition
 

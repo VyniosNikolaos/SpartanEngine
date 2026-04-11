@@ -651,6 +651,11 @@ namespace spartan
         return descriptors;
     }
 
+    uint64_t RHI_Device::GetDescriptorSetFrame()
+    {
+        return 0;
+    }
+
     uint64_t RHI_Device::GetBufferDeviceAddress(void* buffer)
     {
         if (buffer)

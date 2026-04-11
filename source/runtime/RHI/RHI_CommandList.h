@@ -123,12 +123,12 @@ namespace spartan
         // buffers
         void SetBufferVertex(const RHI_Buffer* vertex, RHI_Buffer* instance = nullptr);
         void SetBufferIndex(const RHI_Buffer* buffer);
-        void SetBuffer(const uint32_t slot, RHI_Buffer* buffer) const;
-        void SetBuffer(const Renderer_BindingsUav slot, RHI_Buffer* buffer) const { SetBuffer(static_cast<uint32_t>(slot), buffer); }
+        void SetBuffer(const uint32_t slot, RHI_Buffer* buffer);
+        void SetBuffer(const Renderer_BindingsUav slot, RHI_Buffer* buffer) { SetBuffer(static_cast<uint32_t>(slot), buffer); }
 
         // constant buffer
-        void SetConstantBuffer(const uint32_t slot, RHI_Buffer* constant_buffer) const;
-        void SetConstantBuffer(const Renderer_BindingsCb slot, RHI_Buffer* constant_buffer) const { SetConstantBuffer(static_cast<uint32_t>(slot), constant_buffer); }
+        void SetConstantBuffer(const uint32_t slot, RHI_Buffer* constant_buffer);
+        void SetConstantBuffer(const Renderer_BindingsCb slot, RHI_Buffer* constant_buffer) { SetConstantBuffer(static_cast<uint32_t>(slot), constant_buffer); }
 
         // push constant buffer
         void PushConstants(const uint32_t offset, const uint32_t size, const void* data);
@@ -228,7 +228,7 @@ namespace spartan
         std::stack<const char*> m_active_timeblocks;
         std::stack<const char*> m_debug_label_stack;
         std::stack<int32_t> m_breadcrumb_gpu_slots;
-        std::mutex m_mutex_reset;
+        bool m_bind_dynamic = false;
         RHI_PipelineState m_pso;
         std::vector<PendingBarrierInfo> m_pending_barriers;
         RHI_Queue* m_queue = nullptr;

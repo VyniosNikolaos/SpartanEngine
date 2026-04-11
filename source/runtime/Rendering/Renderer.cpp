@@ -605,11 +605,27 @@ namespace spartan
 
             CreateRenderTargets(create_render, create_output, true);
 
-            // the gpu is idle at this point so it's safe to destroy all deferred resources
-            // immediately; this ensures old vkimage handles are freed before any new frame
-            // starts, preventing the driver from reusing handles that still have stale
-            // entries in the layout tracking map
             RHI_Device::DeletionQueueFlush();
+
+            // after recreation the gpu is idle and all images sit in their initial layout
+            // (general or undefined), but the per-texture layout tracking may still hold the
+            // layout from the last frame (e.g. shader_read).  resetting to Max (unknown)
+            // forces the next InsertBarrier to emit an Undefined -> target transition, which
+            // the spec guarantees is always valid regardless of the actual gpu-side layout.
+            for (uint32_t i = 0; i < static_cast<uint32_t>(Renderer_RenderTarget::max); i++)
+            {
+                if (RHI_Texture* rt = GetRenderTarget(static_cast<Renderer_RenderTarget>(i)))
+                {
+                    rt->ClearLayouts();
+                }
+            }
+
+            // the layout reset above invalidates one-shot render targets (luts, cloud noise,
+            // skysphere) because the Undefined transition discards their contents
+            m_pass_state.brdf_lut_produced      = false;
+            m_pass_state.atmosphere_lut_produced = false;
+            m_pass_state.cloud_noise_produced    = false;
+            m_pass_state.sky_first_frame         = true;
 
             CreateSamplers();
         }

@@ -38,11 +38,14 @@ namespace spartan
 
         bool IsReferingToResource(void* resource) const;
         void* GetResource() const { return m_resource; }
+        uint64_t GetLastUsedFrame() const { return m_last_used_frame; }
+        void MarkUsed(uint64_t frame)     { m_last_used_frame = frame; }
 
     private:
         void Update(const std::vector<RHI_DescriptorWithBinding>& descriptors);
 
         std::vector<RHI_DescriptorWithBinding> m_descriptors;
-        void* m_resource = nullptr;
+        void* m_resource          = nullptr;
+        uint64_t m_last_used_frame = 0;
     };
 }

@@ -526,7 +526,7 @@ namespace spartan
         Profiler::m_rhi_bindings_buffer_index++;
     }
     
-    void RHI_CommandList::SetConstantBuffer(const uint32_t slot, RHI_Buffer* constant_buffer) const
+    void RHI_CommandList::SetConstantBuffer(const uint32_t slot, RHI_Buffer* constant_buffer)
     {
         // todo: implement constant buffer binding
     }
@@ -543,7 +543,7 @@ namespace spartan
         cmd_list->SetGraphicsRoot32BitConstants(0, num_32bit_values, data, offset / 4);
     }
 
-    void RHI_CommandList::SetBuffer(const uint32_t slot, RHI_Buffer* buffer) const
+    void RHI_CommandList::SetBuffer(const uint32_t slot, RHI_Buffer* buffer)
     {
         // todo: implement buffer binding
     }

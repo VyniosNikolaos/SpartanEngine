@@ -183,6 +183,7 @@ namespace spartan
             it = descriptor_sets.find(m_binding_hash);
         }
 
+        it->second.MarkUsed(RHI_Device::GetDescriptorSetFrame());
         return it->second.GetResource();
     }
 

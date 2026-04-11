@@ -692,6 +692,7 @@ namespace spartan
         unordered_map<uint64_t, shared_ptr<RHI_DescriptorSetLayout>> layouts;
         unordered_map<uint64_t, shared_ptr<RHI_Pipeline>> pipelines;
         unordered_map<uint64_t, vector<RHI_Descriptor>> descriptor_cache;
+        uint64_t current_frame = 0;
 
         const string pipeline_cache_path = "pipeline_cache.bin";
 
@@ -802,8 +803,8 @@ namespace spartan
 
         void get_descriptors_from_pipeline_state(RHI_PipelineState& pipeline_state, RHI_Descriptor out_descriptors[256], size_t& out_count)
         {
-            pipeline_state.Prepare();
-        
+            SP_ASSERT(pipeline_state.GetHash() != 0);
+
             uint64_t pipeline_state_hash = pipeline_state.GetHash();
             auto cached_descriptors_it = descriptor_cache.find(pipeline_state_hash);
         
@@ -1734,6 +1735,31 @@ namespace spartan
         // make sure to call vmaSetCurrentFrameIndex() every frame
         // budget is queried from Vulkan inside of it to avoid overhead of querying it with every allocation
         vmaSetCurrentFrameIndex(vulkan_memory_allocator::allocator, static_cast<uint32_t>(frame_count));
+
+        descriptors::current_frame = frame_count;
+
+        // evict descriptor sets unused for 300+ frames to prevent unbounded growth
+        constexpr uint64_t max_unused_frames = 300;
+        if (frame_count % 60 == 0)
+        {
+            lock_guard<mutex> lock(descriptors::descriptor_pipeline_mutex);
+            for (auto it = descriptors::sets.begin(); it != descriptors::sets.end();)
+            {
+                if (frame_count - it->second.GetLastUsedFrame() > max_unused_frames)
+                {
+                    it = descriptors::sets.erase(it);
+                }
+                else
+                {
+                    ++it;
+                }
+            }
+        }
+    }
+
+    uint64_t RHI_Device::GetDescriptorSetFrame()
+    {
+        return descriptors::current_frame;
     }
 
     void RHI_Device::Destroy()
@@ -2082,7 +2108,7 @@ namespace spartan
 
     void RHI_Device::GetOrCreatePipeline(RHI_PipelineState& pso, RHI_Pipeline*& pipeline, RHI_DescriptorSetLayout*& descriptor_set_layout)
     {
-        pso.Prepare();
+        SP_ASSERT(pso.GetHash() != 0);
 
         lock_guard<mutex> lock(descriptors::descriptor_pipeline_mutex);
 
