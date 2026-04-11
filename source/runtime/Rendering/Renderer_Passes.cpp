@@ -535,7 +535,7 @@ namespace spartan
 
                 cmd_list->SetBufferIndex(GeometryBuffer::GetIndexBuffer());
                 cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_data_out, GetBuffer(Renderer_Buffer::IndirectDrawDataOut));
-                cmd_list->SetCullMode(RHI_CullMode::Back);
+                cmd_list->SetCullMode(RHI_CullMode::None);
 
                 cmd_list->DrawIndexedIndirectCount(
                     GetBuffer(Renderer_Buffer::IndirectDrawArgsOut),
@@ -667,7 +667,7 @@ namespace spartan
 
                 cmd_list->SetBufferIndex(GeometryBuffer::GetIndexBuffer());
                 cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_data_out, GetBuffer(Renderer_Buffer::IndirectDrawDataOut));
-                cmd_list->SetCullMode(RHI_CullMode::Back);
+                cmd_list->SetCullMode(RHI_CullMode::None);
 
                 cmd_list->DrawIndexedIndirectCount(
                     GetBuffer(Renderer_Buffer::IndirectDrawArgsOut),
