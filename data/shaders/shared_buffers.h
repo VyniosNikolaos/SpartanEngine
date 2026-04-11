@@ -177,7 +177,7 @@ struct MaterialParameters
     SHARED_FLOAT sheen;
     SHARED_FLOAT local_height    SHARED_DEFAULT(0.0f);
     SHARED_FLOAT world_space_uv  SHARED_DEFAULT(0.0f);
-    SHARED_FLOAT padding2;
+    SHARED_FLOAT uv_rotation    SHARED_DEFAULT(0.0f);
 
     SHARED_FLOAT anisotropic;
     SHARED_FLOAT anisotropic_rotation;

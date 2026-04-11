@@ -170,7 +170,12 @@ gbuffer main_ps(gbuffer_vertex vertex, bool is_front_face : SV_IsFrontFace)
         
         // branchless inversion
         float2 invert_mask = step(0.5f, material.invert_uv);
-        vertex.uv_misc.xy  = lerp(uv_world, 1.0f - frac(uv_world) + floor(uv_world), invert_mask);
+        uv_world           = lerp(uv_world, 1.0f - frac(uv_world) + floor(uv_world), invert_mask);
+
+        if (material.uv_rotation != 0.0f)
+            uv_world = rotate_uv_90(uv_world, material.uv_rotation);
+
+        vertex.uv_misc.xy = uv_world;
     }
 
     // albedo sampling

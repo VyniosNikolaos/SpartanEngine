@@ -201,6 +201,17 @@ float2 uv_to_ndc(float2 uv)
     return float2(uv.x * 2.0f - 1.0f, 1.0f - uv.y * 2.0f); // flip y for dx style
 }
 
+// rotate uv in 90 degree increments: 0 = 0, 1 = 90, 2 = 180, 3 = 270
+float2 rotate_uv_90(float2 uv, float rotation_index)
+{
+    uint r = uint(rotation_index) & 3;
+    float2 centered = uv - 0.5f;
+    float2 rotated  = centered;
+    if (r == 1)      rotated = float2(-centered.y,  centered.x); // 90 ccw
+    else if (r == 2) rotated = float2(-centered.x, -centered.y); // 180
+    else if (r == 3) rotated = float2( centered.y, -centered.x); // 270 ccw
+    return rotated + 0.5f;
+}
 
 /*------------------------------------------------------------------------------
     NORMAL

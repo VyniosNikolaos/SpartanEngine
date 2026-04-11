@@ -1638,6 +1638,14 @@ void Properties::ShowMaterial(Material* material) const
             ImGuiSp::toggle_switch("##invertY", &invert_y);
         }
 
+        // rotation
+        static vector<string> rotation_options = { "0", "90", "180", "270" };
+        uint32_t rotation_index = static_cast<uint32_t>(material->GetProperty(MaterialProperty::TextureRotation));
+        if (property_combo("Rotation", rotation_options, &rotation_index, "rotate texture in 90 degree increments"))
+        {
+            material->SetProperty(MaterialProperty::TextureRotation, static_cast<float>(rotation_index));
+        }
+
         layout::separator();
         layout::section_header("Rendering Options");
 

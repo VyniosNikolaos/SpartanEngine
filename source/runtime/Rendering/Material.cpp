@@ -81,6 +81,7 @@ namespace spartan
                 case MaterialProperty::TextureOffsetY:             return "texture_offset_y";
                 case MaterialProperty::TextureInvertX:             return "texture_invert_x";
                 case MaterialProperty::TextureInvertY:             return "texture_invert_y";
+                case MaterialProperty::TextureRotation:            return "texture_rotation";
         
                 // Special effects
                 case MaterialProperty::IsTerrain:                  return "texture_slope_based";

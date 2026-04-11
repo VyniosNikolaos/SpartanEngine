@@ -355,6 +355,11 @@ gbuffer_vertex transform_to_world_space(Vertex_PosUvNorTan input, uint instance_
     // apply UV inversion: mirror along axis if enabled
     float2 invert_mask = step(0.5f, material.invert_uv);
     uv                 = lerp(uv, 2.0f * floor(uv) + 1.0f - uv, invert_mask);
+
+    // apply 90 degree rotation increments
+    if (material.uv_rotation != 0.0f)
+        uv = rotate_uv_90(uv, material.uv_rotation);
+
     vertex.uv_misc.xy  = uv;
     
     // compute width and height percent for grass blade positioning

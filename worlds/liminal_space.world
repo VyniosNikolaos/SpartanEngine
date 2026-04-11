@@ -3,7 +3,7 @@
  <Entities>
   <Entity name="physics_body_camera" id="96622692557092671" active="true" position="-7.71893 2.01 15.9111" rotation="0 0 0 1" scale="1 1 1">
    <audio_source path="project/music/footsteps_tiles.wav" is_3d="false" mute="false" loop="false" play_on_start="false" volume="0.5" pitch="1.02934587" reverb_enabled="false" reverb_room_size="0.5" reverb_decay="0.5" reverb_wet="0.300000012" />
-   <physics mass="1" friction="0.400000006" friction_rolling="0.400000006" restitution="0.200000003" is_static="true" is_kinematic="false" position_lock_x="0" position_lock_y="0" position_lock_z="0" rotation_lock_x="0" rotation_lock_y="0" rotation_lock_z="0" center_of_mass_x="0" center_of_mass_y="0" center_of_mass_z="0" body_type="6" cloth_stiffness="0.899999976" cloth_damping="0.00999999978" cloth_iterations="8" cloth_wind_enabled="true" />
+   <physics mass="1" friction="0.400000006" friction_rolling="0.400000006" restitution="0.200000003" is_static="false" is_kinematic="false" position_lock_x="0" position_lock_y="0" position_lock_z="0" rotation_lock_x="0" rotation_lock_y="0" rotation_lock_z="0" center_of_mass_x="0" center_of_mass_y="0" center_of_mass_z="0" body_type="6" cloth_stiffness="0.899999976" cloth_damping="0.00999999978" cloth_iterations="8" cloth_wind_enabled="true" />
    <Entity name="component_camera" id="96799266697307222" active="true" position="0.00477751 0.776339 0" rotation="0.0321109 0.20278 -0.00665322 0.978675" scale="1 1 1">
     <camera aperture="11" shutter_speed="0.00800000038" iso="100" fov_horizontal="1.57079637" near_plane="0.100000001" far_plane="10000" projection="0" flags="17" />
     <script file_path="../worlds/footsteps.lua" />

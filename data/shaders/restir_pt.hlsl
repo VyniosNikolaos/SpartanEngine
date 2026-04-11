@@ -683,6 +683,8 @@ void closest_hit(inout PathPayload payload : SV_RayPayload, in BuiltInTriangleIn
     float3 tangent_world   = normalize(mul(tangent_object, obj_to_world));
 
     texcoord = texcoord * mat.tiling + mat.offset;
+    if (mat.uv_rotation != 0.0f)
+        texcoord = rotate_uv_90(texcoord, mat.uv_rotation);
 
     float dist      = RayTCurrent();
     float mip_level = clamp(log2(max(dist * 0.5f, 1.0f)), 0.0f, 4.0f);

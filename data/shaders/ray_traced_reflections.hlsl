@@ -186,6 +186,9 @@ void closest_hit(inout Payload payload : SV_RayPayload, in BuiltInTriangleInters
     {
         texcoord = texcoord * mat.tiling + mat.offset;
     }
+
+    if (mat.uv_rotation != 0.0f)
+        texcoord = rotate_uv_90(texcoord, mat.uv_rotation);
     
     // normal mapping
     if (mat.has_texture_normal())

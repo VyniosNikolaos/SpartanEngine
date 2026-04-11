@@ -84,6 +84,7 @@ namespace spartan
         TextureOffsetY,             // offset along y axis
         TextureInvertX,             // invert texture along x axis (mirror horizontally)
         TextureInvertY,             // invert texture along y axis (mirror vertically)
+        TextureRotation,            // rotate texture in 90 degree increments (0, 90, 180, 270)
     
         // special effects
         IsTerrain,                  // slope-based texture mapping
