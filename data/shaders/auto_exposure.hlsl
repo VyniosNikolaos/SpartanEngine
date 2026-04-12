@@ -77,19 +77,18 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
         avg_nits = exp2(weighted_log_sum / max(weight_sum, 0.000001f));
     }
 
-    // 2. auto exposure works on top of the manual camera exposure, so the target is in post-camera scene-linear space
+    // 2. keep the existing camera-relative metering so artistic exposure choices remain intact
     float camera_exposure   = max(buffer_frame.camera_exposure, 0.000001f);
     float current_brightness = avg_nits * camera_exposure;
 
-    // 3. target middle gray so auto exposure refines the camera settings
-    // instead of pushing every scene toward a bright daytime look.
+    // 3. target middle gray using the final exposure value that the renderer applies.
+    // storing the resolved exposure keeps temporal upscalers in sync with output.
     const float target_luminance = 0.18f;
 
-    // 4. compute the ae multiplier needed to bring the current average toward middle gray
+    // 4. compute the camera-relative auto exposure trim
     float desired_exposure = target_luminance / max(current_brightness, 0.000001f);
 
-    // 5. keep auto exposure as a trim around the physical camera settings.
-    // this preserves intentionally dark scenes such as night shots.
+    // 5. clamp the auto exposure trim to a practical range
     const float min_ev = -4.0f; 
     const float max_ev =  3.0f;
 
@@ -98,19 +97,20 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
 
     desired_exposure = clamp(desired_exposure, min_exposure, max_exposure);
 
-    // 6. temporal adaptation in ev space so large changes remain stable
+    // 6. resolve the final exposure and adapt it in ev space so large changes remain stable
+    float desired_total_exposure = camera_exposure * desired_exposure;
     float prev_exposure = tex2.Load(int3(0, 0, 0)).r;
     float adaptation_speed = pass_get_f3_value().x;
     
     // start from the current target to avoid a first-frame flash
     if (isnan(prev_exposure) || prev_exposure <= 0.0f)
     {
-        prev_exposure = desired_exposure;
+        prev_exposure = desired_total_exposure;
     }
 
     // higher values should adapt faster, so the response scales with the user-controlled speed directly
     float prev_ev          = log2(max(prev_exposure, 0.000001f));
-    float desired_ev       = log2(max(desired_exposure, 0.000001f));
+    float desired_ev       = log2(max(desired_total_exposure, 0.000001f));
     float adaptation_alpha = 1.0f - exp(-max(adaptation_speed, 0.0f) * 4.0f * buffer_frame.delta_time);
     float exposure         = exp2(lerp(prev_ev, desired_ev, adaptation_alpha));
 

@@ -111,13 +111,18 @@ namespace spartan
         float far_plane                      = 1.0f;
         bool dirty_orthographic_projection   = true;
 
+        float sanitize_resolution_scale(float scale)
+        {
+            return clamp(scale, 0.5f, 1.0f);
+        }
+
         void dynamic_resolution()
         {
             if (cvar_dynamic_resolution.GetValue() != 0.0f)
             {
                 float gpu_time_target   = 16.67f;                                               // target for 60 FPS
                 float adjustment_factor = static_cast<float>(0.05f * Timer::GetDeltaTimeSec()); // how aggressively to adjust screen percentage
-                float screen_percentage = cvar_resolution_scale.GetValue();
+                float screen_percentage = Renderer::GetResolutionScale();
                 float gpu_time          = Profiler::GetTimeGpuLast();
 
                 if (gpu_time < gpu_time_target) // gpu is under target, increase resolution
@@ -129,9 +134,7 @@ namespace spartan
                     screen_percentage -= adjustment_factor * (gpu_time - gpu_time_target);
                 }
 
-                // clamp screen_percentage to a reasonable range
-                screen_percentage = clamp(screen_percentage, 0.5f, 1.0f);
-
+                screen_percentage = sanitize_resolution_scale(screen_percentage);
                 ConsoleRegistry::Get().SetValueFromString("r.resolution_scale", to_string(screen_percentage));
             }
         }
@@ -272,7 +275,7 @@ namespace spartan
         {
             swapchain->AcquireNextImage();
             RHI_Device::Tick(frame_num);
-            RHI_VendorTechnology::Tick(&m_cb_frame_cpu, GetResolutionRender(), GetResolutionOutput(), cvar_resolution_scale.GetValue());
+            RHI_VendorTechnology::Tick(&m_cb_frame_cpu, GetResolutionRender(), GetResolutionOutput(), GetResolutionScale());
             dynamic_resolution();
 
             // breadcrumbs
@@ -654,6 +657,17 @@ namespace spartan
         }
     }
 
+    float Renderer::GetResolutionScale()
+    {
+        return sanitize_resolution_scale(cvar_resolution_scale.GetValue());
+    }
+
+    uint32_t Renderer::GetScaledDimension(uint32_t dimension, float scale /*= -1.0f*/)
+    {
+        scale = scale < 0.0f ? GetResolutionScale() : sanitize_resolution_scale(scale);
+        return max(static_cast<uint32_t>(static_cast<float>(dimension) * scale), 1u);
+    }
+
     void Renderer::RecreateRenderTargets()
     {
         if (m_cb_frame_cpu.frame > 1)
@@ -740,7 +754,7 @@ namespace spartan
         m_cb_frame_cpu.time                = Timer::GetTimeSec();
         m_cb_frame_cpu.delta_time          = static_cast<float>(Timer::GetDeltaTimeSec());
         m_cb_frame_cpu.frame               = static_cast<uint32_t>(frame_num);
-        m_cb_frame_cpu.resolution_scale    = cvar_resolution_scale.GetValue();
+        m_cb_frame_cpu.resolution_scale    = GetResolutionScale();
         m_cb_frame_cpu.restir_pt_scale     = cvar_restir_pt_scale.GetValue();
         m_cb_frame_cpu.hdr_enabled         = cvar_hdr.GetValueAs<bool>() ? 1.0f : 0.0f;
         m_cb_frame_cpu.hdr_max_nits        = Display::GetLuminanceMax();

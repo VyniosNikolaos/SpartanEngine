@@ -619,7 +619,7 @@ namespace spartan
                 }
             }
 
-            float resolution_scale = cvar_resolution_scale.GetValue();
+            float resolution_scale = Renderer::GetResolutionScale();
             cmd_list->Blit(tex_depth, tex_depth_output, false, resolution_scale);
 
             // early transitions
@@ -804,7 +804,7 @@ namespace spartan
             cmd_list->SetPipelineState(pso);
             SetCommonTextures(cmd_list);
             cmd_list->SetTexture(Renderer_BindingsUav::tex, tex_ssao);
-            cmd_list->Dispatch(tex_ssao, cvar_resolution_scale.GetValue());
+            cmd_list->Dispatch(tex_ssao, Renderer::GetResolutionScale());
         }
         cmd_list->EndTimeblock();
     }
@@ -1404,7 +1404,7 @@ namespace spartan
             m_pcb_pass_cpu.set_f3_value(static_cast<float>(m_count_active_lights), cvar_fog.GetValue());
             cmd_list->PushConstants(m_pcb_pass_cpu);
 
-            cmd_list->Dispatch(light_diffuse, cvar_resolution_scale.GetValue());
+            cmd_list->Dispatch(light_diffuse, Renderer::GetResolutionScale());
             cmd_list->InsertBarrier(light_specular,   RHI_BarrierType::EnsureWriteThenRead);
             cmd_list->InsertBarrier(light_volumetric, RHI_BarrierType::EnsureWriteThenRead);
         }
@@ -1441,7 +1441,7 @@ namespace spartan
             cmd_list->SetTexture(Renderer_BindingsSrv::tex4, tex_light_specular);
             cmd_list->SetTexture(Renderer_BindingsSrv::tex5, tex_light_volumetric);
             cmd_list->SetTexture(Renderer_BindingsSrv::tex6, tex_gi);
-            cmd_list->Dispatch(tex_out, cvar_resolution_scale.GetValue());
+            cmd_list->Dispatch(tex_out, Renderer::GetResolutionScale());
         }
         cmd_list->EndTimeblock();
     }
@@ -1466,7 +1466,7 @@ namespace spartan
 
             m_pcb_pass_cpu.set_f3_value(static_cast<float>(GetRenderTarget(Renderer_RenderTarget::skysphere)->GetMipCount()));
             cmd_list->PushConstants(m_pcb_pass_cpu);
-            cmd_list->Dispatch(tex_out, cvar_resolution_scale.GetValue());
+            cmd_list->Dispatch(tex_out, Renderer::GetResolutionScale());
         }
         cmd_list->EndTimeblock();
     }
@@ -1925,7 +1925,7 @@ namespace spartan
         RHI_Texture* tex_out         = GetRenderTarget(Renderer_RenderTarget::frame_output);
         RHI_Texture* tex_velocity    = GetRenderTarget(Renderer_RenderTarget::gbuffer_velocity);
         RHI_Texture* tex_depth       = GetRenderTarget(Renderer_RenderTarget::gbuffer_depth);
-        const float resolution_scale = cvar_resolution_scale.GetValue();
+        const float resolution_scale = Renderer::GetResolutionScale();
 
         cmd_list->BeginTimeblock("aa_upscale");
         {

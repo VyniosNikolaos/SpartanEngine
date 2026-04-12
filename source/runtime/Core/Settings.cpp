@@ -72,7 +72,14 @@ namespace spartan
                 {
                     if (name.size() >= 2 && name[0] == 'r' && name[1] == '.')
                     {
-                        root.append_child(cvar_name_to_xml(string(name).c_str()).c_str()).text().set(get<float>(*cvar.m_value_ptr));
+                        float value = get<float>(*cvar.m_value_ptr);
+
+                        if (name == "r.resolution_scale" && cvar_dynamic_resolution.GetValueAs<bool>())
+                        {
+                            value = 1.0f;
+                        }
+
+                        root.append_child(cvar_name_to_xml(string(name).c_str()).c_str()).text().set(value);
                     }
                 }
 
@@ -106,6 +113,7 @@ namespace spartan
 
                 Renderer::SetResolutionRender(root.child("ResolutionRenderWidth").text().as_int(), root.child("ResolutionRenderHeight").text().as_int());
                 Renderer::SetResolutionOutput(root.child("ResolutionOutputWidth").text().as_int(), root.child("ResolutionOutputHeight").text().as_int());
+                bool dynamic_resolution = root.child("r_dynamic_resolution").text().as_bool();
 
                 // load render options from xml
                 for (const auto& [name, cvar] : ConsoleRegistry::Get().GetAll())
@@ -115,7 +123,14 @@ namespace spartan
                         pugi::xml_node child = root.child(cvar_name_to_xml(string(name).c_str()).c_str());
                         if (child)
                         {
-                            ConsoleRegistry::Get().SetValueFromString(string(name).c_str(), child.text().as_string());
+                            if (name == "r.resolution_scale" && dynamic_resolution)
+                            {
+                                ConsoleRegistry::Get().SetValueFromString(string(name).c_str(), "1.0");
+                            }
+                            else
+                            {
+                                ConsoleRegistry::Get().SetValueFromString(string(name).c_str(), child.text().as_string());
+                            }
                         }
                     }
                 }

@@ -168,9 +168,8 @@ namespace spartan
 
             if (pso.resolution_scale)
             { 
-                float resolution_scale = cvar_resolution_scale.GetValue();
-                *width                 = static_cast<uint32_t>(*width * resolution_scale);
-                *height                = static_cast<uint32_t>(*height * resolution_scale);
+                *width  = Renderer::GetScaledDimension(*width);
+                *height = Renderer::GetScaledDimension(*height);
             }
         }
     }

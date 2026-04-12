@@ -1296,7 +1296,7 @@ namespace spartan
         if (m_pso.render_target_depth_texture != nullptr)
         {
             RHI_Texture* rt = m_pso.render_target_depth_texture;
-            if (cvar_resolution_scale.GetValue() == 1.0f)
+            if (Renderer::GetResolutionScale() == 1.0f)
             { 
                 SP_ASSERT_MSG(rt->GetWidth() == rendering_info.renderArea.extent.width, "The depth buffer doesn't match the output resolution");
             }
@@ -1634,8 +1634,8 @@ namespace spartan
         for (uint32_t mip_index = 0; mip_index < blit_region_count; mip_index++)
         {
             VkOffset3D& source_blit_size = blit_offsets_source[mip_index];
-            source_blit_size.x           = static_cast<int32_t>(source->GetWidth()  * source_scaling) >> mip_index;
-            source_blit_size.y           = static_cast<int32_t>(source->GetHeight() * source_scaling) >> mip_index;
+            source_blit_size.x           = static_cast<int32_t>(Renderer::GetScaledDimension(source->GetWidth(), source_scaling)) >> mip_index;
+            source_blit_size.y           = static_cast<int32_t>(Renderer::GetScaledDimension(source->GetHeight(), source_scaling)) >> mip_index;
             source_blit_size.z           = 1;
 
             VkOffset3D& destination_blit_size = blit_offsets_destination[mip_index];

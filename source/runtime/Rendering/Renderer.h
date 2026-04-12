@@ -157,6 +157,8 @@ namespace spartan
         // resolution output
         static const math::Vector2& GetResolutionOutput();
         static void SetResolutionOutput(uint32_t width, uint32_t height, bool recreate_resources = true);
+        static float GetResolutionScale();
+        static uint32_t GetScaledDimension(uint32_t dimension, float scale = -1.0f);
 
         // force render target recreation (e.g. when xr stereo mode changes)
         static void RecreateRenderTargets();

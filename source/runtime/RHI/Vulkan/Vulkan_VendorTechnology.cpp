@@ -29,6 +29,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "../RHI_Pipeline.h"
 #include "../RHI_Shader.h"
 #include "../Rendering/Renderer.h"
+#include "../../Rendering/Color.h"
+#include "../../World/World.h"
 #include "../World/Components/Camera.h"
 SP_WARNINGS_OFF
 #ifdef _WIN32
@@ -57,6 +59,25 @@ namespace spartan
         uint32_t resolution_output_height     = 0;
         bool reset_history                    = false;
         float resolution_scale                = 1.0f;
+
+        RHI_Texture* get_upscaler_exposure_texture(RHI_CommandList* cmd_list)
+        {
+            RHI_Texture* texture = Renderer::GetRenderTarget(Renderer_RenderTarget::auto_exposure_previous);
+            SP_ASSERT(texture != nullptr);
+
+            const bool auto_exposure_enabled = cvar_auto_exposure_adaptation_speed.GetValue() > 0.0f;
+            const float camera_exposure      = World::GetCamera() ? World::GetCamera()->GetExposure() : 1.0f;
+            const float exposure             = max(camera_exposure, 0.000001f);
+
+            if (!auto_exposure_enabled || reset_history)
+            {
+                cmd_list->ClearTexture(texture, Color(exposure, exposure, exposure, 1.0f));
+            }
+
+            texture->SetLayout(RHI_Image_Layout::Shader_Read, cmd_list);
+
+            return texture;
+        }
     }
 
     namespace intel
@@ -132,7 +153,7 @@ namespace spartan
             intel::params_init.outputResolution.x = common::resolution_output_width;
             intel::params_init.outputResolution.y = common::resolution_output_height;
             intel::params_init.qualitySetting     = intel::get_quality(scale_factor);
-            intel::params_init.initFlags          = XESS_INIT_FLAG_USE_NDC_VELOCITY | XESS_INIT_FLAG_INVERTED_DEPTH;
+            intel::params_init.initFlags          = XESS_INIT_FLAG_USE_NDC_VELOCITY | XESS_INIT_FLAG_INVERTED_DEPTH | XESS_INIT_FLAG_EXPOSURE_SCALE_TEXTURE;
             intel::params_init.creationNodeMask   = 0;
             intel::params_init.visibleNodeMask    = 0;
             intel::params_init.tempBufferHeap     = VK_NULL_HANDLE;
@@ -689,8 +710,8 @@ namespace spartan
             common::resolution_scale = resolution_scale;
 
             // update per-frame scaled render dimensions (used by dispatch)
-            common::resolution_render_width  = static_cast<uint32_t>(resolution_render.x * resolution_scale);
-            common::resolution_render_height = static_cast<uint32_t>(resolution_render.y * resolution_scale);
+            common::resolution_render_width  = Renderer::GetScaledDimension(static_cast<uint32_t>(resolution_render.x), resolution_scale);
+            common::resolution_render_height = Renderer::GetScaledDimension(static_cast<uint32_t>(resolution_render.y), resolution_scale);
 
             // check if the base (unscaled) render or output resolution changed
             // scale changes don't require context recreation since FSR3 has dynamic resolution enabled
@@ -717,6 +738,7 @@ namespace spartan
                     RHI_Device::QueueWaitAll();
                     amd::upscaler::context_create();
                     intel::context_create();
+                    common::reset_history = true;
                 }
             }
         }
@@ -798,6 +820,8 @@ namespace spartan
     )
     {
     #ifdef _WIN32
+        RHI_Texture* tex_exposure = common::get_upscaler_exposure_texture(cmd_list);
+
         tex_color->SetLayout(RHI_Image_Layout::Shader_Read, cmd_list);
         tex_velocity->SetLayout(RHI_Image_Layout::Shader_Read, cmd_list);
         tex_depth->SetLayout(RHI_Image_Layout::Shader_Read, cmd_list);
@@ -808,7 +832,7 @@ namespace spartan
         intel::params_execute.depthTexture               = intel::to_xess_image_view(tex_depth);
         intel::params_execute.velocityTexture            = intel::to_xess_image_view(tex_velocity);
         intel::params_execute.outputTexture              = intel::to_xess_image_view(tex_output);
-        intel::params_execute.exposureScaleTexture       = intel::to_xess_image_view(Renderer::GetStandardTexture(Renderer_StandardTexture::Black)); // neutralize and control via float
+        intel::params_execute.exposureScaleTexture       = intel::to_xess_image_view(tex_exposure);
         intel::params_execute.responsivePixelMaskTexture = intel::to_xess_image_view(Renderer::GetStandardTexture(Renderer_StandardTexture::Black)); // neutralize and control via float
         intel::params_execute.jitterOffsetX              = intel::jitter.x;
         intel::params_execute.jitterOffsetY              = intel::jitter.y;
@@ -836,7 +860,8 @@ namespace spartan
         // get jitter phase count
         const uint32_t resolution_render_x = static_cast<uint32_t>(amd::upscaler::description_context.maxRenderSize.width);
         const uint32_t resolution_render_y = static_cast<uint32_t>(amd::upscaler::description_context.maxRenderSize.height);
-        const int32_t jitter_phase_count   = ffxFsr3GetJitterPhaseCount(resolution_render_x, resolution_render_x);
+        const uint32_t resolution_output_x = static_cast<uint32_t>(amd::upscaler::description_context.maxUpscaleSize.width);
+        const int32_t jitter_phase_count   = ffxFsr3GetJitterPhaseCount(resolution_render_x, resolution_output_x);
 
         // ensure fsr3_jitter_index is properly wrapped around the jitter_phase_count
         amd::upscaler::jitter_index = (amd::upscaler::jitter_index + 1) % jitter_phase_count;
@@ -863,20 +888,14 @@ namespace spartan
     )
     {
     #ifdef _WIN32
-        RHI_Texture* tex_exposure = cvar_auto_exposure_adaptation_speed.GetValue() > 0.0f ? Renderer::GetRenderTarget(Renderer_RenderTarget::auto_exposure_previous) : nullptr;
-
-        if (tex_exposure)
-        {
-            tex_exposure->SetLayout(RHI_Image_Layout::Shader_Read, cmd_list);
-        }
+        RHI_Texture* tex_exposure = common::get_upscaler_exposure_texture(cmd_list);
 
         // set resources (no need for the transparency or reactive masks as we do them later, full res)
         amd::upscaler::description_dispatch.commandList                   = amd::to_cmd_list(cmd_list);
         amd::upscaler::description_dispatch.color                         = amd::to_resource(tex_color,                                                         L"fsr3_color");
         amd::upscaler::description_dispatch.depth                         = amd::to_resource(tex_depth,                                                         L"fsr3_depth");
         amd::upscaler::description_dispatch.motionVectors                 = amd::to_resource(tex_velocity,                                                      L"fsr3_velocity");
-        amd::upscaler::description_dispatch.exposure                      = tex_exposure ? amd::to_resource(tex_exposure,                                      L"fsr3_exposure")
-                                                                                      : amd::to_resource(nullptr,                                           L"fsr3_exposure");
+        amd::upscaler::description_dispatch.exposure                      = amd::to_resource(tex_exposure,                                                      L"fsr3_exposure");
         amd::upscaler::description_dispatch.reactive                      = amd::to_resource(nullptr,                                                           L"fsr3_reactive");
         amd::upscaler::description_dispatch.transparencyAndComposition    = amd::to_resource(nullptr,                                                           L"fsr3_transaprency_and_composition");
         amd::upscaler::description_dispatch.dilatedDepth                  = amd::to_resource(amd::upscaler::texture_depth_dilated.get(),                        L"fsr3_depth_dilated");
@@ -893,9 +912,13 @@ namespace spartan
         amd::upscaler::description_dispatch.preExposure            = 1.0f;                     // input color is not pre-exposed before upscaling
         amd::upscaler::description_dispatch.renderSize.width       = common::resolution_render_width;
         amd::upscaler::description_dispatch.renderSize.height      = common::resolution_render_height;
+        amd::upscaler::description_dispatch.upscaleSize.width      = common::resolution_output_width;
+        amd::upscaler::description_dispatch.upscaleSize.height     = common::resolution_output_height;
         amd::upscaler::description_dispatch.cameraNear             = camera->GetFarPlane();    // far as near because we are using reverse-z
         amd::upscaler::description_dispatch.cameraFar              = camera->GetNearPlane();   // near as far because we are using reverse-z
         amd::upscaler::description_dispatch.cameraFovAngleVertical = camera->GetFovVerticalRad();
+        amd::upscaler::description_dispatch.viewSpaceToMetersFactor = 1.0f;
+        amd::upscaler::description_dispatch.flags                  = 0;
         
         // reset history
         amd::upscaler::description_dispatch.reset = common::reset_history;

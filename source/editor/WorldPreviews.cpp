@@ -11,6 +11,7 @@
 #include "FileSystem/FileSystem.h"
 #include "Rendering/Renderer.h"
 #include "Resource/ResourceCache.h"
+#include "RHI/RHI_Device.h"
 #include "RHI/RHI_Texture.h"
 #include "World/World.h"
 
@@ -320,6 +321,16 @@ void WorldPreviews::Tick()
 void WorldPreviews::Shutdown()
 {
     clear_request();
+
+    spartan::RHI_Device::QueueWaitAll();
+    for (auto& [path, texture] : preview_textures)
+    {
+        if (texture)
+        {
+            texture->DestroyResourceImmediate();
+        }
+    }
+
     preview_textures.clear();
 }
 

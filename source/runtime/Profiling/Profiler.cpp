@@ -543,7 +543,7 @@ namespace spartan
                 static_cast<uint32_t>(Display::GetLuminanceMax()),
                 static_cast<uint32_t>(res_render.x),
                 static_cast<uint32_t>(res_render.y),
-                cvar_resolution_scale.GetValue() * 100.0f,
+                Renderer::GetResolutionScale() * 100.0f,
                 static_cast<uint32_t>(res_output.x),
                 static_cast<uint32_t>(res_output.y),
                 static_cast<uint32_t>(vp.width),

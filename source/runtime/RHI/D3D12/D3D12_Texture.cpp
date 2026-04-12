@@ -420,4 +420,9 @@ namespace spartan
 
         m_rhi_srv = nullptr;
     }
+
+    void RHI_Texture::DestroyResourceImmediate()
+    {
+        RHI_DestroyResource();
+    }
 }

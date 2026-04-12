@@ -392,10 +392,10 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
     const float luminous_efficacy = 683.0f;
     color.rgb *= luminous_efficacy; 
 
-    // apply exposure (camera and auto-exposure)
-    // applied in nits domain, so physical camera units work correctly
-    float exposure = is_auto_exposure ? tex2.Load(int3(0, 0, 0)).r : 1.0f;
-    color.rgb     *= buffer_frame.camera_exposure * exposure;
+    // apply exposure
+    // auto exposure stores the resolved final scale, while manual mode falls back to the camera settings
+    float exposure = is_auto_exposure ? tex2.Load(int3(0, 0, 0)).r : buffer_frame.camera_exposure;
+    color.rgb     *= exposure;
     
     // check hdr state
     bool is_hdr    = buffer_frame.hdr_enabled != 0.0f;

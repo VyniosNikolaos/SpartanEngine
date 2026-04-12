@@ -496,4 +496,61 @@ namespace spartan
         RHI_Device::DeletionQueueAdd(RHI_Resource_Type::Image, m_rhi_resource);
         m_rhi_resource = nullptr;
     }
+
+    void RHI_Texture::DestroyResourceImmediate()
+    {
+        if (m_rhi_srv)
+        {
+            vkDestroyImageView(RHI_Context::device, static_cast<VkImageView>(m_rhi_srv), nullptr);
+            m_rhi_srv = nullptr;
+        }
+
+        for (uint32_t i = 0; i < m_mip_count; i++)
+        {
+            if (m_rhi_srv_mips[i])
+            {
+                vkDestroyImageView(RHI_Context::device, static_cast<VkImageView>(m_rhi_srv_mips[i]), nullptr);
+                m_rhi_srv_mips[i] = nullptr;
+            }
+        }
+
+        for (uint32_t i = 0; i < rhi_max_render_target_count; i++)
+        {
+            if (m_rhi_srv_layers[i])
+            {
+                vkDestroyImageView(RHI_Context::device, static_cast<VkImageView>(m_rhi_srv_layers[i]), nullptr);
+                m_rhi_srv_layers[i] = nullptr;
+            }
+
+            if (m_rhi_dsv[i])
+            {
+                vkDestroyImageView(RHI_Context::device, static_cast<VkImageView>(m_rhi_dsv[i]), nullptr);
+                m_rhi_dsv[i] = nullptr;
+            }
+
+            if (m_rhi_rtv[i])
+            {
+                vkDestroyImageView(RHI_Context::device, static_cast<VkImageView>(m_rhi_rtv[i]), nullptr);
+                m_rhi_rtv[i] = nullptr;
+            }
+        }
+
+        if (m_rhi_rtv_multiview)
+        {
+            vkDestroyImageView(RHI_Context::device, static_cast<VkImageView>(m_rhi_rtv_multiview), nullptr);
+            m_rhi_rtv_multiview = nullptr;
+        }
+
+        if (m_rhi_dsv_multiview)
+        {
+            vkDestroyImageView(RHI_Context::device, static_cast<VkImageView>(m_rhi_dsv_multiview), nullptr);
+            m_rhi_dsv_multiview = nullptr;
+        }
+
+        ClearLayouts();
+        if (m_rhi_resource)
+        {
+            RHI_Device::MemoryTextureDestroy(m_rhi_resource);
+        }
+    }
 }

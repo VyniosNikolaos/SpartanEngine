@@ -23,6 +23,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "pch.h"
 #include "RHI_CommandList.h"
 #include "RHI_Texture.h"
+#include "../Rendering/Renderer.h"
 //============================
 
 //= NAMESPACES ========
@@ -33,15 +34,12 @@ namespace spartan
 {
     void RHI_CommandList::Dispatch(RHI_Texture* texture, float resolution_scale /*= 1.0f*/)
     {
-        // clamp scale
-        resolution_scale = clamp(resolution_scale, 0.5f, 1.0f);
-
         const uint32_t thread_group_size = 8;
 
-        // scaled dimensions (round up to ensure coverage)
-        const uint32_t scaled_width  = static_cast<uint32_t>(ceil(texture->GetWidth() * resolution_scale));
-        const uint32_t scaled_height = static_cast<uint32_t>(ceil(texture->GetHeight() * resolution_scale));
-        const uint32_t scaled_depth  = (texture->GetType() == RHI_Texture_Type::Type3D) ? static_cast<uint32_t>(ceil(texture->GetDepth() * resolution_scale)): 1;
+        // scaled dimensions
+        const uint32_t scaled_width  = Renderer::GetScaledDimension(texture->GetWidth(), resolution_scale);
+        const uint32_t scaled_height = Renderer::GetScaledDimension(texture->GetHeight(), resolution_scale);
+        const uint32_t scaled_depth  = (texture->GetType() == RHI_Texture_Type::Type3D) ? Renderer::GetScaledDimension(texture->GetDepth(), resolution_scale) : 1;
 
         // conservative dispatch counts
         const uint32_t dispatch_x = (scaled_width + thread_group_size - 1) / thread_group_size;
