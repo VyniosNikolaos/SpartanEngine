@@ -34,7 +34,6 @@ static const float RESTIR_RAY_NORMAL_OFFSET  = 0.05f;
 static const float RESTIR_RAY_T_MIN          = 0.01f;
 
 // sky/environment
-static const float RESTIR_SKY_RADIANCE_CLAMP = 5.0f;
 static const float RESTIR_SKY_W_CLAMP        = 15.0f;
 static const float RESTIR_SKY_DIR_THRESHOLD  = 0.95f;
 static const float RESTIR_ENV_SAMPLE_PROB    = 0.3f;
@@ -648,10 +647,7 @@ float3 sample_environment_direction_uniform(float2 xi, out float pdf)
 
 float3 clamp_sky_radiance(float3 radiance)
 {
-    float lum = dot(radiance, float3(0.299f, 0.587f, 0.114f));
-    if (lum > RESTIR_SKY_RADIANCE_CLAMP)
-        radiance *= RESTIR_SKY_RADIANCE_CLAMP / lum;
-    return radiance;
+    return max(radiance, 0.0f);
 }
 
 float3 soft_clamp_gi(float3 gi, PathSample sample)
@@ -669,12 +665,6 @@ float3 soft_clamp_gi(float3 gi, PathSample sample)
         float scale  = soft_clamp + excess / (1.0f + excess / soft_clamp);
         gi *= scale / lum;
     }
-
-    // hard clamp
-    float max_lum = 100.0f;
-    float final_lum = dot(gi, float3(0.299f, 0.587f, 0.114f));
-    if (final_lum > max_lum)
-        gi *= max_lum / final_lum;
 
     return gi;
 }

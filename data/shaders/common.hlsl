@@ -45,6 +45,27 @@ static const uint  THREAD_GROUP_COUNT_X = 8;
 static const uint  THREAD_GROUP_COUNT_Y = 8;
 static const uint  THREAD_GROUP_COUNT   = 64;
 static const float DEG_TO_RAD           = PI / 180.0f;
+static const float LUMINOUS_EFFICACY_MAX = 683.0f;
+
+float radiometric_to_photometric(float value)
+{
+    return value * LUMINOUS_EFFICACY_MAX;
+}
+
+float3 radiometric_to_photometric(float3 value)
+{
+    return value * LUMINOUS_EFFICACY_MAX;
+}
+
+float photometric_to_radiometric(float value)
+{
+    return value / LUMINOUS_EFFICACY_MAX;
+}
+
+float3 photometric_to_radiometric(float3 value)
+{
+    return value / LUMINOUS_EFFICACY_MAX;
+}
 
 /*------------------------------------------------------------------------------
     SATURATE

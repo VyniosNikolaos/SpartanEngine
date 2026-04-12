@@ -164,30 +164,33 @@ struct Light
     bool has_shadows_screen_space() { return flags & uint(1U << 4); }
     bool is_volumetric()            { return flags & uint(1U << 5); }
 
+    float compute_attenuation_range(const float distance_to_light)
+    {
+        if (far <= 0.0f || distance_to_light >= far)
+            return 0.0f;
+
+        return 1.0f;
+    }
+
+    float compute_attenuation_inverse_square(const float distance_to_light)
+    {
+        return 1.0f / (distance_to_light * distance_to_light + 0.0001f);
+    }
+
     float compute_attenuation_distance(const float3 surface_position)
     {
         float d = length(surface_position - position);
-        
-        // 1. Physically correct Inverse Square Law
-        // We add a small epsilon (0.0001) to prevent division by zero at the light source
-        float attenuation_phys = 1.0f / (d * d + 0.0001f);
-    
-        // 2. Windowing function (Forces light to 0 at 'far' distance)
-        float distance_falloff  = saturate(1.0f - d / far);
-        distance_falloff       *= distance_falloff; // square it for smoother fade
-    
-        return attenuation_phys * distance_falloff;
+
+        return compute_attenuation_inverse_square(d) * compute_attenuation_range(d);
     }
 
     float compute_attenuation_angle()
     {
         float cos_outer   = cos(angle);
         float cos_inner   = cos(angle * 0.9f);
-        float scale       = 1.0f / max(0.001f, cos_inner - cos_outer);
-        float offset      = -cos_outer * scale;
+        float scale       = 1.0f / max(0.0001f, cos_inner - cos_outer);
         float cd          = dot(to_pixel, forward);
-        float attenuation = saturate(cd * scale + offset);
-        
+        float attenuation = saturate((cd - cos_outer) * scale);
         return attenuation * attenuation;
     }
 
@@ -268,20 +271,13 @@ struct Light
 
     float compute_attenuation_area(const float3 surface_position)
     {
-        // find closest point on the area light rectangle to the surface
         float3 closest_point = compute_closest_point_on_area(surface_position);
-        
-        // compute distance from closest point
-        float d = length(surface_position - closest_point);
-        
-        // inverse square falloff with small epsilon to prevent division by zero
-        float attenuation = 1.0f / (d * d + 0.0001f);
-        
-        // windowing function (forces light to 0 at range)
-        float distance_falloff = saturate(1.0f - d / far);
-        distance_falloff *= distance_falloff;
-        
-        return attenuation * distance_falloff;
+        float3 to_surface   = surface_position - closest_point;
+        float d             = length(to_surface);
+        float3 direction_ws = d > 0.0001f ? to_surface / d : forward;
+        float emission_cos  = saturate(dot(forward, direction_ws));
+
+        return compute_attenuation_inverse_square(d) * compute_attenuation_range(d) * emission_cos;
     }
 
     float compute_attenuation(const float3 surface_position)
@@ -319,24 +315,22 @@ struct Light
         else if (is_point() || is_spot() || is_area())
         {
             float dist_to_vol = length(vol_position - position);
-            float atten_dist  = saturate(1.0f - dist_to_vol / far);
-            atten_dist       *= atten_dist;
-
-            atten = atten_dist;
+            atten = compute_attenuation_inverse_square(dist_to_vol) * compute_attenuation_range(dist_to_vol);
 
             if (is_spot())
             {
                 float3 to_vol           = normalize(vol_position - position); // direction from light to point
                 float cos_outer         = cos(angle);
                 float cos_inner         = cos(angle * 0.9f);
-                float cos_outer_squared = cos_outer * cos_outer;
-                float scale             = 1.0f / max(0.001f, cos_inner - cos_outer);
-                float offset            = -cos_outer * scale;
+                float scale             = 1.0f / max(0.0001f, cos_inner - cos_outer);
                 float cd                = dot(to_vol, forward); // use per-sample direction
-                float atten_angle       = saturate(cd * scale + offset);
-                atten_angle             *= atten_angle;
-
-                atten *= atten_angle;
+                float atten_angle       = saturate((cd - cos_outer) * scale);
+                atten *= atten_angle * atten_angle;
+            }
+            else if (is_area())
+            {
+                float3 to_vol = dist_to_vol > 0.0001f ? (vol_position - position) / dist_to_vol : forward;
+                atten *= saturate(dot(forward, to_vol));
             }
         }
 

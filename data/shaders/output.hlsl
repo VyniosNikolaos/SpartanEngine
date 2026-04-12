@@ -388,9 +388,9 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
     bool is_auto_exposure  = f3_value.y > 0.0f;
     float4 color           = tex[thread_id.xy];
 
-    // physics: convert watts (radiometric) to nits (photometric)
-    const float luminous_efficacy = 683.0f;
-    color.rgb *= luminous_efficacy; 
+    // the scene buffer stays radiometric until the display path.
+    // convert once here so exposure and tone mapping operate in photometric display space.
+    color.rgb = radiometric_to_photometric(color.rgb);
 
     // apply exposure
     // auto exposure stores the resolved final scale, while manual mode falls back to the camera settings

@@ -45,7 +45,6 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
 
         tex.GetDimensions(mip, w, h, mip_count);
 
-        const float luminous_efficacy       = 683.0f;
         const float min_luminance_nits      = 0.0001f;
         const float highlight_start_nits    = 1500.0f;
         const float highlight_end_nits      = 10000.0f;
@@ -61,7 +60,7 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
             {
                 float3 col = tex.Load(int3(x, y, mip)).rgb;
 
-                float lum_nits = max(dot(col, float3(0.2126f, 0.7152f, 0.0722f)) * luminous_efficacy, min_luminance_nits);
+                float lum_nits = max(dot(radiometric_to_photometric(col), float3(0.2126f, 0.7152f, 0.0722f)), min_luminance_nits);
 
                 float2 uv = (float2(x + 0.5f, y + 0.5f) / float2(w, h)) * 2.0f - 1.0f;
                 float center_weight = lerp(edge_weight, 1.0f, exp(-dot(uv, uv) * 1.5f));
@@ -81,16 +80,16 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
     float camera_exposure   = max(buffer_frame.camera_exposure, 0.000001f);
     float current_brightness = avg_nits * camera_exposure;
 
-    // 3. target middle gray using the final exposure value that the renderer applies.
-    // storing the resolved exposure keeps temporal upscalers in sync with output.
+    // 3. target middle gray using the resolved exposure that will be promoted for the next frame.
+    // the current frame keeps using the previous resolved exposure so post-processing and upscaling stay in sync.
     const float target_luminance = 0.18f;
 
     // 4. compute the camera-relative auto exposure trim
     float desired_exposure = target_luminance / max(current_brightness, 0.000001f);
 
     // 5. clamp the auto exposure trim to a practical range
-    const float min_ev = -4.0f; 
-    const float max_ev =  3.0f;
+    const float min_ev = -6.0f;
+    const float max_ev =  6.0f;
 
     float min_exposure = exp2(min_ev);
     float max_exposure = exp2(max_ev);

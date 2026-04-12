@@ -58,6 +58,12 @@ namespace spartan
         custom           // custom intensity
     };
 
+    enum class LightIntensityUnit
+    {
+        Lux,
+        Lumens
+    };
+
     enum class LightPreset
     {
         dawn,        // sunrise - early morning with warm orange glow
@@ -108,11 +114,14 @@ namespace spartan
         const Color& GetColor() const { return m_color_rgb; }
 
         // intensity
-        void SetIntensity(const float lumens_lux);
+        void SetIntensity(const float photometric_intensity);
         void SetIntensity(const LightIntensity intensity);
-        float GetIntensityLumens() const    { return m_intensity_lumens_lux; }
-        LightIntensity GetIntensity() const { return m_intensity; }
-        float GetIntensityWatt() const;
+        float GetIntensityPhotometric() const { return m_intensity_photometric; }
+        float GetIntensityLumens() const      { return m_intensity_photometric; } // legacy alias
+        LightIntensity GetIntensity() const   { return m_intensity; }
+        LightIntensityUnit GetIntensityUnit() const;
+        float GetIntensityRadiometric() const;
+        float GetIntensityWatt() const { return GetIntensityRadiometric(); } // legacy alias
 
         // preset
         void SetPreset(const LightPreset preset);
@@ -170,7 +179,7 @@ namespace spartan
 
         // properties
         LightIntensity m_intensity       = LightIntensity::bulb_500_watt;
-        float m_intensity_lumens_lux     = 2600.0f;
+        float m_intensity_photometric    = 2600.0f;
         uint32_t m_flags                 = 0;
         LightType m_light_type           = LightType::Max;
         Color m_color_rgb                = Color::standard_black;

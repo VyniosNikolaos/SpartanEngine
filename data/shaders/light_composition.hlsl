@@ -53,7 +53,7 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
     {
         light_diffuse        = tex3.SampleLevel(samplers[sampler_point_clamp], surface.uv, 0).rgb;
         light_specular       = tex4.SampleLevel(samplers[sampler_point_clamp], surface.uv, 0).rgb;
-        light_emissive       = surface.emissive * surface.albedo * 10.0f;
+        light_emissive       = surface.emissive * surface.albedo;
         alpha                = surface.alpha;
         distance_from_camera = surface.camera_to_pixel_length;
         

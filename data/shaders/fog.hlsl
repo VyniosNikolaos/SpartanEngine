@@ -289,5 +289,5 @@ float3 compute_volumetric_fog(Surface surface, Light light, uint2 pixel_pos)
     
     // Multiply by light properties (inscatter is already in correct units: density * phase * transmittance * distance)
     float3 result = inscatter * light.intensity * light.color;
-    return min(result, 100.0f); // Clamp to prevent extreme values that cause artifacts
+    return result;
 }

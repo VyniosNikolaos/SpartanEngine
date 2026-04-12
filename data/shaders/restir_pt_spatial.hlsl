@@ -291,10 +291,6 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
         if (all(neighbor.sample.radiance <= 0.0f))
             continue;
 
-        float nb_lum = dot(neighbor.sample.radiance, float3(0.299f, 0.587f, 0.114f));
-        if (nb_lum > 50.0f)
-            neighbor.sample.radiance *= 50.0f / nb_lum;
-
         float target_pdf_at_center = 0.0f;
         float jacobian = 1.0f;
 

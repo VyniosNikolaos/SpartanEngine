@@ -315,7 +315,7 @@ namespace spartan
             for (Entity* entity_light : World::GetEntitiesLights())
             {
                 Light* light = entity_light->GetComponent<Light>();
-                if (!light->GetFlag(LightFlags::Shadows) || light->GetIntensityWatt() == 0.0f)
+                if (!light->GetFlag(LightFlags::Shadows) || light->GetIntensityRadiometric() == 0.0f)
                     continue;
     
                 RHI_RasterizerState* new_state = (light->GetLightType() == LightType::Directional) ? GetRasterizerState(Renderer_RasterizerState::Light_directional) : GetRasterizerState(Renderer_RasterizerState::Light_point_spot);
@@ -1406,7 +1406,7 @@ namespace spartan
             {
                 if (Light* light = entity->GetComponent<Light>())
                 {
-                    if (!light->GetFlag(LightFlags::ShadowsScreenSpace) || light->GetIntensityWatt() == 0.0f)
+                    if (!light->GetFlag(LightFlags::ShadowsScreenSpace) || light->GetIntensityRadiometric() == 0.0f)
                         continue;
 
                     if (array_slice_index == tex_sss->GetDepth())
@@ -1812,8 +1812,10 @@ namespace spartan
             });
         }
 
+        const bool auto_exposure_enabled = cvar_auto_exposure_adaptation_speed.GetValue() > 0.0f;
+
         // auto-exposure
-        if (cvar_auto_exposure_adaptation_speed.GetValue() > 0.0f)
+        if (auto_exposure_enabled)
         {
             RHI_Texture* tex_exposure = tex_in;
 
@@ -1847,6 +1849,11 @@ namespace spartan
         // tone-mapping & gamma correction
         Pass_Output(cmd_list, tex_in, tex_out);
         swap(tex_in, tex_out);
+
+        if (auto_exposure_enabled)
+        {
+            cmd_list->Blit(GetRenderTarget(Renderer_RenderTarget::auto_exposure), GetRenderTarget(Renderer_RenderTarget::auto_exposure_previous), false);
+        }
 
         // post-tonemapping effects
         bool is_fsr = cvar_antialiasing_upsampling.GetValueAs<Renderer_AntiAliasing_Upsampling>() == Renderer_AntiAliasing_Upsampling::AA_Fsr_Upscale_Fsr;
@@ -2036,12 +2043,13 @@ namespace spartan
         pso.shaders[Compute] = shader_c;
         cmd_list->SetPipelineState(pso);
 
-        m_pcb_pass_cpu.set_f3_value(cvar_tonemapping.GetValue(), cvar_auto_exposure_adaptation_speed.GetValue());
+        const bool auto_exposure_enabled = cvar_auto_exposure_adaptation_speed.GetValue() > 0.0f;
+        m_pcb_pass_cpu.set_f3_value(cvar_tonemapping.GetValue(), auto_exposure_enabled ? 1.0f : 0.0f);
         cmd_list->PushConstants(m_pcb_pass_cpu);
 
         cmd_list->SetTexture(Renderer_BindingsUav::tex, tex_out);
         cmd_list->SetTexture(Renderer_BindingsSrv::tex, tex_in);
-        cmd_list->SetTexture(Renderer_BindingsSrv::tex2, GetRenderTarget(Renderer_RenderTarget::auto_exposure));
+        cmd_list->SetTexture(Renderer_BindingsSrv::tex2, GetRenderTarget(Renderer_RenderTarget::auto_exposure_previous));
         cmd_list->Dispatch(tex_out);
 
         cmd_list->EndTimeblock();
@@ -2150,7 +2158,6 @@ namespace spartan
             cmd_list->SetTexture(Renderer_BindingsSrv::tex2, tex_exposure_previous);
             cmd_list->SetTexture(Renderer_BindingsUav::tex, tex_exposure);
             cmd_list->Dispatch(1, 1, 1);
-            cmd_list->Blit(tex_exposure, tex_exposure_previous, false);
         }
         cmd_list->EndTimeblock();
     }

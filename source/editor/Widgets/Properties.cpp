@@ -945,7 +945,7 @@ void Properties::ShowLight(spartan::Light* light) const
     {
         //= REFLECT ==========================================================================
         static vector<string> types = { "Directional", "Point", "Spot", "Area" };
-        float intensity             = light->GetIntensityLumens();
+        float intensity             = light->GetIntensityPhotometric();
         float temperature_kelvin    = light->GetTemperature();
         float angle                 = light->GetAngle() * math::rad_to_deg * 2.0f;
         bool shadows                = light->GetFlag(spartan::LightFlags::Shadows);
@@ -987,7 +987,9 @@ void Properties::ShowLight(spartan::Light* light) const
                 "Custom"
             };
 
-            bool is_directional = light->GetLightType() == LightType::Directional;
+            LightIntensityUnit intensity_unit = light->GetIntensityUnit();
+            bool is_directional = intensity_unit == LightIntensityUnit::Lux;
+            float intensity_max = is_directional ? 200000.0f : 1000000.0f;
 
             if (!is_directional)
             {
@@ -995,12 +997,25 @@ void Properties::ShowLight(spartan::Light* light) const
                 if (property_combo("Preset", intensity_types, &intensity_type_index, "common light intensity presets"))
                 {
                     light->SetIntensity(static_cast<LightIntensity>(intensity_type_index));
-                    intensity = light->GetIntensityLumens();
+                    intensity = light->GetIntensityPhotometric();
                 }
             }
 
-            const char* unit_tooltip = is_directional ? "intensity in lux" : "intensity in lumens";
-            property_float("Intensity", &intensity, 10.0f, 0.0f, 120000.0f, unit_tooltip, is_directional ? "%.0f lux" : "%.0f lm");
+            const char* unit_tooltip = "total emitted luminous flux in lumens";
+            if (intensity_unit == LightIntensityUnit::Lux)
+            {
+                unit_tooltip = "incident illuminance in lux";
+            }
+            else if (light->GetLightType() == LightType::Spot)
+            {
+                unit_tooltip = "total beam luminous flux in lumens, focused by the cone angle";
+            }
+            else if (light->GetLightType() == LightType::Area)
+            {
+                unit_tooltip = "total one-sided emitted luminous flux in lumens";
+            }
+
+            property_float("Intensity", &intensity, 10.0f, 0.0f, intensity_max, unit_tooltip, is_directional ? "%.0f lux" : "%.0f lm");
         }
 
         layout::separator();
@@ -1040,7 +1055,7 @@ void Properties::ShowLight(spartan::Light* light) const
         {
             layout::separator();
             layout::section_header("Attenuation");
-            property_float("Range", &range, 0.1f, 0.0f, 1000.0f, "light falloff distance in meters", "%.1f m");
+            property_float("Range", &range, 0.1f, 0.0f, 1000.0f, "cutoff distance in meters. lighting stays inverse-square until this distance, then becomes zero", "%.1f m");
         }
 
         // spot angle
@@ -1059,8 +1074,8 @@ void Properties::ShowLight(spartan::Light* light) const
         }
 
         //= MAP ===================================================================================================
-        if (intensity != light->GetIntensityLumens())             light->SetIntensity(intensity);
-        if (angle != light->GetAngle() * math::rad_to_deg * 0.5f) light->SetAngle(angle * math::deg_to_rad * 0.5f);
+        if (intensity != light->GetIntensityPhotometric())        light->SetIntensity(intensity);
+        if (angle != light->GetAngle() * math::rad_to_deg * 2.0f) light->SetAngle(angle * math::deg_to_rad * 0.5f);
         if (range != light->GetRange())                           light->SetRange(range);
         if (area_width != light->GetAreaWidth())                  light->SetAreaWidth(area_width);
         if (area_height != light->GetAreaHeight())                light->SetAreaHeight(area_height);
@@ -1730,9 +1745,23 @@ void Properties::ShowCamera(Camera* camera) const
         layout::separator();
         layout::section_header("Exposure");
 
-        property_float("Aperture", &aperture, 0.1f, 0.01f, 150.0f, "f-stop (affects DoF and brightness)", "f/%.1f");
-        property_float("Shutter Speed", &shutter_speed, 0.0001f, 0.0001f, 1.0f, "exposure time in seconds (affects motion blur)", "%.4f s");
-        property_float("ISO", &iso, 10.0f, 1.0f, 2000.0f, "sensor sensitivity (affects noise)", "%.0f");
+        property_float("Aperture", &aperture, 0.1f, 0.01f, 150.0f, "f-stop. lower values admit more light and reduce depth of field", "f/%.1f");
+        property_float("Shutter Speed", &shutter_speed, 0.0001f, 0.0001f, 1.0f, "exposure time in seconds. longer exposures admit more light and increase motion blur", "%.4f s");
+        property_float("ISO", &iso, 10.0f, 1.0f, 2000.0f, "sensor sensitivity. higher values brighten the image without changing scene luminance", "%.0f");
+
+        float aperture_clamped  = std::max(aperture, 0.01f);
+        float shutter_clamped   = std::max(shutter_speed, 0.0001f);
+        float iso_clamped       = std::max(iso, 1.0f);
+        float ev100             = std::log2((aperture_clamped * aperture_clamped) / shutter_clamped * (100.0f / iso_clamped));
+        float exposure_scale    = 1.0f / (1.2f * std::exp2(ev100));
+
+        char exposure_value_text[32];
+        snprintf(exposure_value_text, sizeof(exposure_value_text), "%.2f", ev100);
+        property_text("EV100", exposure_value_text, "derived from aperture, shutter speed, and iso");
+
+        char exposure_scale_text[32];
+        snprintf(exposure_scale_text, sizeof(exposure_scale_text), "%.6f", exposure_scale);
+        property_text("Exposure Scale", exposure_scale_text, "scene-linear exposure multiplier derived from the physical camera");
 
         layout::separator();
         layout::section_header("Controls");

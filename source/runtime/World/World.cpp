@@ -134,7 +134,7 @@ namespace spartan
             hash = (hash * 31) ^ std::hash<float>{}(light->GetColor().g);
             hash = (hash * 31) ^ std::hash<float>{}(light->GetColor().b);
             hash = (hash * 31) ^ std::hash<float>{}(light->GetColor().a);
-            hash = (hash * 31) ^ std::hash<float>{}(light->GetIntensityWatt());
+            hash = (hash * 31) ^ std::hash<float>{}(light->GetIntensityRadiometric());
             hash = (hash * 31) ^ std::hash<float>{}(light->GetRange());
             hash = (hash * 31) ^ std::hash<float>{}(light->GetAngle());
             hash = (hash * 31) ^ std::hash<float>{}(light->GetAreaWidth());

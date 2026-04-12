@@ -111,17 +111,13 @@ namespace spartan
             const float shutter  = std::max(m_shutter_speed, 0.0001f);
             const float iso      = std::max(m_iso, 1.0f);
 
-            // computed ev (using squared aperture for photometric accuracy)
-            // note: this calculates the exposure scale factor (1/l_avg)
-            float ev100 = std::log2((aperture * aperture) / shutter * 100.0f / iso);
-        
-            // standard standard output sensitivity (sos) calculation
-            // 1.2 is a common calibration constant (matches ue5/frostbite)
-            // this maps the average scene luminance to middle grey (0.18)
+            // compute ev100 from the physical camera controls.
+            float ev100 = std::log2((aperture * aperture) / shutter * (100.0f / iso));
+
+            // convert ev100 to a scene-linear exposure scale with the standard
+            // saturation-based speed constant used by physically based cameras.
             const float calibration_constant = 1.2f;
-            float base_exposure = 1.0f / (calibration_constant * std::pow(2.0f, ev100));
-        
-            return base_exposure;
+            return 1.0f / (calibration_constant * std::exp2(ev100));
         }
 
         // planes/projection

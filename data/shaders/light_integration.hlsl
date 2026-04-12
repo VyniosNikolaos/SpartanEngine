@@ -145,7 +145,6 @@ float3 prefilter_environment(float2 uv)
 {
     float resolution        = 4096.0f;  // match skysphere width
     float base_resolution   = 2048.0f;  // match skysphere height
-    float intensity_gain    = 2.5f;
     uint mip_level          = pass_get_f3_value().x;
     uint mip_count          = pass_get_f3_value().y;
     const uint sample_count = 512 / max(mip_level, 1);
@@ -200,14 +199,6 @@ float3 prefilter_environment(float2 uv)
             // sample environment map at computed mip level
             float3 sample_color = tex.SampleLevel(samplers[sampler_bilinear_clamp], float2(u, v), mip_sample).rgb;
             
-            // apply tone mapping to reduce impact of very bright spots (e.g. sun)
-            sample_color = sample_color / (1.0f + luminance(sample_color));
-            
-            // clamp outliers to prevent fireflies
-            sample_color = min(sample_color, 10.0f);
-            
-            // apply intensity gain to compensate for tone mapping attenuation
-            sample_color *= intensity_gain;
             color        += sample_color * n_dot_l;
             total_weight += n_dot_l;
         }

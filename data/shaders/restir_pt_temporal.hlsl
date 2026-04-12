@@ -268,55 +268,51 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
                 }
                 else
                 {
-                float temp_lum = dot(temporal.sample.radiance, float3(0.299f, 0.587f, 0.114f));
-                if (temp_lum > 50.0f)
-                    temporal.sample.radiance *= 50.0f / temp_lum;
+                    // decay low-confidence history before it can dominate the new frame
+                    float temporal_scale = RESTIR_TEMPORAL_DECAY * temporal_confidence;
+                    temporal.M          *= temporal_scale;
+                    temporal.weight_sum *= temporal_scale;
+                    temporal.age        += 1.0f;
 
-                // decay low-confidence history before it can dominate the new frame
-                float temporal_scale = RESTIR_TEMPORAL_DECAY * temporal_confidence;
-                temporal.M          *= temporal_scale;
-                temporal.weight_sum *= temporal_scale;
-                temporal.age        += 1.0f;
+                    // cap temporal mass based on confidence and staleness
+                    float staleness_factor = saturate(1.0f - temporal.age / 64.0f);
+                    float effective_M_cap  = max(1.0f, RESTIR_M_CAP * temporal_confidence * staleness_factor);
+                    clamp_reservoir_M(temporal, effective_M_cap);
 
-                // cap temporal mass based on confidence and staleness
-                float staleness_factor = saturate(1.0f - temporal.age / 64.0f);
-                float effective_M_cap  = max(1.0f, RESTIR_M_CAP * temporal_confidence * staleness_factor);
-                clamp_reservoir_M(temporal, effective_M_cap);
-
-                if (temporal.M > 0.0f && temporal.weight_sum > 0.0f && is_sky_sample(temporal.sample))
-                {
-                    float n_dot_sky = dot(normal_ws, temporal.sample.direction);
-                    if (n_dot_sky > 0.0f)
+                    if (temporal.M > 0.0f && temporal.weight_sum > 0.0f && is_sky_sample(temporal.sample))
                     {
-                        float target_pdf_temporal = calculate_target_pdf_for_sample(temporal.sample, pos_ws, normal_ws, view_dir, albedo, roughness, metallic);
-
-                        if (target_pdf_temporal > 0.0f)
+                        float n_dot_sky = dot(normal_ws, temporal.sample.direction);
+                        if (n_dot_sky > 0.0f)
                         {
-                            float weight_temporal = compute_reservoir_stream_weight(target_pdf_temporal, temporal.W, temporal.M);
+                            float target_pdf_temporal = calculate_target_pdf_for_sample(temporal.sample, pos_ws, normal_ws, view_dir, albedo, roughness, metallic);
 
-                            combined.weight_sum += weight_temporal;
-                            combined.M += temporal.M;
-                            reuse_weight_sum       += weight_temporal;
-                            confidence_weight_sum   += temporal.confidence * max(weight_temporal, 0.0f);
-                            confidence_weight_total += max(weight_temporal, 0.0f);
-                            temporal_rejection_reason = RESTIR_TEMPORAL_REASON_ACCEPTED;
-
-                            if (random_float(seed) * combined.weight_sum < weight_temporal)
+                            if (target_pdf_temporal > 0.0f)
                             {
-                                combined.sample     = temporal.sample;
-                                combined.target_pdf = target_pdf_temporal;
+                                float weight_temporal = compute_reservoir_stream_weight(target_pdf_temporal, temporal.W, temporal.M);
+
+                                combined.weight_sum += weight_temporal;
+                                combined.M += temporal.M;
+                                reuse_weight_sum       += weight_temporal;
+                                confidence_weight_sum   += temporal.confidence * max(weight_temporal, 0.0f);
+                                confidence_weight_total += max(weight_temporal, 0.0f);
+                                temporal_rejection_reason = RESTIR_TEMPORAL_REASON_ACCEPTED;
+
+                                if (random_float(seed) * combined.weight_sum < weight_temporal)
+                                {
+                                    combined.sample     = temporal.sample;
+                                    combined.target_pdf = target_pdf_temporal;
+                                }
+                            }
+                            else
+                            {
+                                temporal_rejection_reason = RESTIR_TEMPORAL_REASON_TARGET_PDF;
                             }
                         }
                         else
                         {
-                            temporal_rejection_reason = RESTIR_TEMPORAL_REASON_TARGET_PDF;
+                            temporal_rejection_reason = RESTIR_TEMPORAL_REASON_VISIBILITY;
                         }
                     }
-                    else
-                    {
-                        temporal_rejection_reason = RESTIR_TEMPORAL_REASON_VISIBILITY;
-                    }
-                }
                 else if (temporal.M > 0.0f && temporal.weight_sum > 0.0f)
                 {
                     bool temporal_visible = prev_depth > 0.0f &&

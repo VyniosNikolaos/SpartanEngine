@@ -1083,7 +1083,7 @@ namespace spartan
             }
     
             light_buffer_entry.screen_space_shadow_slice_index   = light_component->GetScreenSpaceShadowsSliceIndex();
-            light_buffer_entry.intensity                         = light_component->GetIntensityWatt();
+            light_buffer_entry.intensity                         = light_component->GetIntensityRadiometric();
             light_buffer_entry.range                             = light_component->GetRange();
             light_buffer_entry.angle                             = light_component->GetAngle();
             light_buffer_entry.color                             = light_component->GetColor();
@@ -1151,7 +1151,7 @@ namespace spartan
                 if (!light_component->GetEntity()->GetActive())
                     continue;
     
-                if (light_component->GetIntensityWatt() <= 0.0f)
+                if (light_component->GetIntensityRadiometric() <= 0.0f)
                     continue;
     
                 if (Camera* camera = World::GetCamera())
