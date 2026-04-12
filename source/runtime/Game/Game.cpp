@@ -1023,8 +1023,8 @@ namespace spartan
                                     entity->SetObjectName("light_area");
                                     entity->SetParent(entity_tube_light);
 
-                                    // orient the area light to face downward (tubes are ceiling lights)
-                                    entity->SetRotationLocal(Quaternion::FromEulerAngles(90.0f, 0.0f, 0.0f));
+                                    // aim the emitter in world space so mirrored tube meshes still emit downward
+                                    entity->SetRotation(Quaternion::FromLookRotation(Vector3::Down, Vector3::Forward));
 
                                     Light* light = entity->AddComponent<Light>();
                                     light->SetLightType(LightType::Area);

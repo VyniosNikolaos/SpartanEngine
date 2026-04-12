@@ -123,7 +123,7 @@ namespace spartan
         SetIntensity(LightIntensity::bulb_500_watt);
         SetRange(get_sensible_range(m_light_type, m_intensity_photometric, m_angle_rad));
         SetFlag(LightFlags::Shadows);
-        SetFlag(LightFlags::ShadowsScreenSpace);
+        m_flags |= static_cast<uint32_t>(LightFlags::ShadowsScreenSpace);
     }
 
     Light::~Light()
@@ -215,6 +215,12 @@ namespace spartan
         m_preset               = static_cast<LightPreset>(node.attribute("preset").as_int(static_cast<int>(LightPreset::custom)));
         m_area_width           = node.attribute("area_width").as_float(1.0f);
         m_area_height          = node.attribute("area_height").as_float(1.0f);
+        m_screen_space_shadows_slice_index = 0;
+
+        if (m_light_type != LightType::Directional || !(m_flags & LightFlags::Shadows))
+        {
+            m_flags &= ~static_cast<uint32_t>(LightFlags::ShadowsScreenSpace);
+        }
 
         UpdateMatrices(); // regenerate view/projection after loading
     }
@@ -302,6 +308,9 @@ namespace spartan
 
     void Light::SetFlag(const LightFlags flag, const bool enable)
     {
+        if (flag == LightFlags::ShadowsScreenSpace && enable && m_light_type != LightType::Directional)
+            return;
+
         bool enabled      = false;
         bool disabled     = false;
         bool flag_present = m_flags & flag;
@@ -340,6 +349,12 @@ namespace spartan
 
         SetColor(get_sensible_color(m_light_type));
         SetRange(get_sensible_range(m_light_type, m_intensity_photometric, m_angle_rad));
+
+        if (m_light_type != LightType::Directional)
+        {
+            m_flags &= ~static_cast<uint32_t>(LightFlags::ShadowsScreenSpace);
+            m_screen_space_shadows_slice_index = 0;
+        }
 
         UpdateMatrices();
     }

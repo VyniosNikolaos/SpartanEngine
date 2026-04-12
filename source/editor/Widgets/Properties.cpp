@@ -964,6 +964,8 @@ void Properties::ShowLight(spartan::Light* light) const
             light->SetLightType(static_cast<LightType>(selection_index));
         }
 
+        const bool is_directional = static_cast<LightType>(selection_index) == LightType::Directional;
+
         layout::separator();
         layout::section_header("Appearance");
 
@@ -1025,12 +1027,16 @@ void Properties::ShowLight(spartan::Light* light) const
 
         if (shadows)
         {
-            property_toggle("Screen Space", &shadows_screen_space, "screen space contact shadows");
+            if (is_directional)
+            {
+                property_toggle("Screen Space", &shadows_screen_space, "screen space contact shadows");
+            }
+
             property_toggle("Volumetric", &volumetric, "volumetric light scattering");
         }
 
         // directional-specific options
-        if (light->GetLightType() == LightType::Directional)
+        if (is_directional)
         {
             layout::separator();
             layout::section_header("Day/Night");
@@ -1081,7 +1087,7 @@ void Properties::ShowLight(spartan::Light* light) const
         if (area_height != light->GetAreaHeight())                light->SetAreaHeight(area_height);
         if (m_colorPicker_light->GetColor() != light->GetColor()) light->SetColor(m_colorPicker_light->GetColor());
         if (temperature_kelvin != light->GetTemperature())        light->SetTemperature(temperature_kelvin);
-        light->SetFlag(spartan::LightFlags::ShadowsScreenSpace, shadows_screen_space);
+        light->SetFlag(spartan::LightFlags::ShadowsScreenSpace, is_directional && shadows_screen_space);
         light->SetFlag(spartan::LightFlags::Volumetric, volumetric);
         light->SetFlag(spartan::LightFlags::Shadows, shadows);
         //=========================================================================================================

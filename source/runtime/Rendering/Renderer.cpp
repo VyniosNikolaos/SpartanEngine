@@ -1081,8 +1081,12 @@ namespace spartan
             {
                 light_buffer_entry.transform[i] = light_component->GetViewProjectionMatrix(i);
             }
-    
-            light_buffer_entry.screen_space_shadow_slice_index   = light_component->GetScreenSpaceShadowsSliceIndex();
+
+            const bool has_screen_space_shadows                  = light_component->GetLightType() == LightType::Directional &&
+                                                                    light_component->GetFlag(LightFlags::Shadows) &&
+                                                                    light_component->GetFlag(LightFlags::ShadowsScreenSpace);
+
+            light_buffer_entry.screen_space_shadow_slice_index   = has_screen_space_shadows ? light_component->GetScreenSpaceShadowsSliceIndex() : 0;
             light_buffer_entry.intensity                         = light_component->GetIntensityRadiometric();
             light_buffer_entry.range                             = light_component->GetRange();
             light_buffer_entry.angle                             = light_component->GetAngle();
@@ -1096,7 +1100,7 @@ namespace spartan
             light_buffer_entry.flags                            |= light_component->GetLightType() == LightType::Point       ? (1 << 1) : 0;
             light_buffer_entry.flags                            |= light_component->GetLightType() == LightType::Spot        ? (1 << 2) : 0;
             light_buffer_entry.flags                            |= light_component->GetFlag(LightFlags::Shadows)             ? (1 << 3) : 0;
-            light_buffer_entry.flags                            |= light_component->GetFlag(LightFlags::ShadowsScreenSpace)  ? (1 << 4) : 0;
+            light_buffer_entry.flags                            |= has_screen_space_shadows                                  ? (1 << 4) : 0;
             light_buffer_entry.flags                            |= light_component->GetFlag(LightFlags::Volumetric)          ? (1 << 5) : 0;
             light_buffer_entry.flags                            |= light_component->GetLightType() == LightType::Area        ? (1 << 6) : 0;
     

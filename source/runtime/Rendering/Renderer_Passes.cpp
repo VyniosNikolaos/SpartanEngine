@@ -1406,7 +1406,7 @@ namespace spartan
             {
                 if (Light* light = entity->GetComponent<Light>())
                 {
-                    if (!light->GetFlag(LightFlags::ShadowsScreenSpace) || light->GetIntensityRadiometric() == 0.0f)
+                    if (light->GetLightType() != LightType::Directional || !light->GetFlag(LightFlags::Shadows) || !light->GetFlag(LightFlags::ShadowsScreenSpace) || light->GetIntensityRadiometric() == 0.0f)
                         continue;
 
                     if (array_slice_index == tex_sss->GetDepth())
@@ -1417,15 +1417,9 @@ namespace spartan
 
                     math::Matrix view_projection = World::GetCamera()->GetViewProjectionMatrix();
                     Vector4 p = {};
-                    if (light->GetLightType() == LightType::Directional)
-                    {
-                        // todo: why do we need to flip sign?
-                        p = Vector4(-light->GetEntity()->GetForward(), 0.0f) * view_projection;
-                    }
-                    else
-                    {
-                        p = Vector4(light->GetEntity()->GetPosition(), 1.0f) * view_projection;
-                    }
+
+                    // todo: why do we need to flip sign?
+                    p = Vector4(-light->GetEntity()->GetForward(), 0.0f) * view_projection;
 
                     float in_light_projection[]      = { p.x, p.y, p.z, p.w };
                     int32_t in_viewport_size[]       = { static_cast<int32_t>(tex_sss->GetWidth()), static_cast<int32_t>(tex_sss->GetHeight()) };
