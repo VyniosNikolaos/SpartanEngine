@@ -81,15 +81,17 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
     float camera_exposure   = max(buffer_frame.camera_exposure, 0.000001f);
     float current_brightness = avg_nits * camera_exposure;
 
-    // 3. target a brighter average than strict middle gray
-    const float target_luminance = 0.40f;
+    // 3. target middle gray so auto exposure refines the camera settings
+    // instead of pushing every scene toward a bright daytime look.
+    const float target_luminance = 0.18f;
 
     // 4. compute the ae multiplier needed to bring the current average toward middle gray
     float desired_exposure = target_luminance / max(current_brightness, 0.000001f);
 
-    // 5. clamp the ae multiplier to a wide but still bounded range
-    const float min_ev = -12.0f; 
-    const float max_ev =  12.0f;
+    // 5. keep auto exposure as a trim around the physical camera settings.
+    // this preserves intentionally dark scenes such as night shots.
+    const float min_ev = -4.0f; 
+    const float max_ev =  3.0f;
 
     float min_exposure = exp2(min_ev);
     float max_exposure = exp2(max_ev);
