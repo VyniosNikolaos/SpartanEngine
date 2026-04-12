@@ -356,10 +356,10 @@ float3 linear_to_hdr10(float3 color)
 void main_cs(uint3 thread_id : SV_DispatchThreadID)
 {
     // get input data
-    float3 f3_value            = pass_get_f3_value();
-    uint tone_mapping          = (uint)f3_value.x;
-    float is_auto_exposure     = f3_value.y >= 0.0f;
-    float4 color               = tex[thread_id.xy];
+    float3 f3_value        = pass_get_f3_value();
+    uint tone_mapping      = (uint)f3_value.x;
+    bool is_auto_exposure  = f3_value.y > 0.0f;
+    float4 color           = tex[thread_id.xy];
 
     // physics: convert watts (radiometric) to nits (photometric)
     const float luminous_efficacy = 683.0f;

@@ -326,7 +326,7 @@ void RenderOptions::OnTickVisible()
                     ImGui::BeginDisabled(cvar_hdr.GetValueAs<bool>());
                     option_value("Gamma", "r.gamma");
                     ImGui::EndDisabled();
-                    option_value("Exposure adaptation speed", "r.auto_exposure_adaptation_speed", "Negative value disables adaptation", 0.1f, -1.0f);
+                    option_value("Exposure adaptation speed", "r.auto_exposure_adaptation_speed", "0 or negative disables adaptation", 0.1f, -1.0f);
                 }
 
                 if (option_header("Tone Mapping"))

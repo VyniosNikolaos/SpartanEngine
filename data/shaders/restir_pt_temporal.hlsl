@@ -85,7 +85,7 @@ float2 reproject_to_previous_frame(float2 current_uv)
     return current_uv - velocity_uv;
 }
 
-bool is_temporal_sample_valid(float2 current_uv, float2 prev_uv, float3 current_pos, float3 current_normal, float current_depth, float2 restir_resolution, out float confidence)
+bool is_temporal_sample_valid(float2 current_uv, float2 prev_uv, float3 current_pos, float3 current_normal, float current_depth, float2 screen_resolution, out float confidence)
 {
     confidence = 0.0f;
 
@@ -96,10 +96,10 @@ bool is_temporal_sample_valid(float2 current_uv, float2 prev_uv, float3 current_
     float4 prev_clip        = mul(float4(current_pos, 1.0f), buffer_frame.view_projection_previous);
     float3 prev_ndc         = prev_clip.xyz / prev_clip.w;
     float2 expected_prev_uv = prev_ndc.xy * float2(0.5f, -0.5f) + 0.5f;
-    float2 reproj_diff = abs(prev_uv - expected_prev_uv) * restir_resolution;
+    float2 reproj_diff = abs(prev_uv - expected_prev_uv) * screen_resolution;
     float reproj_dist  = length(reproj_diff);
 
-    float2 motion       = (current_uv - prev_uv) * restir_resolution;
+    float2 motion       = (current_uv - prev_uv) * screen_resolution;
     float motion_length = length(motion);
 
     float motion_factor = saturate(motion_length / 32.0f);
@@ -114,7 +114,7 @@ bool is_temporal_sample_valid(float2 current_uv, float2 prev_uv, float3 current_
         return false;
 
     // detect depth edges
-    float2 texel_size    = 1.0f / restir_resolution;
+    float2 texel_size    = 1.0f / screen_resolution;
     float depth_left     = linearize_depth(tex_depth.SampleLevel(GET_SAMPLER(sampler_point_clamp), current_uv + float2(-texel_size.x, 0), 0).r);
     float depth_right    = linearize_depth(tex_depth.SampleLevel(GET_SAMPLER(sampler_point_clamp), current_uv + float2(texel_size.x, 0), 0).r);
     float depth_up       = linearize_depth(tex_depth.SampleLevel(GET_SAMPLER(sampler_point_clamp), current_uv + float2(0, -texel_size.y), 0).r);
@@ -148,9 +148,11 @@ bool is_temporal_sample_valid(float2 current_uv, float2 prev_uv, float3 current_
 void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
 {
     uint2 pixel = dispatch_id.xy;
-    float2 resolution = floor(buffer_frame.resolution_render * buffer_frame.restir_pt_scale);
+    uint resolution_x, resolution_y;
+    tex_uav.GetDimensions(resolution_x, resolution_y);
+    float2 resolution = float2(resolution_x, resolution_y);
 
-    if (pixel.x >= (uint)resolution.x || pixel.y >= (uint)resolution.y)
+    if (pixel.x >= resolution_x || pixel.y >= resolution_y)
         return;
 
     float2 uv = (pixel + 0.5f) / resolution;
@@ -214,7 +216,7 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     float temporal_confidence = 0.0f;
     float linear_depth = linearize_depth(depth);
 
-    if (is_temporal_sample_valid(uv, prev_uv, pos_ws, normal_ws, linear_depth, resolution, temporal_confidence))
+    if (is_temporal_sample_valid(uv, prev_uv, pos_ws, normal_ws, linear_depth, buffer_frame.resolution_render, temporal_confidence))
     {
         float2 prev_pixel_f = prev_uv * resolution;
         bool in_bounds = prev_pixel_f.x >= 0.5f && prev_pixel_f.x < resolution.x - 0.5f &&

@@ -63,40 +63,40 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
     const float luminous_efficacy = 683.0f;
     float avg_nits = avg_watts * luminous_efficacy;
 
-    // 3. apply current camera exposure
-    // we need to know how bright the image is *currently* with the c++ camera settings.
-    float current_brightness = avg_nits * buffer_frame.camera_exposure;
+    // 3. auto exposure works on top of the manual camera exposure, so the target is in post-camera scene-linear space
+    float camera_exposure   = max(buffer_frame.camera_exposure, 0.000001f);
+    float current_brightness = avg_nits * camera_exposure;
 
-    // 4. target luminance (middle gray)
-    // we want the average brightness to hit middle gray.
-    // in gt7 setup, white = 250 nits.
-    // middle gray is usually 18% of reference white.
-    // 250 * 0.18 = 45 nits.
-    const float target_nits = 45.0f;
+    // 4. target a brighter average than strict middle gray
+    const float target_luminance = 0.40f;
 
-    // 5. compute exposure compensation factor
-    float desired_exposure = target_nits / max(current_brightness, 0.001f);
+    // 5. compute the ae multiplier needed to bring the current average toward middle gray
+    float desired_exposure = target_luminance / max(current_brightness, 0.000001f);
 
-    // 6. clamp exposure (ev range)
-    // we allow the ae to adjust the camera by +/- 4 stops (ev).
-    // your previous range (-0.2 to 1.5) was too small to fix anything.
-    const float min_ev = -4.0f; 
-    const float max_ev =  4.0f;
+    // 6. clamp the ae multiplier to a wide but still bounded range
+    const float min_ev = -12.0f; 
+    const float max_ev =  12.0f;
 
     float min_exposure = exp2(min_ev);
     float max_exposure = exp2(max_ev);
 
     desired_exposure = clamp(desired_exposure, min_exposure, max_exposure);
 
-    // 7. temporal adaptation (smooth transition)
+    // 7. temporal adaptation in ev space so large changes remain stable
     float prev_exposure = tex2.Load(int3(0, 0, 0)).r;
     float adaptation_speed = pass_get_f3_value().x;
     
-    // safety for first frame
-    if (isnan(prev_exposure) || prev_exposure <= 0.0f) prev_exposure = 1.0f;
+    // start from the current target to avoid a first-frame flash
+    if (isnan(prev_exposure) || prev_exposure <= 0.0f)
+    {
+        prev_exposure = desired_exposure;
+    }
 
-    float tau = 1.0f / max(adaptation_speed, 0.001f);
-    float exposure = prev_exposure + (desired_exposure - prev_exposure) * (1.0f - exp(-tau * buffer_frame.delta_time));
+    // higher values should adapt faster, so the response scales with the user-controlled speed directly
+    float prev_ev          = log2(max(prev_exposure, 0.000001f));
+    float desired_ev       = log2(max(desired_exposure, 0.000001f));
+    float adaptation_alpha = 1.0f - exp(-max(adaptation_speed, 0.0f) * 4.0f * buffer_frame.delta_time);
+    float exposure         = exp2(lerp(prev_ev, desired_ev, adaptation_alpha));
 
     // write output
     tex_uav[uint2(0, 0)] = float4(exposure, exposure, exposure, 1.0f);

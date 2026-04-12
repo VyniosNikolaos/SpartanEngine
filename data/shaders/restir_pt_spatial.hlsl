@@ -162,9 +162,9 @@ float compute_adaptive_radius(float linear_depth, float center_roughness, float 
     return base_radius * roughness_factor * edge_factor * grazing_factor * distance_reduction;
 }
 
-float compute_edge_factor(float2 uv, float linear_depth, float2 resolution)
+float compute_edge_factor(float2 uv, float linear_depth, float2 screen_resolution)
 {
-    float2 texel     = 1.0f / resolution;
+    float2 texel     = 1.0f / screen_resolution;
     float depth_left  = linearize_depth(tex_depth.SampleLevel(GET_SAMPLER(sampler_point_clamp), uv + float2(-texel.x, 0), 0).r);
     float depth_right = linearize_depth(tex_depth.SampleLevel(GET_SAMPLER(sampler_point_clamp), uv + float2(texel.x, 0), 0).r);
     float depth_up    = linearize_depth(tex_depth.SampleLevel(GET_SAMPLER(sampler_point_clamp), uv + float2(0, -texel.y), 0).r);
@@ -180,9 +180,11 @@ float compute_edge_factor(float2 uv, float linear_depth, float2 resolution)
 void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
 {
     uint2 pixel = dispatch_id.xy;
-    float2 resolution = floor(buffer_frame.resolution_render * buffer_frame.restir_pt_scale);
+    uint resolution_x, resolution_y;
+    tex_uav.GetDimensions(resolution_x, resolution_y);
+    float2 resolution = float2(resolution_x, resolution_y);
 
-    if (pixel.x >= (uint)resolution.x || pixel.y >= (uint)resolution.y)
+    if (pixel.x >= resolution_x || pixel.y >= resolution_y)
         return;
 
     float2 uv = (pixel + 0.5f) / resolution;
@@ -216,7 +218,7 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     uint seed = create_seed_for_pass(pixel, buffer_frame.frame, 2 + spatial_pass_index);
     float center_confidence = saturate(center.confidence);
 
-    float edge_factor     = compute_edge_factor(uv, linear_depth, resolution);
+    float edge_factor     = compute_edge_factor(uv, linear_depth, buffer_frame.resolution_render);
     float adaptive_radius = compute_adaptive_radius(linear_depth, roughness, edge_factor, normal_ws, view_dir);
     adaptive_radius      *= lerp(0.35f, 1.0f, center_confidence);
 
