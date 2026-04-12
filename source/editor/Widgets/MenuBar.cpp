@@ -41,6 +41,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "Sequence/Sequencer.h"
 #include "Core/Definitions.h"
 #include "Core/ThreadPool.h"
+#include "../WorldPreviews.h"
 #include "../GeneralWindows.h"
 #include "../ImGui/ImGui_Style.h"
 //===============================
@@ -143,6 +144,7 @@ namespace
                 {
                     if (spartan::FileSystem::IsEngineSceneFile(file_dialog_selection_path))
                     {
+                        WorldPreviews::RequestGeneration(file_dialog_selection_path);
                         spartan::World::LoadFromFile(file_dialog_selection_path);
                         show_file_dialog = false;
                     }

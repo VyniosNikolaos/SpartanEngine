@@ -22,6 +22,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //= INCLUDES =====================
 #include "pch.h"
 #include "GeneralWindows.h"
+#include "WorldPreviews.h"
 #include "Windows/WorldSelector.h"
 #include "Windows/Contributors.h"
 #include "ImGui/Source/imgui.h"
@@ -560,6 +561,8 @@ void GeneralWindows::Initialize(Editor* editor_in)
 
 void GeneralWindows::Tick()
 {
+    WorldPreviews::Tick();
+
     // show the world selector after the welcome window has been dismissed
     static bool welcome_was_visible = welcome::visible;
     if (welcome_was_visible && !welcome::visible)

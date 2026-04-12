@@ -32,6 +32,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "../Commands/Console/ConsoleCommands.h"
 #include <unordered_map>
 #include <atomic>
+#include <string>
 #include "../Math/Rectangle.h"
 //==============================================
 
@@ -135,6 +136,7 @@ namespace spartan
         static uint64_t GetFrameNumber();
         static RHI_Api_Type GetRhiApiType();
         static void Screenshot();
+        static void Screenshot(const std::string& file_path);
         static RHI_CommandList* GetCommandListPresent() { return m_cmd_list_present; }
 
         // write a draw data entry and return its index

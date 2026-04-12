@@ -22,6 +22,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //= INCLUDES ========================
 #include "pch.h"
 #include "WorldSelector.h"
+#include "../WorldPreviews.h"
 #include "../GeneralWindows.h"
 #include "../ImGui/ImGui_Extension.h"
 #include "../ImGui/ImGui_Style.h"
@@ -289,10 +290,12 @@ namespace
     {
         if (is_default_world_selected)
         {
+            WorldPreviews::RequestGeneration(static_cast<spartan::DefaultWorld>(selected_index));
             spartan::Game::Load(static_cast<spartan::DefaultWorld>(selected_index));
         }
         else if (selected_index >= 0 && selected_index < static_cast<int>(world_files.size()))
         {
+            WorldPreviews::RequestGeneration(world_files[selected_index].file_path);
             spartan::World::LoadFromFile(world_files[selected_index].file_path);
         }
         visible_world_list = false;
@@ -385,23 +388,42 @@ namespace
             // world icon centered in the upper portion
             float icon_area_h = card_h * 0.45f;
             float icon_size   = icon_area_h * 0.6f;
-            if (spartan::RHI_Texture* icon_tex = spartan::ResourceCache::GetIcon(spartan::IconType::World))
+            spartan::RHI_Texture* preview_tex = WorldPreviews::GetTexture(static_cast<spartan::DefaultWorld>(i));
+            spartan::RHI_Texture* icon_tex    = preview_tex ? preview_tex : spartan::ResourceCache::GetIcon(spartan::IconType::World);
+            if (icon_tex)
             {
-                float icon_x = card_min.x + (card_w - icon_size) * 0.5f;
-                float icon_y = card_min.y + card_padding + (icon_area_h - icon_size) * 0.5f;
+                if (preview_tex)
+                {
+                    float image_x = card_min.x + card_padding;
+                    float image_y = card_min.y + card_padding;
+                    float image_w = card_w - card_padding * 2.0f;
+                    float image_h = icon_area_h - card_padding * 0.5f;
 
-                // vram warning: tint the icon red if system vram is insufficient
-                uint64_t system_vram = spartan::RHI_Device::MemoryGetTotalMb();
-                ImU32 icon_tint = (system_vram < default_worlds[i].vram)
-                    ? IM_COL32(255, 100, 100, 220)
-                    : IM_COL32(255, 255, 255, 200);
+                    draw_list->AddImage(
+                        reinterpret_cast<ImTextureID>(icon_tex),
+                        ImVec2(image_x, image_y),
+                        ImVec2(image_x + image_w, image_y + image_h),
+                        ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, 255)
+                    );
+                }
+                else
+                {
+                    float icon_x = card_min.x + (card_w - icon_size) * 0.5f;
+                    float icon_y = card_min.y + card_padding + (icon_area_h - icon_size) * 0.5f;
 
-                draw_list->AddImage(
-                    reinterpret_cast<ImTextureID>(icon_tex),
-                    ImVec2(icon_x, icon_y),
-                    ImVec2(icon_x + icon_size, icon_y + icon_size),
-                    ImVec2(0, 0), ImVec2(1, 1), icon_tint
-                );
+                    // vram warning: tint the icon red if system vram is insufficient
+                    uint64_t system_vram = spartan::RHI_Device::MemoryGetTotalMb();
+                    ImU32 icon_tint = (system_vram < default_worlds[i].vram)
+                        ? IM_COL32(255, 100, 100, 220)
+                        : IM_COL32(255, 255, 255, 200);
+
+                    draw_list->AddImage(
+                        reinterpret_cast<ImTextureID>(icon_tex),
+                        ImVec2(icon_x, icon_y),
+                        ImVec2(icon_x + icon_size, icon_y + icon_size),
+                        ImVec2(0, 0), ImVec2(1, 1), icon_tint
+                    );
+                }
             }
 
             // world name centered below icon area (smaller font)
@@ -530,16 +552,35 @@ namespace
             // world icon
             float icon_area_h = card_h * 0.5f;
             float icon_size   = icon_area_h * 0.55f;
-            if (spartan::RHI_Texture* icon_tex = spartan::ResourceCache::GetIcon(spartan::IconType::World))
+            spartan::RHI_Texture* preview_tex = WorldPreviews::GetTexture(world_files[i].file_path);
+            spartan::RHI_Texture* icon_tex    = preview_tex ? preview_tex : spartan::ResourceCache::GetIcon(spartan::IconType::World);
+            if (icon_tex)
             {
-                float icon_x = card_min.x + (card_w - icon_size) * 0.5f;
-                float icon_y = card_min.y + card_padding + (icon_area_h - icon_size) * 0.5f;
-                draw_list->AddImage(
-                    reinterpret_cast<ImTextureID>(icon_tex),
-                    ImVec2(icon_x, icon_y),
-                    ImVec2(icon_x + icon_size, icon_y + icon_size),
-                    ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, 200)
-                );
+                if (preview_tex)
+                {
+                    float image_x = card_min.x + card_padding;
+                    float image_y = card_min.y + card_padding;
+                    float image_w = card_w - card_padding * 2.0f;
+                    float image_h = icon_area_h - card_padding * 0.5f;
+
+                    draw_list->AddImage(
+                        reinterpret_cast<ImTextureID>(icon_tex),
+                        ImVec2(image_x, image_y),
+                        ImVec2(image_x + image_w, image_y + image_h),
+                        ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, 255)
+                    );
+                }
+                else
+                {
+                    float icon_x = card_min.x + (card_w - icon_size) * 0.5f;
+                    float icon_y = card_min.y + card_padding + (icon_area_h - icon_size) * 0.5f;
+                    draw_list->AddImage(
+                        reinterpret_cast<ImTextureID>(icon_tex),
+                        ImVec2(icon_x, icon_y),
+                        ImVec2(icon_x + icon_size, icon_y + icon_size),
+                        ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, 200)
+                    );
+                }
             }
 
             // clip all text to the card bounds

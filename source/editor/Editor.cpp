@@ -23,6 +23,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "pch.h"
 #include "Editor.h"
 #include "GeneralWindows.h"
+#include "WorldPreviews.h"
 #include "Widgets/MenuBar.h"
 #include "Core/Engine.h"
 #include "Core/Settings.h"
@@ -112,6 +113,8 @@ Editor::Editor(const vector<string>& args)
 
 Editor::~Editor()
 {
+    WorldPreviews::Shutdown();
+
     if (ImGui::GetCurrentContext())
     {
         ImGui::RHI::shutdown();

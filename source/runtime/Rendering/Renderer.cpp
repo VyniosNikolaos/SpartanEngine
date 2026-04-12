@@ -30,6 +30,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "../Core/Debugging.h"
 #include "../Core/Window.h"
 #include "../Core/Timer.h"
+#include "../FileSystem/FileSystem.h"
 #include "../Input/Input.h"
 #include "../Display/Display.h"
 #include "../RHI/RHI_Device.h"
@@ -1618,11 +1619,9 @@ namespace spartan
         }
     }
 
-    void Renderer::Screenshot()
+    static void screenshot_internal(string file_path = "")
     {
-        static uint32_t screenshot_index = 0;
-
-        RHI_Texture* frame_output = GetRenderTarget(Renderer_RenderTarget::frame_output);
+        RHI_Texture* frame_output = Renderer::GetRenderTarget(Renderer_RenderTarget::frame_output);
         uint32_t width            = frame_output->GetWidth();
         uint32_t height           = frame_output->GetHeight();
         uint32_t bits_per_channel = frame_output->GetBitsPerChannel();
@@ -1642,20 +1641,53 @@ namespace spartan
         void* mapped_data = staging->GetMappedData();
         SP_ASSERT_MSG(mapped_data, "Staging buffer not mappable");
 
-        uint32_t index = screenshot_index++;
-        string exr_path = "screenshot_" + to_string(index) + ".exr";
-        string png_path = "screenshot_" + to_string(index) + ".png";
-
         spartan::ThreadPool::AddTask([=]()
         {
+            if (!file_path.empty())
+            {
+                string directory = FileSystem::GetDirectoryFromFilePath(file_path);
+                if (!directory.empty() && !FileSystem::Exists(directory))
+                {
+                    FileSystem::CreateDirectory_(directory);
+                }
+
+                string temp_file_path = file_path + ".tmp";
+                if (FileSystem::Exists(temp_file_path))
+                {
+                    FileSystem::Delete(temp_file_path);
+                }
+
+                SP_LOG_INFO("Saving screenshot to '%s'...", file_path.c_str());
+                ImageImporter::SaveSdr(temp_file_path, width, height, channel_count, bits_per_channel, mapped_data, is_hdr);
+                if (FileSystem::Exists(file_path))
+                {
+                    FileSystem::Delete(file_path);
+                }
+                FileSystem::Rename(temp_file_path, file_path);
+                SP_LOG_INFO("Screenshot saved as '%s'", file_path.c_str());
+                return;
+            }
+
+            static uint32_t screenshot_index = 0;
+            uint32_t index = screenshot_index++;
+            string exr_path = "screenshot_" + to_string(index) + ".exr";
+            string png_path = "screenshot_" + to_string(index) + ".png";
+
             SP_LOG_INFO("Saving screenshots...");
-
             ImageImporter::Save(exr_path, width, height, channel_count, bits_per_channel, mapped_data);
-
             ImageImporter::SaveSdr(png_path, width, height, channel_count, bits_per_channel, mapped_data, is_hdr);
-
             SP_LOG_INFO("Screenshots saved as '%s' and '%s'", exr_path.c_str(), png_path.c_str());
         });
+    }
+
+    void Renderer::Screenshot()
+    {
+        screenshot_internal();
+    }
+
+    void Renderer::Screenshot(const string& file_path)
+    {
+        screenshot_internal(file_path);
     }
 
     RHI_AccelerationStructure* Renderer::GetTopLevelAccelerationStructure()
