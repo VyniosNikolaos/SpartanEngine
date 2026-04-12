@@ -92,7 +92,7 @@ struct FrameBufferData
 
     SHARED_DOUBLE time;
     SHARED_FLOAT  camera_fov;
-    SHARED_FLOAT  padding2;
+    SHARED_FLOAT  restir_pt_scale;
 
     SHARED_FLOAT3 wind;
     SHARED_FLOAT  gamma;

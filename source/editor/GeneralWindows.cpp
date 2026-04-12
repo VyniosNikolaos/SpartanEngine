@@ -246,7 +246,6 @@ namespace
             { "Intel XeSS",                  "2.1.0",      "https://github.com/intel/xess"                                    },
             { "Lua",                         "5.5.0",      "https://www.lua.org/"                                             },
             { "meshoptimizer",               "0.25",       "https://github.com/zeux/meshoptimizer"                            },
-            { "NVIDIA NRD",                  "4.16.1",     "https://github.com/NVIDIAGameWorks/RayTracingDenoiser"            },
             { "OpenXR",                      "1.1.54",     "https://www.khronos.org/openxr/"                                  },
             { "PhysX",                       "5.6.0",      "https://github.com/NVIDIA-Omniverse/PhysX"                        },
             { "pugixml",                     "1.13",       "https://github.com/zeux/pugixml"                                  },

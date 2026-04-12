@@ -65,6 +65,7 @@ namespace spartan
     extern TConsoleVar<float> cvar_ray_traced_reflections;
     extern TConsoleVar<float> cvar_ray_traced_shadows;
     extern TConsoleVar<float> cvar_restir_pt;
+    extern TConsoleVar<float> cvar_restir_pt_scale;
     extern TConsoleVar<float> cvar_motion_blur;
     extern TConsoleVar<float> cvar_depth_of_field;
     extern TConsoleVar<float> cvar_film_grain;
@@ -210,7 +211,6 @@ namespace spartan
         static void Pass_RayTracedReflections(RHI_CommandList* cmd_list, uint32_t eye_layer = rhi_all_mips);
         static void Pass_RayTracedShadows(RHI_CommandList* cmd_list);
         static void Pass_ReSTIR_PathTracing(RHI_CommandList* cmd_list);
-        static void Pass_Denoiser(RHI_CommandList* cmd_list, RHI_Texture* tex_in, RHI_Texture* tex_out);
         static void Pass_Light_Reflections(RHI_CommandList* cmd_list, uint32_t eye_layer = rhi_all_mips);
         static void Pass_ScreenSpaceShadows(RHI_CommandList* cmd_list);
         static void Pass_Skysphere(RHI_CommandList* cmd_list);

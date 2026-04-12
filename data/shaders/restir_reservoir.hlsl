@@ -24,7 +24,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 // core parameters
 static const uint RESTIR_MAX_PATH_LENGTH     = 5;
-static const uint RESTIR_M_CAP               = 128;
+static const uint RESTIR_M_CAP               = 200;
 static const uint RESTIR_SPATIAL_SAMPLES     = 16;
 static const float RESTIR_SPATIAL_RADIUS     = 32.0f;
 static const float RESTIR_DEPTH_THRESHOLD    = 0.05f;
@@ -568,7 +568,7 @@ float3 soft_clamp_gi(float3 gi, PathSample sample)
 
     float lum = dot(gi, float3(0.299f, 0.587f, 0.114f));
 
-    float soft_clamp = is_sky_sample(sample) ? 40.0f : 50.0f;
+    float soft_clamp = is_sky_sample(sample) ? RESTIR_SOFT_CLAMP_SKY : RESTIR_SOFT_CLAMP_DEFAULT;
 
     if (lum > soft_clamp)
     {

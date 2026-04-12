@@ -180,7 +180,7 @@ float compute_edge_factor(float2 uv, float linear_depth, float2 resolution)
 void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
 {
     uint2 pixel = dispatch_id.xy;
-    float2 resolution = buffer_frame.resolution_render;
+    float2 resolution = floor(buffer_frame.resolution_render * buffer_frame.restir_pt_scale);
 
     if (pixel.x >= (uint)resolution.x || pixel.y >= (uint)resolution.y)
         return;
@@ -212,10 +212,15 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     if (!is_reservoir_valid(center))
         center = create_empty_reservoir();
 
-    uint seed = create_seed_for_pass(pixel, buffer_frame.frame, 2);
+    uint spatial_pass_index = (uint)pass_get_f3_value().x;
+    uint seed = create_seed_for_pass(pixel, buffer_frame.frame, 2 + spatial_pass_index);
 
     float edge_factor     = compute_edge_factor(uv, linear_depth, resolution);
     float adaptive_radius = compute_adaptive_radius(linear_depth, roughness, edge_factor, normal_ws, view_dir);
+
+    // second pass uses a wider radius to propagate samples further
+    if (spatial_pass_index > 0)
+        adaptive_radius *= 1.5f;
 
     Reservoir combined = create_empty_reservoir();
 

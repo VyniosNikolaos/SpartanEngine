@@ -84,44 +84,49 @@ float2 reproject_to_previous_frame(float2 current_uv)
     return current_uv - velocity;
 }
 
-bool is_temporal_sample_valid(float2 current_uv, float2 prev_uv, float3 current_pos, float3 current_normal, float current_depth, out float confidence)
+bool is_temporal_sample_valid(float2 current_uv, float2 prev_uv, float3 current_pos, float3 current_normal, float current_depth, float2 restir_resolution, out float confidence)
 {
     confidence = 0.0f;
 
     if (!is_valid_uv(prev_uv))
         return false;
 
-    // verify reprojection accuracy
+    // verify reprojection accuracy (relax tolerance with motion to account for sub-pixel errors)
     float4 prev_clip        = mul(float4(current_pos, 1.0f), buffer_frame.view_projection_previous);
     float3 prev_ndc         = prev_clip.xyz / prev_clip.w;
     float2 expected_prev_uv = prev_ndc.xy * float2(0.5f, -0.5f) + 0.5f;
-    float2 reproj_diff = abs(prev_uv - expected_prev_uv) * buffer_frame.resolution_render;
+    float2 reproj_diff = abs(prev_uv - expected_prev_uv) * restir_resolution;
     float reproj_dist  = length(reproj_diff);
-    if (reproj_dist > 2.0f)
+
+    float2 motion       = (current_uv - prev_uv) * restir_resolution;
+    float motion_length = length(motion);
+
+    // allow more reprojection error during fast motion
+    float reproj_tolerance = lerp(2.0f, 6.0f, saturate(motion_length / 50.0f));
+    if (reproj_dist > reproj_tolerance)
         return false;
 
-    // check normal similarity
+    // relax normal threshold during motion since g-buffer normals shift slightly
+    float normal_threshold = lerp(0.9f, 0.75f, saturate(motion_length / 40.0f));
     float3 prev_uv_normal   = get_normal(prev_uv);
     float normal_similarity = dot(current_normal, prev_uv_normal);
-    if (normal_similarity < 0.9f)
+    if (normal_similarity < normal_threshold)
         return false;
 
-    // compute motion and detect depth edges
-    float2 motion       = (current_uv - prev_uv) * buffer_frame.resolution_render;
-    float motion_length = length(motion);
-    float2 texel_size    = 1.0f / buffer_frame.resolution_render;
+    // detect depth edges
+    float2 texel_size    = 1.0f / restir_resolution;
     float depth_left     = linearize_depth(tex_depth.SampleLevel(GET_SAMPLER(sampler_point_clamp), current_uv + float2(-texel_size.x, 0), 0).r);
     float depth_right    = linearize_depth(tex_depth.SampleLevel(GET_SAMPLER(sampler_point_clamp), current_uv + float2(texel_size.x, 0), 0).r);
     float depth_up       = linearize_depth(tex_depth.SampleLevel(GET_SAMPLER(sampler_point_clamp), current_uv + float2(0, -texel_size.y), 0).r);
     float depth_down     = linearize_depth(tex_depth.SampleLevel(GET_SAMPLER(sampler_point_clamp), current_uv + float2(0, texel_size.y), 0).r);
     float depth_gradient = abs(depth_left - depth_right) + abs(depth_up - depth_down);
     bool is_depth_edge   = depth_gradient > current_depth * 0.05f;
-    float edge_penalty = is_depth_edge ? saturate(1.0f - motion_length * 0.5f) : 1.0f;
+    float edge_penalty = is_depth_edge ? saturate(1.0f - motion_length * 0.2f) : 1.0f;
 
-    // combine confidence factors
-    float reproj_confidence = saturate(1.0f - reproj_dist / 2.0f);
-    float normal_confidence = saturate((normal_similarity - 0.85f) / 0.1f);
-    float motion_confidence = saturate(1.0f - motion_length * 0.01f);
+    // combine confidence factors - motion reduces confidence gently rather than killing it
+    float reproj_confidence = saturate(1.0f - reproj_dist / reproj_tolerance);
+    float normal_confidence = saturate((normal_similarity - normal_threshold) / (1.0f - normal_threshold));
+    float motion_confidence = saturate(1.0f - motion_length * 0.003f);
     confidence = reproj_confidence * normal_confidence * motion_confidence * edge_penalty;
 
     if (confidence < TEMPORAL_MIN_CONFIDENCE)
@@ -134,7 +139,7 @@ bool is_temporal_sample_valid(float2 current_uv, float2 prev_uv, float3 current_
 void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
 {
     uint2 pixel = dispatch_id.xy;
-    float2 resolution = buffer_frame.resolution_render;
+    float2 resolution = floor(buffer_frame.resolution_render * buffer_frame.restir_pt_scale);
 
     if (pixel.x >= (uint)resolution.x || pixel.y >= (uint)resolution.y)
         return;
@@ -196,7 +201,7 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     float temporal_confidence = 0.0f;
     float linear_depth = linearize_depth(depth);
 
-    if (is_temporal_sample_valid(uv, prev_uv, pos_ws, normal_ws, linear_depth, temporal_confidence))
+    if (is_temporal_sample_valid(uv, prev_uv, pos_ws, normal_ws, linear_depth, resolution, temporal_confidence))
     {
         float2 prev_pixel_f = prev_uv * resolution;
         bool in_bounds = prev_pixel_f.x >= 0.5f && prev_pixel_f.x < resolution.x - 0.5f &&
@@ -225,10 +230,10 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
                 temporal.weight_sum *= RESTIR_TEMPORAL_DECAY;
                 temporal.age        += 1.0f;
 
-                // cap M based on staleness
-                float staleness_factor = saturate(1.0f - temporal.age / 32.0f);
-                float effective_M_cap  = RESTIR_M_CAP * temporal_confidence * staleness_factor;
-                clamp_reservoir_M(temporal, max(effective_M_cap, 4.0f));
+                // cap M based on staleness - keep a meaningful floor so temporal still contributes during motion
+                float staleness_factor = saturate(1.0f - temporal.age / 64.0f);
+                float effective_M_cap  = RESTIR_M_CAP * max(temporal_confidence, 0.15f) * staleness_factor;
+                clamp_reservoir_M(temporal, max(effective_M_cap, 8.0f));
 
                 if (is_sky_sample(temporal.sample))
                 {

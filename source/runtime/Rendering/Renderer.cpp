@@ -237,8 +237,6 @@ namespace spartan
 
         RHI_CommandList::ImmediateExecutionShutdown();
 
-        RHI_VendorTechnology::NRD_Shutdown();
-
         {
             DestroyResources();
             GeometryBuffer::Shutdown();
@@ -286,16 +284,19 @@ namespace spartan
         // recreate optional render targets when feature cvars change
         if (m_initialized_resources)
         {
-            static uint32_t options_hash = 0;
-            uint32_t options_hash_new    = (cvar_ssao.GetValueAs<bool>() << 0) | (cvar_ray_traced_reflections.GetValueAs<bool>() << 1) | (cvar_restir_pt.GetValueAs<bool>() << 2);
-            
-            if (options_hash_new != options_hash)
+            static uint32_t options_hash  = 0;
+            static float restir_scale_old = -1.0f;
+            uint32_t options_hash_new     = (cvar_ssao.GetValueAs<bool>() << 0) | (cvar_ray_traced_reflections.GetValueAs<bool>() << 1) | (cvar_restir_pt.GetValueAs<bool>() << 2);
+            float restir_scale_new        = cvar_restir_pt_scale.GetValue();
+
+            if (options_hash_new != options_hash || restir_scale_new != restir_scale_old)
             {
                 RHI_Device::QueueWaitAll(true);
                 RHI_Device::DeletionQueueParse();
                 UpdateOptionalRenderTargets();
                 RHI_Device::DeletionQueueParse();
-                options_hash = options_hash_new;
+                options_hash    = options_hash_new;
+                restir_scale_old = restir_scale_new;
             }
         }
     
@@ -739,6 +740,7 @@ namespace spartan
         m_cb_frame_cpu.delta_time          = static_cast<float>(Timer::GetDeltaTimeSec());
         m_cb_frame_cpu.frame               = static_cast<uint32_t>(frame_num);
         m_cb_frame_cpu.resolution_scale    = cvar_resolution_scale.GetValue();
+        m_cb_frame_cpu.restir_pt_scale     = cvar_restir_pt_scale.GetValue();
         m_cb_frame_cpu.hdr_enabled         = cvar_hdr.GetValueAs<bool>() ? 1.0f : 0.0f;
         m_cb_frame_cpu.hdr_max_nits        = Display::GetLuminanceMax();
         m_cb_frame_cpu.gamma               = cvar_gamma.GetValue();

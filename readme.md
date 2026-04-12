@@ -84,7 +84,7 @@ The renderer is built around a single principle: **the GPU owns the data**. Ever
 
 ### Lighting and Global Illumination
 
-- **ReSTIR path tracing**, reservoir-based spatiotemporal resampling for real-time multi-bounce global illumination, denoised via NVIDIA ReLAX (NRD)
+- **ReSTIR path tracing**, reservoir-based spatiotemporal resampling with multi-pass spatial reuse for real-time multi-bounce global illumination
 - **Ray-traced reflections and shadows** via hardware ray queries
 - **Atmospheric scattering** with real-time filtering and image-based lighting with bent normals
 - **Volumetric fog** with temporal reprojection

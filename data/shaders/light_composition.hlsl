@@ -62,7 +62,7 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
         // metals have no diffuse component, so scale by (1 - metallic)
         if (is_restir_pt_enabled())
         {
-            float3 gi = tex6.SampleLevel(samplers[sampler_point_clamp], surface.uv, 0).rgb;
+            float3 gi = tex6.SampleLevel(samplers[sampler_bilinear_clamp], surface.uv, 0).rgb;
             light_diffuse += gi * (1.0f - surface.metallic);
         }
     }

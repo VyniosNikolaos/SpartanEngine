@@ -1142,129 +1142,98 @@ namespace spartan
         }
         cmd_list->EndTimeblock();
 
-        // spatial resampling (ping-pong to avoid read-write hazard)
+        // spatial resampling - two passes to propagate good samples across a wider neighborhood,
+        // reducing variance enough to skip denoising entirely
         RHI_Texture* reservoirs_spatial[5];
         for (uint32_t i = 0; i < 5; i++)
             reservoirs_spatial[i] = GetRenderTarget(static_cast<Renderer_RenderTarget>(static_cast<uint32_t>(Renderer_RenderTarget::restir_reservoir_spatial0) + i));
-        
+
+        RHI_Shader* shader_spatial = GetShader(Renderer_Shader::restir_pt_spatial_c);
+        if (!shader_spatial || !shader_spatial->IsCompiled())
+        {
+            cmd_list->InsertBarrier(tex_gi, RHI_BarrierType::EnsureWriteThenRead);
+            return;
+        }
+
+        const uint32_t thread_group_count_x = 8;
+        const uint32_t thread_group_count_y = 8;
+        uint32_t dispatch_x = (width + thread_group_count_x - 1) / thread_group_count_x;
+        uint32_t dispatch_y = (height + thread_group_count_y - 1) / thread_group_count_y;
+
+        // pass 1: reservoirs -> reservoirs_spatial
         cmd_list->BeginTimeblock("restir_pt_spatial");
         {
-            RHI_Shader* shader_spatial = GetShader(Renderer_Shader::restir_pt_spatial_c);
-            if (!shader_spatial || !shader_spatial->IsCompiled())
-            {
-                cmd_list->EndTimeblock();
-                cmd_list->InsertBarrier(tex_gi, RHI_BarrierType::EnsureWriteThenRead);
-                return;
-            }
-            
             RHI_PipelineState pso;
             pso.name             = "restir_pt_spatial";
             pso.shaders[Compute] = shader_spatial;
             cmd_list->SetPipelineState(pso);
-            
+
+            m_pcb_pass_cpu.set_f3_value(0.0f);
+            cmd_list->PushConstants(m_pcb_pass_cpu);
+
             SetCommonTextures(cmd_list);
-            
+
             cmd_list->SetAccelerationStructure(Renderer_BindingsSrv::tlas, tlas);
-            
+
             for (uint32_t i = 0; i < 5; i++)
             {
                 cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsSrv::reservoir_prev0) + i, reservoirs[i]);
                 cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsUav::reservoir0) + i,      reservoirs_spatial[i], rhi_all_mips, 0, true);
             }
-            
+
             cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsUav::tex), tex_gi, rhi_all_mips, 0, true);
-            
-            const uint32_t thread_group_count_x = 8;
-            const uint32_t thread_group_count_y = 8;
-            uint32_t dispatch_x = (width + thread_group_count_x - 1) / thread_group_count_x;
-            uint32_t dispatch_y = (height + thread_group_count_y - 1) / thread_group_count_y;
+
             cmd_list->Dispatch(dispatch_x, dispatch_y, 1);
-            
+
             for (uint32_t i = 0; i < 5; i++)
                 cmd_list->InsertBarrier(reservoirs_spatial[i], RHI_BarrierType::EnsureWriteThenRead);
             cmd_list->InsertBarrier(tex_gi, RHI_BarrierType::EnsureWriteThenRead);
         }
         cmd_list->EndTimeblock();
-        
-        // copy back and swap for next frame's temporal pass
+
+        // pass 2: reservoirs_spatial -> reservoirs (ping-pong back)
+        cmd_list->BeginTimeblock("restir_pt_spatial_2");
+        {
+            RHI_PipelineState pso;
+            pso.name             = "restir_pt_spatial_2";
+            pso.shaders[Compute] = shader_spatial;
+            cmd_list->SetPipelineState(pso);
+
+            m_pcb_pass_cpu.set_f3_value(1.0f);
+            cmd_list->PushConstants(m_pcb_pass_cpu);
+
+            SetCommonTextures(cmd_list);
+
+            cmd_list->SetAccelerationStructure(Renderer_BindingsSrv::tlas, tlas);
+
+            for (uint32_t i = 0; i < 5; i++)
+            {
+                cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsSrv::reservoir_prev0) + i, reservoirs_spatial[i]);
+                cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsUav::reservoir0) + i,      reservoirs[i], rhi_all_mips, 0, true);
+            }
+
+            cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsUav::tex), tex_gi, rhi_all_mips, 0, true);
+
+            cmd_list->Dispatch(dispatch_x, dispatch_y, 1);
+
+            for (uint32_t i = 0; i < 5; i++)
+                cmd_list->InsertBarrier(reservoirs[i], RHI_BarrierType::EnsureWriteThenRead);
+            cmd_list->InsertBarrier(tex_gi, RHI_BarrierType::EnsureWriteThenRead);
+        }
+        cmd_list->EndTimeblock();
+
+        // swap for next frame's temporal pass
         {
             auto& render_targets = GetRenderTargets();
             for (uint32_t i = 0; i < 5; i++)
             {
-                cmd_list->Copy(reservoirs_spatial[i], reservoirs[i], false);
-
                 uint32_t idx_cur  = static_cast<uint32_t>(Renderer_RenderTarget::restir_reservoir0) + i;
                 uint32_t idx_prev = static_cast<uint32_t>(Renderer_RenderTarget::restir_reservoir_prev0) + i;
                 swap(render_targets[idx_cur], render_targets[idx_prev]);
             }
         }
-        
-        // denoise
-        //Pass_Denoiser(cmd_list, tex_gi, tex_gi);
     }
 
-    void Renderer::Pass_Denoiser(RHI_CommandList* cmd_list, RHI_Texture* tex_in, RHI_Texture* tex_out)
-    {
-        uint32_t width  = tex_in->GetWidth();
-        uint32_t height = tex_in->GetHeight();
-
-        cmd_list->BeginTimeblock("nrd_prepare");
-        {
-            RHI_Shader* shader = GetShader(Renderer_Shader::nrd_prepare_c);
-            if (!shader || !shader->IsCompiled())
-            {
-                SP_LOG_WARNING("nrd_prepare shader failed to compile, skipping denoiser");
-                cmd_list->EndTimeblock();
-                return;
-            }
-
-            RHI_Texture* nrd_viewz            = GetRenderTarget(Renderer_RenderTarget::nrd_viewz);
-            RHI_Texture* nrd_normal_roughness = GetRenderTarget(Renderer_RenderTarget::nrd_normal_roughness);
-            RHI_Texture* nrd_diff_radiance    = GetRenderTarget(Renderer_RenderTarget::nrd_diff_radiance_hitdist);
-            RHI_Texture* nrd_spec_radiance    = GetRenderTarget(Renderer_RenderTarget::nrd_spec_radiance_hitdist);
-
-            if (!nrd_diff_radiance || !nrd_spec_radiance || !nrd_viewz || !nrd_normal_roughness)
-            {
-                SP_LOG_WARNING("nrd render targets not allocated, skipping denoiser");
-                cmd_list->EndTimeblock();
-                return;
-            }
-
-            cmd_list->InsertBarrier(tex_in, RHI_Image_Layout::Shader_Read);
-
-            RHI_PipelineState pso;
-            pso.name             = "nrd_prepare";
-            pso.shaders[Compute] = shader;
-            cmd_list->SetPipelineState(pso);
-
-            SetCommonTextures(cmd_list);
-            cmd_list->SetTexture(Renderer_BindingsSrv::tex, tex_in);
-            cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsUav::nrd_viewz), nrd_viewz, rhi_all_mips, 0, true);
-            cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsUav::nrd_normal_roughness), nrd_normal_roughness, rhi_all_mips, 0, true);
-            cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsUav::nrd_diff_radiance), nrd_diff_radiance, rhi_all_mips, 0, true);
-            cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsUav::nrd_spec_radiance), nrd_spec_radiance, rhi_all_mips, 0, true);
-
-            const uint32_t thread_group_count_x = 8;
-            const uint32_t thread_group_count_y = 8;
-            uint32_t dispatch_x = (width + thread_group_count_x - 1) / thread_group_count_x;
-            uint32_t dispatch_y = (height + thread_group_count_y - 1) / thread_group_count_y;
-            cmd_list->Dispatch(dispatch_x, dispatch_y, 1);
-
-            cmd_list->InsertBarrier(nrd_diff_radiance, RHI_BarrierType::EnsureWriteThenRead);
-        }
-        cmd_list->EndTimeblock();
-
-        // diagnostic: bypass nrd to verify prepare shader output
-        {
-            RHI_Texture* nrd_diff = GetRenderTarget(Renderer_RenderTarget::nrd_diff_radiance_hitdist);
-            if (nrd_diff && tex_out)
-            {
-                cmd_list->InsertBarrier(nrd_diff, RHI_Image_Layout::Transfer_Source);
-                cmd_list->InsertBarrier(tex_out, RHI_Image_Layout::Transfer_Destination);
-                cmd_list->Blit(nrd_diff, tex_out, false);
-            }
-        }
-    }
 
     void Renderer::Pass_ScreenSpaceShadows(RHI_CommandList* cmd_list)
     {

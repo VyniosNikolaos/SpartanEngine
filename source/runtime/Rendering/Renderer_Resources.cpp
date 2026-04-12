@@ -266,11 +266,30 @@ namespace spartan
             at(render_targets, Renderer_RenderTarget::gbuffer_reflections_albedo)   = nullptr;
         }
         
-        // restir reservoirs
+        // restir reservoirs - recreate when toggled or when resolution scale changes
         bool need_restir = cvar_restir_pt.GetValueAs<bool>() && RHI_Device::IsSupportedRayTracing();
+        float restir_scale = cvar_restir_pt_scale.GetValue();
+        static float last_restir_scale = -1.0f;
+        bool restir_scale_changed = need_restir && at(render_targets, Renderer_RenderTarget::restir_reservoir0) && (last_restir_scale != restir_scale);
+
+        if (restir_scale_changed)
+        {
+            for (uint32_t i = 0; i < 15; i++)
+            {
+                auto rt = static_cast<Renderer_RenderTarget>(static_cast<uint32_t>(Renderer_RenderTarget::restir_reservoir0) + i);
+                at(render_targets, rt) = nullptr;
+            }
+
+            uint32_t restir_out_width  = max(static_cast<uint32_t>(width * restir_scale), 64u);
+            uint32_t restir_out_height = max(static_cast<uint32_t>(height * restir_scale), 64u);
+            at(render_targets, Renderer_RenderTarget::restir_output) = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, restir_out_width, restir_out_height, 1, 1, RHI_Format::R16G16B16A16_Float, flags | RHI_Texture_ConcurrentSharing, "restir_output");
+        }
+
         if (need_restir && !at(render_targets, Renderer_RenderTarget::restir_reservoir0))
         {
-            uint32_t restir_flags = flags | RHI_Texture_ConcurrentSharing;
+            uint32_t restir_flags  = flags | RHI_Texture_ConcurrentSharing;
+            uint32_t restir_width  = max(static_cast<uint32_t>(width * restir_scale), 64u);
+            uint32_t restir_height = max(static_cast<uint32_t>(height * restir_scale), 64u);
 
             static const char* reservoir_names[] =
             {
@@ -282,16 +301,10 @@ namespace spartan
             for (uint32_t i = 0; i < 15; i++)
             {
                 auto rt = static_cast<Renderer_RenderTarget>(static_cast<uint32_t>(Renderer_RenderTarget::restir_reservoir0) + i);
-                at(render_targets, rt) = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, width, height, 1, 1, RHI_Format::R32G32B32A32_Float, restir_flags, reservoir_names[i]);
+                at(render_targets, rt) = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, restir_width, restir_height, 1, 1, RHI_Format::R32G32B32A32_Float, restir_flags, reservoir_names[i]);
             }
-            
-            // nrd denoiser
-            at(render_targets, Renderer_RenderTarget::nrd_viewz)                    = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, width, height, 1, 1, RHI_Format::R16_Float,          restir_flags, "nrd_viewz");
-            at(render_targets, Renderer_RenderTarget::nrd_normal_roughness)         = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, width, height, 1, 1, RHI_Format::R10G10B10A2_Unorm,  restir_flags, "nrd_normal_roughness");
-            at(render_targets, Renderer_RenderTarget::nrd_diff_radiance_hitdist)    = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, width, height, 1, 1, RHI_Format::R16G16B16A16_Float, restir_flags, "nrd_diff_radiance_hitdist");
-            at(render_targets, Renderer_RenderTarget::nrd_spec_radiance_hitdist)    = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, width, height, 1, 1, RHI_Format::R16G16B16A16_Float, restir_flags, "nrd_spec_radiance_hitdist");
-            at(render_targets, Renderer_RenderTarget::nrd_out_diff_radiance_hitdist)= make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, width, height, 1, 1, RHI_Format::R16G16B16A16_Float, restir_flags, "nrd_out_diff_radiance_hitdist");
-            at(render_targets, Renderer_RenderTarget::nrd_out_spec_radiance_hitdist)= make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, width, height, 1, 1, RHI_Format::R16G16B16A16_Float, restir_flags, "nrd_out_spec_radiance_hitdist");
+
+            last_restir_scale = restir_scale;
         }
         else if (!need_restir && at(render_targets, Renderer_RenderTarget::restir_reservoir0))
         {
@@ -300,13 +313,7 @@ namespace spartan
                 auto rt = static_cast<Renderer_RenderTarget>(static_cast<uint32_t>(Renderer_RenderTarget::restir_reservoir0) + i);
                 at(render_targets, rt) = nullptr;
             }
-            
-            at(render_targets, Renderer_RenderTarget::nrd_viewz)                     = nullptr;
-            at(render_targets, Renderer_RenderTarget::nrd_normal_roughness)          = nullptr;
-            at(render_targets, Renderer_RenderTarget::nrd_diff_radiance_hitdist)     = nullptr;
-            at(render_targets, Renderer_RenderTarget::nrd_spec_radiance_hitdist)     = nullptr;
-            at(render_targets, Renderer_RenderTarget::nrd_out_diff_radiance_hitdist) = nullptr;
-            at(render_targets, Renderer_RenderTarget::nrd_out_spec_radiance_hitdist) = nullptr;
+            last_restir_scale = -1.0f;
         }
         
     }
@@ -342,12 +349,6 @@ namespace spartan
             at(render_targets, Renderer_RenderTarget::restir_output)                = nullptr;
             for (uint32_t i = 0; i < 15; i++)
                 at(render_targets, static_cast<Renderer_RenderTarget>(static_cast<uint32_t>(Renderer_RenderTarget::restir_reservoir0) + i)) = nullptr;
-            at(render_targets, Renderer_RenderTarget::nrd_viewz)                    = nullptr;
-            at(render_targets, Renderer_RenderTarget::nrd_normal_roughness)         = nullptr;
-            at(render_targets, Renderer_RenderTarget::nrd_diff_radiance_hitdist)    = nullptr;
-            at(render_targets, Renderer_RenderTarget::nrd_spec_radiance_hitdist)    = nullptr;
-            at(render_targets, Renderer_RenderTarget::nrd_out_diff_radiance_hitdist)= nullptr;
-            at(render_targets, Renderer_RenderTarget::nrd_out_spec_radiance_hitdist)= nullptr;
             at(render_targets, Renderer_RenderTarget::shading_rate)                 = nullptr;
             at(render_targets, Renderer_RenderTarget::shadow_atlas)                 = nullptr;
         }
@@ -429,7 +430,12 @@ namespace spartan
             at(render_targets, Renderer_RenderTarget::sss)                = make_shared<RHI_Texture>(RHI_Texture_Type::Type2DArray, width_render, height_render, 4, 1, RHI_Format::R16_Float,          RHI_Texture_Uav | RHI_Texture_Srv | RHI_Texture_ClearBlit | RHI_Texture_ConcurrentSharing, "sss");
             at(render_targets, Renderer_RenderTarget::reflections)        = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D,      width_render, height_render, 1, 1, RHI_Format::R16G16B16A16_Float, RHI_Texture_Uav | RHI_Texture_Srv | RHI_Texture_ClearBlit, "reflections");
             at(render_targets, Renderer_RenderTarget::ray_traced_shadows) = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D,      width_render, height_render, 1, 1, RHI_Format::R16_Float,          RHI_Texture_Uav | RHI_Texture_Srv | RHI_Texture_ClearBlit | RHI_Texture_ConcurrentSharing, "ray_traced_shadows");
-            at(render_targets, Renderer_RenderTarget::restir_output)      = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D,      width_render, height_render, 1, 1, RHI_Format::R16G16B16A16_Float, RHI_Texture_Uav | RHI_Texture_Srv | RHI_Texture_ClearBlit | RHI_Texture_ConcurrentSharing, "restir_output");
+            {
+                float restir_scale          = cvar_restir_pt_scale.GetValue();
+                uint32_t restir_out_width   = max(static_cast<uint32_t>(width_render * restir_scale), 64u);
+                uint32_t restir_out_height  = max(static_cast<uint32_t>(height_render * restir_scale), 64u);
+                at(render_targets, Renderer_RenderTarget::restir_output) = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, restir_out_width, restir_out_height, 1, 1, RHI_Format::R16G16B16A16_Float, RHI_Texture_Uav | RHI_Texture_Srv | RHI_Texture_ClearBlit | RHI_Texture_ConcurrentSharing, "restir_output");
+            }
             
             // optional render targets (ssao, rt reflections, restir)
             UpdateOptionalRenderTargets();
@@ -602,7 +608,6 @@ namespace spartan
             compile_shader(Renderer_Shader::reflections_ray_miss_r,       RHI_Shader_Type::RayMiss,       sd + "ray_traced_reflections.hlsl");
             compile_shader(Renderer_Shader::reflections_ray_hit_r,        RHI_Shader_Type::RayHit,        sd + "ray_traced_reflections.hlsl");
             compile_shader(Renderer_Shader::light_reflections_c,          RHI_Shader_Type::Compute,       sd + "light_reflections.hlsl");
-            compile_shader(Renderer_Shader::nrd_prepare_c,                RHI_Shader_Type::Compute,       sd + "nrd_prepare.hlsl");
 
             compile_shader(Renderer_Shader::shadows_ray_generation_r, RHI_Shader_Type::RayGeneration, sd + "ray_traced_shadows.hlsl");
             compile_shader(Renderer_Shader::shadows_ray_miss_r,       RHI_Shader_Type::RayMiss,       sd + "ray_traced_shadows.hlsl");
