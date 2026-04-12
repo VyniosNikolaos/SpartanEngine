@@ -1631,14 +1631,12 @@ namespace spartan
 
         RHI_Texture* tex_in  = rt_frame_output;
         RHI_Texture* tex_out = rt_frame_output_scratch;
-        bool any_pass_ran    = false;
 
         // helper: run a compute effect and ping-pong the buffers
         auto run_effect = [&](const char* name, Renderer_Shader shader, auto setup)
         {
             Pass_Compute(cmd_list, name, shader, tex_in, tex_out, setup);
             swap(tex_in, tex_out);
-            any_pass_ran = true;
         };
 
         // pre-tonemapping effects
@@ -1662,29 +1660,36 @@ namespace spartan
             });
         }
 
-        if (cvar_bloom.GetValueAs<bool>())
-        {
-            Pass_Bloom(cmd_list, tex_in, tex_out);
-            swap(tex_in, tex_out);
-            any_pass_ran = true;
-        }
-
         // auto-exposure
         if (cvar_auto_exposure_adaptation_speed.GetValue() > 0.0f)
         {
             RHI_Texture* tex_exposure = tex_in;
-            if (any_pass_ran)
+
+            if (!tex_exposure->HasPerMipViews())
             {
-                if (!tex_in->HasPerMipViews())
+                if (tex_out->HasPerMipViews())
                 {
                     tex_exposure = tex_out;
-                    cmd_list->Blit(tex_in, tex_exposure, false);
+                }
+                else
+                {
+                    tex_exposure = rt_frame_output;
                 }
 
-                Pass_Downscale(cmd_list, tex_exposure, Renderer_DownsampleFilter::Average);
+                if (tex_exposure != tex_in)
+                {
+                    cmd_list->Blit(tex_in, tex_exposure, false);
+                }
             }
 
+            Pass_Downscale(cmd_list, tex_exposure, Renderer_DownsampleFilter::Average);
             Pass_AutoExposure(cmd_list, tex_exposure);
+        }
+
+        if (cvar_bloom.GetValueAs<bool>())
+        {
+            Pass_Bloom(cmd_list, tex_in, tex_out);
+            swap(tex_in, tex_out);
         }
 
         // tone-mapping & gamma correction

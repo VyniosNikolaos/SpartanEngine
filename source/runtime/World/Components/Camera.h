@@ -23,6 +23,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 //= INCLUDES ======================
 #include "Component.h"
+#include <algorithm>
 #include <memory>
 #include <vector>
 #include "../../RHI/RHI_Viewport.h"
@@ -93,22 +94,26 @@ namespace spartan
         math::Vector3 ScreenToWorldCoordinates(const math::Vector2& position_screen, const float z) const;
 
         // aperture
-        float GetAperture() const              { return m_aperture; }
-        void SetAperture(const float aperture) { m_aperture = aperture; }
+        float GetAperture() const                     { return m_aperture; }
+        void SetAperture(const float aperture)        { m_aperture = std::max(aperture, 0.01f); }
 
         // shutter speed
-        float GetShutterSpeed() const                   { return m_shutter_speed; }
-        void SetShutterSpeed(const float shutter_speed) { m_shutter_speed = shutter_speed; }
+        float GetShutterSpeed() const                  { return m_shutter_speed; }
+        void SetShutterSpeed(const float shutter_speed){ m_shutter_speed = std::max(shutter_speed, 0.0001f); }
 
         // iso
-        float GetIso() const         { return m_iso; }
-        void SetIso(const float iso) { m_iso = iso; }
+        float GetIso() const                    { return m_iso; }
+        void SetIso(const float iso)            { m_iso = std::max(iso, 1.0f); }
 
         float GetExposure() const
         {
+            const float aperture = std::max(m_aperture, 0.01f);
+            const float shutter  = std::max(m_shutter_speed, 0.0001f);
+            const float iso      = std::max(m_iso, 1.0f);
+
             // computed ev (using squared aperture for photometric accuracy)
             // note: this calculates the exposure scale factor (1/l_avg)
-            float ev100 = std::log2((m_aperture * m_aperture) / m_shutter_speed * 100.0f / m_iso);
+            float ev100 = std::log2((aperture * aperture) / shutter * 100.0f / iso);
         
             // standard standard output sensitivity (sos) calculation
             // 1.2 is a common calibration constant (matches ue5/frostbite)

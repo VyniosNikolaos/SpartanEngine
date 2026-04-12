@@ -1731,8 +1731,8 @@ void Properties::ShowCamera(Camera* camera) const
         layout::section_header("Exposure");
 
         property_float("Aperture", &aperture, 0.1f, 0.01f, 150.0f, "f-stop (affects DoF and brightness)", "f/%.1f");
-        property_float("Shutter Speed", &shutter_speed, 0.0001f, 0.0f, 1.0f, "exposure time in seconds (affects motion blur)", "%.4f s");
-        property_float("ISO", &iso, 10.0f, 0.0f, 2000.0f, "sensor sensitivity (affects noise)", "%.0f");
+        property_float("Shutter Speed", &shutter_speed, 0.0001f, 0.0001f, 1.0f, "exposure time in seconds (affects motion blur)", "%.4f s");
+        property_float("ISO", &iso, 10.0f, 1.0f, 2000.0f, "sensor sensitivity (affects noise)", "%.0f");
 
         layout::separator();
         layout::section_header("Controls");
