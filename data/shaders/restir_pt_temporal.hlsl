@@ -80,8 +80,9 @@ bool check_temporal_visibility(float3 shading_pos, float3 shading_normal, float3
 
 float2 reproject_to_previous_frame(float2 current_uv)
 {
-    float2 velocity = tex_velocity.SampleLevel(GET_SAMPLER(sampler_point_clamp), current_uv, 0).xy;
-    return current_uv - velocity;
+    float2 velocity_ndc = tex_velocity.SampleLevel(GET_SAMPLER(sampler_point_clamp), current_uv, 0).xy;
+    float2 velocity_uv  = velocity_ndc * float2(0.5f, -0.5f);
+    return current_uv - velocity_uv;
 }
 
 bool is_temporal_sample_valid(float2 current_uv, float2 prev_uv, float3 current_pos, float3 current_normal, float current_depth, float2 restir_resolution, out float confidence)
@@ -91,7 +92,7 @@ bool is_temporal_sample_valid(float2 current_uv, float2 prev_uv, float3 current_
     if (!is_valid_uv(prev_uv))
         return false;
 
-    // verify reprojection accuracy (relax tolerance with motion to account for sub-pixel errors)
+    // verify reprojection accuracy against the previous frame transform
     float4 prev_clip        = mul(float4(current_pos, 1.0f), buffer_frame.view_projection_previous);
     float3 prev_ndc         = prev_clip.xyz / prev_clip.w;
     float2 expected_prev_uv = prev_ndc.xy * float2(0.5f, -0.5f) + 0.5f;
@@ -101,13 +102,12 @@ bool is_temporal_sample_valid(float2 current_uv, float2 prev_uv, float3 current_
     float2 motion       = (current_uv - prev_uv) * restir_resolution;
     float motion_length = length(motion);
 
-    // allow more reprojection error during fast motion
-    float reproj_tolerance = lerp(2.0f, 6.0f, saturate(motion_length / 50.0f));
+    float motion_factor = saturate(motion_length / 32.0f);
+    float reproj_tolerance = lerp(1.5f, 0.75f, motion_factor);
     if (reproj_dist > reproj_tolerance)
         return false;
 
-    // relax normal threshold during motion since g-buffer normals shift slightly
-    float normal_threshold = lerp(0.9f, 0.75f, saturate(motion_length / 40.0f));
+    float normal_threshold = lerp(0.9f, 0.97f, motion_factor);
     float3 prev_uv_normal   = get_normal(prev_uv);
     float normal_similarity = dot(current_normal, prev_uv_normal);
     if (normal_similarity < normal_threshold)
@@ -121,12 +121,21 @@ bool is_temporal_sample_valid(float2 current_uv, float2 prev_uv, float3 current_
     float depth_down     = linearize_depth(tex_depth.SampleLevel(GET_SAMPLER(sampler_point_clamp), current_uv + float2(0, texel_size.y), 0).r);
     float depth_gradient = abs(depth_left - depth_right) + abs(depth_up - depth_down);
     bool is_depth_edge   = depth_gradient > current_depth * 0.05f;
-    float edge_penalty = is_depth_edge ? saturate(1.0f - motion_length * 0.2f) : 1.0f;
+    if (is_depth_edge)
+    {
+        reproj_tolerance *= 0.75f;
+        normal_threshold = max(normal_threshold, 0.95f);
+    }
 
-    // combine confidence factors - motion reduces confidence gently rather than killing it
+    if (reproj_dist > reproj_tolerance || normal_similarity < normal_threshold)
+        return false;
+
+    float edge_penalty = is_depth_edge ? saturate(1.0f - motion_length / 12.0f) : 1.0f;
+
+    // combine confidence factors conservatively so moving pixels shed stale history quickly
     float reproj_confidence = saturate(1.0f - reproj_dist / reproj_tolerance);
     float normal_confidence = saturate((normal_similarity - normal_threshold) / (1.0f - normal_threshold));
-    float motion_confidence = saturate(1.0f - motion_length * 0.003f);
+    float motion_confidence = saturate(1.0f - motion_length / 32.0f);
     confidence = reproj_confidence * normal_confidence * motion_confidence * edge_penalty;
 
     if (confidence < TEMPORAL_MIN_CONFIDENCE)
@@ -173,6 +182,8 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
 
     uint seed = create_seed_for_pass(pixel, buffer_frame.frame, 1);
     Reservoir combined = create_empty_reservoir();
+    float confidence_weight_sum   = 0.0f;
+    float confidence_weight_total = 0.0f;
 
     float target_pdf_current;
     if (is_sky_sample(current.sample))
@@ -189,12 +200,14 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     if (target_pdf_current <= 0.0f)
         target_pdf_current = calculate_target_pdf(current.sample.radiance);
 
-    // initialize combined reservoir with current sample
-    float weight_current     = target_pdf_current * current.W;
+    // initialize combined reservoir with the current stream contribution
+    float weight_current     = target_pdf_current * current.W * current.M;
     combined.weight_sum      = weight_current;
     combined.M               = current.M;
     combined.sample          = current.sample;
     combined.target_pdf      = target_pdf_current;
+    confidence_weight_sum    = current.confidence * max(weight_current, 0.0f);
+    confidence_weight_total  = max(weight_current, 0.0f);
 
     // temporal reuse
     float2 prev_uv = reproject_to_previous_frame(uv);
@@ -225,17 +238,18 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
                 if (temp_lum > 50.0f)
                     temporal.sample.radiance *= 50.0f / temp_lum;
 
-                // apply temporal decay and aging
-                temporal.M          *= RESTIR_TEMPORAL_DECAY;
-                temporal.weight_sum *= RESTIR_TEMPORAL_DECAY;
+                // decay low-confidence history before it can dominate the new frame
+                float temporal_scale = RESTIR_TEMPORAL_DECAY * temporal_confidence;
+                temporal.M          *= temporal_scale;
+                temporal.weight_sum *= temporal_scale;
                 temporal.age        += 1.0f;
 
-                // cap M based on staleness - keep a meaningful floor so temporal still contributes during motion
+                // cap temporal mass based on confidence and staleness
                 float staleness_factor = saturate(1.0f - temporal.age / 64.0f);
-                float effective_M_cap  = RESTIR_M_CAP * max(temporal_confidence, 0.15f) * staleness_factor;
-                clamp_reservoir_M(temporal, max(effective_M_cap, 8.0f));
+                float effective_M_cap  = max(1.0f, RESTIR_M_CAP * temporal_confidence * staleness_factor);
+                clamp_reservoir_M(temporal, effective_M_cap);
 
-                if (is_sky_sample(temporal.sample))
+                if (temporal.M > 0.0f && temporal.weight_sum > 0.0f && is_sky_sample(temporal.sample))
                 {
                     float n_dot_sky = dot(normal_ws, temporal.sample.direction);
                     if (n_dot_sky > 0.0f)
@@ -249,6 +263,8 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
 
                             combined.weight_sum += weight_temporal;
                             combined.M += temporal.M;
+                            confidence_weight_sum   += temporal.confidence * max(weight_temporal, 0.0f);
+                            confidence_weight_total += max(weight_temporal, 0.0f);
 
                             if (random_float(seed) * combined.weight_sum < weight_temporal)
                             {
@@ -258,17 +274,17 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
                         }
                     }
                 }
-                else
+                else if (temporal.M > 0.0f && temporal.weight_sum > 0.0f)
                 {
-                    float3 prev_pos_ws = get_position(prev_uv);
+                    float3 reference_shading_pos = pos_ws;
 
                     bool temporal_visible = temporal.sample.path_length == 0 ||
                                             all(temporal.sample.radiance <= 0.0f) ||
-                                            check_temporal_visibility(pos_ws, normal_ws, temporal.sample.hit_position, temporal.sample.hit_normal, prev_pos_ws);
+                                            check_temporal_visibility(pos_ws, normal_ws, temporal.sample.hit_position, temporal.sample.hit_normal, reference_shading_pos);
 
                     if (temporal_visible)
                     {
-                        float jacobian = compute_jacobian(temporal.sample.hit_position, prev_pos_ws, pos_ws, temporal.sample.hit_normal, normal_ws);
+                        float jacobian = compute_jacobian(temporal.sample.hit_position, reference_shading_pos, pos_ws, temporal.sample.hit_normal, normal_ws);
 
                         if (jacobian > 0.0f)
                         {
@@ -287,6 +303,8 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
 
                                     combined.weight_sum += weight_temporal;
                                     combined.M += temporal.M;
+                                    confidence_weight_sum   += temporal.confidence * max(weight_temporal, 0.0f);
+                                    confidence_weight_total += max(weight_temporal, 0.0f);
 
                                     if (random_float(seed) * combined.weight_sum < weight_temporal)
                                     {
@@ -328,9 +346,7 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     float w_clamp = get_w_clamp_for_sample(combined.sample);
     combined.W = min(combined.W, w_clamp);
 
-    // blend confidence
-    float confidence_blend = (combined.M > 1.0f) ? 0.3f : 0.0f;
-    combined.confidence = lerp(current.confidence, max(temporal_confidence, current.confidence), confidence_blend);
+    combined.confidence = confidence_weight_total > 0.0f ? saturate(confidence_weight_sum / confidence_weight_total) : 0.0f;
 
     // store reservoir
     float4 t0, t1, t2, t3, t4;

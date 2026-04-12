@@ -214,13 +214,15 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
 
     uint spatial_pass_index = (uint)pass_get_f3_value().x;
     uint seed = create_seed_for_pass(pixel, buffer_frame.frame, 2 + spatial_pass_index);
+    float center_confidence = saturate(center.confidence);
 
     float edge_factor     = compute_edge_factor(uv, linear_depth, resolution);
     float adaptive_radius = compute_adaptive_radius(linear_depth, roughness, edge_factor, normal_ws, view_dir);
+    adaptive_radius      *= lerp(0.35f, 1.0f, center_confidence);
 
-    // second pass uses a wider radius to propagate samples further
+    // second pass uses a wider radius, but only when the center reservoir is trustworthy
     if (spatial_pass_index > 0)
-        adaptive_radius *= 1.5f;
+        adaptive_radius *= lerp(1.05f, 1.5f, center_confidence);
 
     Reservoir combined = create_empty_reservoir();
 
@@ -244,6 +246,8 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     combined.M          = center.M;
     combined.sample     = center.sample;
     combined.target_pdf = target_pdf_center;
+    float confidence_weight_sum   = center_confidence * max(weight_center, 0.0f);
+    float confidence_weight_total = max(weight_center, 0.0f);
 
     float base_angle = random_float(seed) * 2.0f * PI;
 
@@ -281,6 +285,10 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
             continue;
 
         if (neighbor.M <= 0 || neighbor.W <= 0)
+            continue;
+
+        float neighbor_confidence = saturate(neighbor.confidence);
+        if (neighbor_confidence <= 0.1f)
             continue;
 
         if (all(neighbor.sample.radiance <= 0.0f))
@@ -329,11 +337,18 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
         if (target_pdf_at_center <= 0.0f)
             continue;
 
-        float effective_M = min(neighbor.M, max(center.M * 2.0f, 4.0f));
+        float reuse_confidence = (spatial_pass_index > 0) ? min(center_confidence, neighbor_confidence) : neighbor_confidence;
+        if (reuse_confidence <= 0.05f)
+            continue;
+
+        float neighbor_m_cap = max(center.M * lerp(1.25f, 1.75f, center_confidence), 2.0f);
+        float effective_M = min(neighbor.M * reuse_confidence, neighbor_m_cap);
         float weight = target_pdf_at_center * jacobian * neighbor.W * effective_M;
 
         combined.weight_sum += weight;
         combined.M += effective_M;
+        confidence_weight_sum   += neighbor_confidence * max(weight, 0.0f);
+        confidence_weight_total += max(weight, 0.0f);
 
         if (random_float(seed) * combined.weight_sum < weight)
         {
@@ -368,8 +383,7 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     float w_clamp = get_w_clamp_for_sample(combined.sample);
     combined.W = min(combined.W, w_clamp);
 
-    float neighbor_contribution = (combined.M > center.M) ? saturate((combined.M - center.M) / combined.M) : 0.0f;
-    combined.confidence = lerp(center.confidence, 1.0f, neighbor_contribution * 0.5f);
+    combined.confidence = confidence_weight_total > 0.0f ? saturate(confidence_weight_sum / confidence_weight_total) : 0.0f;
 
     float4 t0, t1, t2, t3, t4;
     pack_reservoir(combined, t0, t1, t2, t3, t4);

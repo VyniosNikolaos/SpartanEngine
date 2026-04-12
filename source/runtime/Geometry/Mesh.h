@@ -50,10 +50,11 @@ namespace spartan
         ImportRemoveRedundantData       = 1 << 0,
         ImportLights                    = 1 << 1,
         ImportCombineMeshes             = 1 << 2,
-        PostProcessNormalizeScale       = 1 << 3,
-        PostProcessOptimize             = 1 << 4,
-        PostProcessGenerateLods         = 1 << 5,
-        PostProcessPreserveTerrainEdges = 1 << 6,
+        ImportGenerateSmoothNormals     = 1 << 3,
+        PostProcessNormalizeScale       = 1 << 4,
+        PostProcessOptimize             = 1 << 5,
+        PostProcessGenerateLods         = 1 << 6,
+        PostProcessPreserveTerrainEdges = 1 << 7,
     };
 
     enum class MeshType

@@ -880,8 +880,14 @@ namespace spartan
 
             // generate missing normals or uvs
             import_flags |= aiProcess_CalcTangentSpace;
-            import_flags |= aiProcess_GenSmoothNormals;
             import_flags |= aiProcess_GenUVCoords;
+
+            // keep assimp smooth normal generation behind an explicit import flag so
+            // callers can disable it for meshes that rely on authored hard edges.
+            if (ctx.mesh->GetFlags() & static_cast<uint32_t>(MeshFlags::ImportGenerateSmoothNormals))
+            {
+                import_flags |= aiProcess_GenSmoothNormals;
+            }
 
             // limit bone weights to 4 per vertex
             import_flags |= aiProcess_LimitBoneWeights;

@@ -34,6 +34,7 @@ struct [raypayload] PathPayload
 {
     float3 hit_position   : read(caller) : write(closesthit);
     float3 hit_normal     : read(caller) : write(closesthit);
+    float3 geometric_normal : read(caller) : write(closesthit);
     float3 albedo         : read(caller) : write(closesthit);
     float3 emission       : read(caller) : write(closesthit, miss);
     float  roughness      : read(caller) : write(closesthit);
@@ -199,6 +200,7 @@ PathSample trace_path(float3 origin, float3 direction, inout uint seed)
     float prev_brdf_pdf = 1.0f;
     bool prev_specular  = false;
     bool did_env_sample = false;
+    float3 last_bounce_normal = float3(0, 1, 0);
 
     for (uint bounce = 0; bounce < RESTIR_MAX_PATH_LENGTH; bounce++)
     {
@@ -228,7 +230,7 @@ PathSample trace_path(float3 origin, float3 direction, inout uint seed)
             {
                 // env sampling now uses cosine hemisphere around surface normal (same as BRDF diffuse lobe)
                 // use n_dot_l/PI as the env PDF for MIS since that matches the cosine hemisphere sampling
-                float cos_at_prev = max(dot(sample.hit_normal, ray_dir), 0.0f);
+                float cos_at_prev = max(dot(last_bounce_normal, ray_dir), 0.0f);
                 float env_pdf    = cos_at_prev / PI;
                 float mis_weight = did_env_sample ? power_heuristic(prev_brdf_pdf, max(env_pdf, RESTIR_MIN_PDF)) : 1.0f;
                 sample.radiance += throughput * sky_radiance * mis_weight;
@@ -255,6 +257,7 @@ PathSample trace_path(float3 origin, float3 direction, inout uint seed)
 
         sample.path_length = bounce + 1;
         float3 view_dir = -ray_dir;
+        last_bounce_normal = payload.hit_normal;
 
         // emission contribution with per-bounce clamping
         // no MIS here because there is no explicit emissive geometry sampling strategy;
@@ -270,7 +273,7 @@ PathSample trace_path(float3 origin, float3 direction, inout uint seed)
             sample.radiance += emission_contribution;
         }
 
-        float3 shading_pos = payload.hit_position + payload.hit_normal * RESTIR_RAY_NORMAL_OFFSET;
+        float3 shading_pos = payload.hit_position + payload.geometric_normal * RESTIR_RAY_NORMAL_OFFSET;
 
         // direct lighting from scene lights
         for (uint light_idx = 0; light_idx < 4u; light_idx++)
@@ -519,7 +522,7 @@ PathSample trace_path(float3 origin, float3 direction, inout uint seed)
         if (max_throughput > 50.0f)
             throughput *= 50.0f / max_throughput;
 
-        ray_origin = payload.hit_position + payload.hit_normal * RESTIR_RAY_NORMAL_OFFSET;
+        ray_origin = payload.hit_position + payload.geometric_normal * RESTIR_RAY_NORMAL_OFFSET;
         ray_dir    = new_dir;
     }
 
@@ -624,10 +627,11 @@ void ray_gen()
         reservoir.W = min(reservoir.W, w_clamp);
     }
 
-    // compute confidence metric
-    float radiance_quality = saturate(luminance(reservoir.sample.radiance) / 10.0f);
-    float pdf_quality      = saturate(reservoir.sample.pdf * 10.0f);
-    reservoir.confidence   = radiance_quality * pdf_quality;
+    // confidence should track sample stability, not brightness, otherwise dim indirect light
+    // gets rejected by temporal and spatial reuse and shows up as patchy bounce lighting.
+    float sample_count_quality = saturate(reservoir.M / float(INITIAL_CANDIDATE_SAMPLES));
+    float pdf_quality         = saturate(reservoir.sample.pdf * 4.0f);
+    reservoir.confidence      = (reservoir.target_pdf > 0.0f) ? sample_count_quality * lerp(0.4f, 1.0f, pdf_quality) : 0.0f;
     reservoir.age          = 0.0f;
 
     // store reservoir
@@ -679,7 +683,8 @@ void closest_hit(inout PathPayload payload : SV_RayPayload, in BuiltInTriangleIn
 
     // transform to world space
     float3x3 obj_to_world  = (float3x3)ObjectToWorld4x3();
-    float3 normal_world    = normalize(mul(normal_object, obj_to_world));
+    float3x3 world_to_obj  = (float3x3)WorldToObject4x3();
+    float3 normal_world    = normalize(mul(normal_object, transpose(world_to_obj)));
     float3 tangent_world   = normalize(mul(tangent_object, obj_to_world));
 
     texcoord = texcoord * mat.tiling + mat.offset;
@@ -720,6 +725,29 @@ void closest_hit(inout PathPayload payload : SV_RayPayload, in BuiltInTriangleIn
     }
 
     // apply normal mapping
+    float3x3 obj_to_world_3x3 = (float3x3)ObjectToWorld4x3();
+    float3 edge1_world   = mul(pv1.position - pv0.position, obj_to_world_3x3);
+    float3 edge2_world   = mul(pv2.position - pv0.position, obj_to_world_3x3);
+    float triangle_area  = 0.5f * length(cross(edge1_world, edge2_world));
+    float3 geometric_normal = normalize(cross(edge1_world, edge2_world));
+
+    // keep the shading normal in the same hemisphere as the traced side of the triangle.
+    if (dot(geometric_normal, WorldRayDirection()) > 0.0f)
+        geometric_normal = -geometric_normal;
+    if (dot(normal_world, geometric_normal) < 0.0f)
+        normal_world = -normal_world;
+
+    float3 tangent_projected = tangent_world - geometric_normal * dot(tangent_world, geometric_normal);
+    if (dot(tangent_projected, tangent_projected) > 1e-6f)
+    {
+        tangent_world = normalize(tangent_projected);
+    }
+    else
+    {
+        float3 fallback_bitangent;
+        build_orthonormal_basis_fast(geometric_normal, tangent_world, fallback_bitangent);
+    }
+
     if (mat.has_texture_normal())
     {
         uint normal_texture_index = material_index + material_texture_index_normal;
@@ -729,10 +757,12 @@ void closest_hit(inout PathPayload payload : SV_RayPayload, in BuiltInTriangleIn
         normal_sample = normal_sample * 2.0f - 1.0f;
         normal_sample.xy *= mat.normal;
 
-        float3 bitangent = cross(normal_world, tangent_world);
-        float3x3 tbn     = float3x3(tangent_world, bitangent, normal_world);
+        float3 bitangent = normalize(cross(geometric_normal, tangent_world));
+        float3x3 tbn     = float3x3(tangent_world, bitangent, geometric_normal);
 
         normal_world = normalize(mul(normal_sample, tbn));
+        if (dot(normal_world, geometric_normal) < 0.0f)
+            normal_world = -normal_world;
     }
 
     // sample emissive texture
@@ -752,19 +782,15 @@ void closest_hit(inout PathPayload payload : SV_RayPayload, in BuiltInTriangleIn
     // compute hit position and triangle area
     float3 hit_position = WorldRayOrigin() + WorldRayDirection() * dist;
 
-    float3x3 obj_to_world_3x3 = (float3x3)ObjectToWorld4x3();
-    float3 edge1_world   = mul(pv1.position - pv0.position, obj_to_world_3x3);
-    float3 edge2_world   = mul(pv2.position - pv0.position, obj_to_world_3x3);
-    float triangle_area  = 0.5f * length(cross(edge1_world, edge2_world));
-
     // populate payload
-    payload.hit_position  = hit_position;
-    payload.hit_normal    = normal_world;
-    payload.albedo        = albedo;
-    payload.emission      = emission;
-    payload.roughness     = roughness;
-    payload.metallic      = metallic;
-    payload.triangle_area = triangle_area;
+    payload.hit_position    = hit_position;
+    payload.hit_normal      = normal_world;
+    payload.geometric_normal = geometric_normal;
+    payload.albedo          = albedo;
+    payload.emission        = emission;
+    payload.roughness       = roughness;
+    payload.metallic        = metallic;
+    payload.triangle_area   = triangle_area;
 }
 
 [shader("miss")]

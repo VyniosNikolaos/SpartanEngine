@@ -1176,7 +1176,11 @@ namespace spartan
                     // bring the sun below the horizon so the scene is night-lit by the emissive panel
                     default_light_directional->SetRotation(Quaternion::FromEulerAngles(-30.0f, 0.0f, 0.0f));
 
-                    if (shared_ptr<Mesh> mesh = ResourceCache::Load<Mesh>("project/models/CornellBox/CornellBox-Original.obj"))
+                    uint32_t mesh_flags  = Mesh::GetDefaultFlags();
+                    mesh_flags          &= ~static_cast<uint32_t>(MeshFlags::ImportGenerateSmoothNormals);
+
+                    // preserve the cornell box hard edges so the cubes don't get smoothed shading.
+                    if (shared_ptr<Mesh> mesh = ResourceCache::Load<Mesh>("project/models/CornellBox/CornellBox-Original.obj", mesh_flags))
                     {
                         Entity* entity = mesh->GetRootEntity();
                         entity->SetObjectName("cornell_box");
