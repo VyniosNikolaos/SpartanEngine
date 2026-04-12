@@ -55,7 +55,6 @@ namespace
         { "Car Showroom",      "Showcase world for YouTubers/Press. Does not use experimental tech", "Complete" , "Light",          2100 },
         { "Open World Forest", "256 million of Ghost of Tsushima grass blades",                      "Prototype", "Very demanding", 5600 },
         { "Sponza 4K",         "High-resolution textures & meshes",                                  "Complete" , "Demanding",      2600 },
-        { "San Miguel",        "Detailed courtyard scene with complex geometry and lighting",        "Complete" , "Demanding",      2600 },
         { "Basic",             "Cornell box, material ball, light, camera, floor",                   "Complete" , "Light",          2100 },
         { "Empty",             "Light, camera, floor",                                               "Complete" , "Light",          2100 }
     };
@@ -63,7 +62,7 @@ namespace
 
     // discovered world files from disk
     vector<spartan::WorldMetadata> world_files;
-    int selected_index            = 0;
+    int selected_index             = 0;
     bool is_default_world_selected = true;
 
     // visibility states
@@ -98,10 +97,10 @@ namespace
     bool last_click_was_default = true;
 
     // asset download configuration
-    const char* assets_url          = "https://www.dropbox.com/scl/fi/wfd51c52p11embbhwlfyz/project.7z?rlkey=3xjx10p8yx1jqzvzukc4bk13r&st=dnrjdmwl&dl=1";
+    const char* assets_url          = "https://www.dropbox.com/scl/fi/h6eo3g0p7gsvcpn5ep4c3/project.7z?rlkey=wmo3webi76xdz0tjp22otgceh&st=iuep3y7b&dl=1";
     const char* assets_destination  = "project/project.7z";
     const char* assets_extract_dir  = "project/";
-    const char* assets_expected_sha = "50a8c1faf414f76b2d828a17b5d781dccbc669928ff228f286e46532cf4b20a9";
+    const char* assets_expected_sha = "20d0f108e700e35e234c68fe2036dac4c800f6ceaefbd8c9dd2b2541c21f13f6";
 
     void scan_directory_recursive(const string& directory)
     {

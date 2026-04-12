@@ -28,8 +28,7 @@ namespace spartan
         Showroom,
         Forest,
         Sponza,
-        SanMiguel,
-        Basic,
+        Test,
         Empty,
         Max
     };

@@ -134,13 +134,12 @@ namespace
     {
         switch (default_world)
         {
-            case spartan::DefaultWorld::Showroom:  return "showroom";
-            case spartan::DefaultWorld::Forest:    return "forest";
-            case spartan::DefaultWorld::Sponza:    return "sponza";
-            case spartan::DefaultWorld::SanMiguel: return "san_miguel";
-            case spartan::DefaultWorld::Basic:     return "basic";
-            case spartan::DefaultWorld::Empty:     return "empty";
-            case spartan::DefaultWorld::Max:       return "unknown";
+            case spartan::DefaultWorld::Showroom: return "showroom";
+            case spartan::DefaultWorld::Forest:   return "forest";
+            case spartan::DefaultWorld::Sponza:   return "sponza";
+            case spartan::DefaultWorld::Test:     return "test";
+            case spartan::DefaultWorld::Empty:    return "empty";
+            case spartan::DefaultWorld::Max:      return "unknown";
         }
 
         return "unknown";

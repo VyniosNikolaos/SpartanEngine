@@ -52,7 +52,6 @@ namespace spartan
         namespace showroom      { void create(); void tick(); }
         namespace forest        { void create(); void tick(); }
         namespace sponza        { void create(); }
-        namespace san_miguel    { void create(); }
         namespace basic         { void create(); }
         namespace empty         { void create(); }
     }
@@ -89,7 +88,6 @@ namespace spartan
             worlds::showroom::create,
             worlds::forest::create,
             worlds::sponza::create,
-            worlds::san_miguel::create,
             worlds::basic::create,
             worlds::empty::create,
         };
@@ -98,7 +96,6 @@ namespace spartan
         {
             worlds::showroom::tick,
             worlds::forest::tick,
-            nullptr,
             nullptr,
             nullptr,
             nullptr,
@@ -454,29 +451,6 @@ namespace spartan
                             material->SetProperty(MaterialProperty::SubsurfaceScattering, 1.0f);
                         }
                     }
-                }
-            }
-        }
-        //====================================================================================
-
-        //= SAN MIGUEL =======================================================================
-        namespace san_miguel
-        {
-            void create()
-            {
-                entities::camera(false, Vector3(10.0f, 2.0f, 0.0f), Vector3(0.0f, -90.0f, 0.0f));
-                entities::sun(LightPreset::dusk, true);
-                entities::floor();
-
-                // combine sub-meshes that share materials to reduce draw call and material count
-                uint32_t mesh_flags  = Mesh::GetDefaultFlags();
-                mesh_flags          |= static_cast<uint32_t>(MeshFlags::ImportCombineMeshes);
-                if (shared_ptr<Mesh> mesh = ResourceCache::Load<Mesh>("project/models/San_Miguel/san-miguel-low-poly.obj", mesh_flags))
-                {
-                    Entity* entity = mesh->GetRootEntity();
-                    entity->SetObjectName("san_miguel");
-                    entity->SetPosition(Vector3(0.0f, 0.3f, 0.0f));
-                    entity->SetScale(1.0f);
                 }
             }
         }
