@@ -85,7 +85,7 @@ struct FrameBufferData
     SHARED_FLOAT camera_last_movement_time;
     SHARED_FLOAT hdr_enabled;
     SHARED_FLOAT hdr_max_nits;
-    SHARED_FLOAT padding;
+    SHARED_FLOAT restir_pt_debug_mode;
 
     SHARED_FLOAT3 camera_position_previous;
     SHARED_FLOAT  resolution_scale;
@@ -103,7 +103,7 @@ struct FrameBufferData
     // clouds
     SHARED_FLOAT cloud_coverage;
     SHARED_FLOAT cloud_shadows;
-    SHARED_FLOAT padding3;
+    SHARED_FLOAT restir_pt_light_count;
     SHARED_FLOAT padding4;
 
     // vr stereo - right eye matrices (left eye uses the primary matrices above)

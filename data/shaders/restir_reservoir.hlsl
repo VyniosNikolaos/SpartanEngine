@@ -51,6 +51,10 @@ static const float RESTIR_MIN_ROUGHNESS      = 0.04f;
 static const float RESTIR_MIN_PDF            = 1e-6f;
 static const float RESTIR_W_CLAMP_DEFAULT    = 50.0f;
 static const float RESTIR_SPECULAR_THRESHOLD = 0.2f;
+static const float RESTIR_MATERIAL_ROUGHNESS_THRESHOLD = 0.2f;
+static const float RESTIR_MATERIAL_METALLIC_THRESHOLD  = 0.25f;
+static const float RESTIR_MATERIAL_ALBEDO_THRESHOLD    = 0.35f;
+static const float RESTIR_MATERIAL_SIMILARITY_MIN      = 0.25f;
 
 // firefly suppression
 static const float RESTIR_SOFT_CLAMP_SKY     = 10.0f;
@@ -83,6 +87,26 @@ static const uint PATH_FLAG_DIFFUSE  = 1 << 1;
 static const uint PATH_FLAG_CAUSTIC  = 1 << 2;
 static const uint PATH_FLAG_DELTA    = 1 << 3;
 static const uint PATH_FLAG_SKY      = 1 << 4;
+
+static const uint RESTIR_DEBUG_MODE_NONE                  = 0;
+static const uint RESTIR_DEBUG_MODE_CONFIDENCE            = 1;
+static const uint RESTIR_DEBUG_MODE_M                     = 2;
+static const uint RESTIR_DEBUG_MODE_W                     = 3;
+static const uint RESTIR_DEBUG_MODE_REUSE                 = 4;
+static const uint RESTIR_DEBUG_MODE_TEMPORAL_REJECTION    = 5;
+
+static const uint RESTIR_TEMPORAL_REASON_ACCEPTED             = 0;
+static const uint RESTIR_TEMPORAL_REASON_INVALID_UV           = 1;
+static const uint RESTIR_TEMPORAL_REASON_REPROJECTION         = 2;
+static const uint RESTIR_TEMPORAL_REASON_NORMAL               = 3;
+static const uint RESTIR_TEMPORAL_REASON_MATERIAL             = 4;
+static const uint RESTIR_TEMPORAL_REASON_LOW_CONFIDENCE       = 5;
+static const uint RESTIR_TEMPORAL_REASON_OUT_OF_BOUNDS        = 6;
+static const uint RESTIR_TEMPORAL_REASON_INVALID_HISTORY      = 7;
+static const uint RESTIR_TEMPORAL_REASON_EMPTY_HISTORY        = 8;
+static const uint RESTIR_TEMPORAL_REASON_VISIBILITY           = 9;
+static const uint RESTIR_TEMPORAL_REASON_JACOBIAN            = 10;
+static const uint RESTIR_TEMPORAL_REASON_TARGET_PDF          = 11;
 
 float2 octahedral_encode(float3 n)
 {
@@ -158,9 +182,19 @@ bool is_reservoir_valid(Reservoir r)
         return false;
     if (any(isnan(r.sample.hit_normal)) || any(isinf(r.sample.hit_normal)))
         return false;
+    if (any(isnan(r.sample.direction)) || any(isinf(r.sample.direction)))
+        return false;
+    if (isnan(r.weight_sum) || isinf(r.weight_sum) || r.weight_sum < 0)
+        return false;
     if (isnan(r.W) || isinf(r.W) || r.W < 0)
         return false;
     if (isnan(r.M) || r.M < 0)
+        return false;
+    if (isnan(r.target_pdf) || isinf(r.target_pdf) || r.target_pdf < 0)
+        return false;
+    if (isnan(r.age) || isinf(r.age) || r.age < 0)
+        return false;
+    if (isnan(r.confidence) || isinf(r.confidence))
         return false;
 
     float normal_len = length(r.sample.hit_normal);
@@ -283,6 +317,76 @@ bool is_sky_sample(PathSample s)
     return (s.flags & PATH_FLAG_SKY) != 0;
 }
 
+bool has_path_sample(PathSample sample)
+{
+    return is_sky_sample(sample) || sample.path_length > 0 || any(sample.radiance > 0.0f);
+}
+
+float calculate_target_pdf_for_sample(PathSample sample, float3 shading_pos, float3 shading_normal, float3 view_dir,
+                                      float3 albedo, float roughness, float metallic)
+{
+    float target_pdf = 0.0f;
+
+    if (is_sky_sample(sample))
+    {
+        target_pdf = calculate_target_pdf_sky(sample.radiance, sample.direction, shading_normal, view_dir, albedo, roughness, metallic);
+    }
+    else if (has_path_sample(sample))
+    {
+        target_pdf = calculate_target_pdf_with_geometry(sample.radiance, shading_pos, shading_normal, view_dir, sample.hit_position, sample.hit_normal,
+                                                        albedo, roughness, metallic);
+    }
+
+    if (target_pdf <= 0.0f)
+        target_pdf = calculate_target_pdf(sample.radiance);
+
+    return target_pdf;
+}
+
+float compute_reservoir_stream_weight(float target_pdf, float W, float M)
+{
+    if (target_pdf <= 0.0f || W <= 0.0f || M <= 0.0f)
+        return 0.0f;
+
+    return target_pdf * W * M;
+}
+
+float get_w_clamp_for_sample(PathSample s);
+
+void finalize_reservoir_with_target(inout Reservoir reservoir, float target_pdf)
+{
+    reservoir.target_pdf = max(target_pdf, 0.0f);
+
+    if (reservoir.target_pdf > 0.0f && reservoir.M > 0.0f)
+        reservoir.W = reservoir.weight_sum / max(reservoir.target_pdf * reservoir.M, RESTIR_MIN_PDF);
+    else
+        reservoir.W = 0.0f;
+
+    float w_clamp = get_w_clamp_for_sample(reservoir.sample);
+    reservoir.W = min(reservoir.W, w_clamp);
+}
+
+float compute_material_similarity(float3 albedo_a, float roughness_a, float metallic_a, float3 albedo_b, float roughness_b, float metallic_b)
+{
+    float roughness_similarity = saturate(1.0f - abs(roughness_a - roughness_b) / RESTIR_MATERIAL_ROUGHNESS_THRESHOLD);
+    float metallic_similarity  = saturate(1.0f - abs(metallic_a - metallic_b) / RESTIR_MATERIAL_METALLIC_THRESHOLD);
+    float3 albedo_delta        = abs(albedo_a - albedo_b);
+    float albedo_max_delta     = max(albedo_delta.r, max(albedo_delta.g, albedo_delta.b));
+    float albedo_similarity    = saturate(1.0f - albedo_max_delta / RESTIR_MATERIAL_ALBEDO_THRESHOLD);
+
+    return roughness_similarity * metallic_similarity * albedo_similarity;
+}
+
+bool are_materials_compatible(float3 albedo_a, float roughness_a, float metallic_a, float3 albedo_b, float roughness_b, float metallic_b)
+{
+    return compute_material_similarity(albedo_a, roughness_a, metallic_a, albedo_b, roughness_b, metallic_b) >= RESTIR_MATERIAL_SIMILARITY_MIN;
+}
+
+uint get_restir_pt_debug_mode()
+{
+    return (uint)buffer_frame.restir_pt_debug_mode;
+}
+
 float compute_sky_direction_similarity(float3 dir1, float3 dir2)
 {
     float cos_angle = dot(dir1, dir2);
@@ -314,7 +418,7 @@ bool update_reservoir(inout Reservoir reservoir, PathSample new_sample, float we
 
 bool merge_reservoir(inout Reservoir dst, Reservoir src, float target_pdf_at_dst, float random_value)
 {
-    float weight = target_pdf_at_dst * src.W * src.M;
+    float weight = compute_reservoir_stream_weight(target_pdf_at_dst, src.W, src.M);
 
     dst.weight_sum += weight;
     dst.M += src.M;
@@ -331,16 +435,7 @@ bool merge_reservoir(inout Reservoir dst, Reservoir src, float target_pdf_at_dst
 
 void finalize_reservoir(inout Reservoir reservoir)
 {
-    float target_pdf = calculate_target_pdf(reservoir.sample.radiance);
-    reservoir.target_pdf = target_pdf;
-
-    if (target_pdf > 0 && reservoir.M > 0)
-        reservoir.W = reservoir.weight_sum / (target_pdf * reservoir.M);
-    else
-        reservoir.W = 0;
-
-    float w_clamp = get_w_clamp_for_sample(reservoir.sample);
-    reservoir.W = min(reservoir.W, w_clamp);
+    finalize_reservoir_with_target(reservoir, calculate_target_pdf(reservoir.sample.radiance));
 }
 
 void clamp_reservoir_M(inout Reservoir reservoir, float max_M)
@@ -350,9 +445,7 @@ void clamp_reservoir_M(inout Reservoir reservoir, float max_M)
         float scale = max_M / reservoir.M;
         reservoir.weight_sum *= scale;
         reservoir.M = max_M;
-
-        if (reservoir.target_pdf > 0 && reservoir.M > 0)
-            reservoir.W = reservoir.weight_sum / (reservoir.target_pdf * reservoir.M);
+        finalize_reservoir_with_target(reservoir, reservoir.target_pdf);
     }
 }
 
@@ -584,6 +677,55 @@ float3 soft_clamp_gi(float3 gi, PathSample sample)
         gi *= max_lum / final_lum;
 
     return gi;
+}
+
+float3 restir_debug_heat(float value)
+{
+    float x = saturate(value);
+    return saturate(float3(
+        1.5f * x,
+        1.5f * (1.0f - abs(x - 0.5f) * 2.0f),
+        1.5f * (1.0f - x)
+    ));
+}
+
+float3 get_restir_debug_visualization(Reservoir reservoir, float reuse_ratio)
+{
+    uint debug_mode = get_restir_pt_debug_mode();
+
+    if (debug_mode == RESTIR_DEBUG_MODE_CONFIDENCE)
+        return reservoir.confidence.xxx;
+
+    if (debug_mode == RESTIR_DEBUG_MODE_M)
+        return restir_debug_heat(reservoir.M / RESTIR_M_CAP);
+
+    if (debug_mode == RESTIR_DEBUG_MODE_W)
+        return restir_debug_heat(reservoir.W / get_w_clamp_for_sample(reservoir.sample));
+
+    if (debug_mode == RESTIR_DEBUG_MODE_REUSE)
+        return float3(1.0f - reuse_ratio, reuse_ratio, 0.0f);
+
+    return soft_clamp_gi(reservoir.sample.radiance * reservoir.W, reservoir.sample);
+}
+
+float3 get_temporal_rejection_debug_visualization(uint rejection_reason)
+{
+    switch (rejection_reason)
+    {
+        case RESTIR_TEMPORAL_REASON_ACCEPTED:        return float3(0.0f, 1.0f, 0.0f);
+        case RESTIR_TEMPORAL_REASON_INVALID_UV:      return float3(0.25f, 0.0f, 0.0f);
+        case RESTIR_TEMPORAL_REASON_REPROJECTION:    return float3(1.0f, 0.0f, 1.0f);
+        case RESTIR_TEMPORAL_REASON_NORMAL:          return float3(1.0f, 1.0f, 0.0f);
+        case RESTIR_TEMPORAL_REASON_MATERIAL:        return float3(0.0f, 1.0f, 1.0f);
+        case RESTIR_TEMPORAL_REASON_LOW_CONFIDENCE:  return float3(1.0f, 0.5f, 0.0f);
+        case RESTIR_TEMPORAL_REASON_OUT_OF_BOUNDS:   return float3(0.0f, 0.0f, 1.0f);
+        case RESTIR_TEMPORAL_REASON_INVALID_HISTORY: return float3(0.6f, 0.0f, 0.8f);
+        case RESTIR_TEMPORAL_REASON_EMPTY_HISTORY:   return float3(0.3f, 0.3f, 0.3f);
+        case RESTIR_TEMPORAL_REASON_VISIBILITY:      return float3(1.0f, 0.0f, 0.0f);
+        case RESTIR_TEMPORAL_REASON_JACOBIAN:        return float3(1.0f, 1.0f, 1.0f);
+        case RESTIR_TEMPORAL_REASON_TARGET_PDF:      return float3(0.0f, 0.4f, 0.9f);
+        default:                                     return float3(0.0f, 0.0f, 0.0f);
+    }
 }
 
 #endif // SPARTAN_RESTIR_RESERVOIR

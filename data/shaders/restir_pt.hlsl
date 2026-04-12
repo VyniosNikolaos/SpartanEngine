@@ -276,7 +276,8 @@ PathSample trace_path(float3 origin, float3 direction, inout uint seed)
         float3 shading_pos = payload.hit_position + payload.geometric_normal * RESTIR_RAY_NORMAL_OFFSET;
 
         // direct lighting from scene lights
-        for (uint light_idx = 0; light_idx < 4u; light_idx++)
+        uint light_count = (uint)buffer_frame.restir_pt_light_count;
+        for (uint light_idx = 0; light_idx < light_count; light_idx++)
         {
             LightParameters light = light_parameters[light_idx];
 
@@ -598,33 +599,16 @@ void ray_gen()
         if (candidate_lum > 50.0f)
             candidate.radiance *= 50.0f / candidate_lum;
 
-        // weight includes the primary surface BRDF response for the sampled direction
-        // this makes RIS prefer candidates that actually contribute light to this pixel
-        float brdf_eval_pdf;
-        float3 brdf_response = evaluate_brdf(albedo, roughness, metallic, normal_ws, view_dir, ray_dir, brdf_eval_pdf);
-        float brdf_lum       = dot(brdf_response, float3(0.299f, 0.587f, 0.114f));
-        float target_pdf     = calculate_target_pdf(candidate.radiance) * max(brdf_lum, 0.01f);
-        float weight         = target_pdf / max(pdf, 1e-6f);
+        float target_pdf = calculate_target_pdf_for_sample(candidate, pos_ws, normal_ws, view_dir, albedo, roughness, metallic);
+        float weight     = target_pdf / max(pdf, RESTIR_MIN_PDF);
 
         update_reservoir(reservoir, candidate, weight, random_float(seed));
     }
 
-    // finalize with BRDF-weighted target to match the initial RIS weighting
+    // finalize with the same target function used by reuse
     {
-        float brdf_eval_pdf;
-        float3 brdf_response = evaluate_brdf(albedo, roughness, metallic, normal_ws, view_dir,
-                                              reservoir.sample.direction, brdf_eval_pdf);
-        float brdf_lum = dot(brdf_response, float3(0.299f, 0.587f, 0.114f));
-        float target   = calculate_target_pdf(reservoir.sample.radiance) * max(brdf_lum, 0.01f);
-
-        reservoir.target_pdf = target;
-        if (target > 0 && reservoir.M > 0)
-            reservoir.W = reservoir.weight_sum / (target * reservoir.M);
-        else
-            reservoir.W = 0;
-
-        float w_clamp = get_w_clamp_for_sample(reservoir.sample);
-        reservoir.W = min(reservoir.W, w_clamp);
+        float target = calculate_target_pdf_for_sample(reservoir.sample, pos_ws, normal_ws, view_dir, albedo, roughness, metallic);
+        finalize_reservoir_with_target(reservoir, target);
     }
 
     // confidence should track sample stability, not brightness, otherwise dim indirect light
@@ -644,8 +628,7 @@ void ray_gen()
     tex_reservoir4[launch_id] = t4;
 
     // output GI with soft clamp
-    float3 gi = reservoir.sample.radiance * reservoir.W;
-    gi = soft_clamp_gi(gi, reservoir.sample);
+    float3 gi = get_restir_debug_visualization(reservoir, 0.0f);
 
     tex_uav[launch_id] = float4(gi, 1.0f);
 }

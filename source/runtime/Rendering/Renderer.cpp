@@ -756,6 +756,7 @@ namespace spartan
         m_cb_frame_cpu.frame               = static_cast<uint32_t>(frame_num);
         m_cb_frame_cpu.resolution_scale    = GetResolutionScale();
         m_cb_frame_cpu.restir_pt_scale     = cvar_restir_pt_scale.GetValue();
+        m_cb_frame_cpu.restir_pt_debug_mode = cvar_restir_pt_debug_mode.GetValue();
         m_cb_frame_cpu.hdr_enabled         = cvar_hdr.GetValueAs<bool>() ? 1.0f : 0.0f;
         m_cb_frame_cpu.hdr_max_nits        = Display::GetLuminanceMax();
         m_cb_frame_cpu.gamma               = cvar_gamma.GetValue();
@@ -763,6 +764,7 @@ namespace spartan
 
         m_cb_frame_cpu.cloud_coverage = cvar_cloud_coverage.GetValue();
         m_cb_frame_cpu.cloud_shadows  = cvar_cloud_shadows.GetValue();
+        m_cb_frame_cpu.restir_pt_light_count = static_cast<float>(m_count_active_lights);
         m_cb_frame_cpu.wind           = World::GetWind();
         // feature bits (must match common_resources.hlsl)
         m_cb_frame_cpu.set_bit(cvar_ray_traced_reflections.GetValueAs<bool>(), 1 << 0);

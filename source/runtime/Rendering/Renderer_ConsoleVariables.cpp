@@ -59,6 +59,12 @@ namespace spartan
             *ConsoleRegistry::Get().Find("r.restir_pt_scale")->m_value_ptr = v;
         }
 
+        void on_restir_pt_debug_mode_change(const CVarVariant& value)
+        {
+            float v = clamp(get<float>(value), 0.0f, 5.0f);
+            *ConsoleRegistry::Get().Find("r.restir_pt_debug_mode")->m_value_ptr = v;
+        }
+
         void on_hdr_change(const CVarVariant& value)
         {
             if (get<float>(value) == 1.0f && !Display::GetHdr())
@@ -160,6 +166,7 @@ namespace spartan
     TConsoleVar<float> cvar_ray_traced_shadows             ("r.ray_traced_shadows",             static_cast<float>(RHI_Device::IsSupportedRayTracing()), "ray traced directional shadows",          on_ray_traced_shadows_change);
     TConsoleVar<float> cvar_restir_pt                      ("r.restir_pt",                      0.0f,                                                    "restir path tracing global illumination");
     TConsoleVar<float> cvar_restir_pt_scale                ("r.restir_pt_scale",                0.5f,                                                    "restir resolution scale (0.1-1.0)",       on_restir_pt_scale_change);
+    TConsoleVar<float> cvar_restir_pt_debug_mode           ("r.restir_pt_debug_mode",           0.0f,                                                    "restir debug mode",                    on_restir_pt_debug_mode_change);
     TConsoleVar<float> cvar_motion_blur                    ("r.motion_blur",                    1.0f,                                                    "motion blur");
     TConsoleVar<float> cvar_depth_of_field                 ("r.depth_of_field",                 1.0f,                                                    "depth of field");
     TConsoleVar<float> cvar_film_grain                     ("r.film_grain",                     0.0f,                                                    "film grain effect");

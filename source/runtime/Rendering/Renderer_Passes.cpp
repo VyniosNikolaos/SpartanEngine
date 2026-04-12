@@ -1107,121 +1107,112 @@ namespace spartan
         }
         cmd_list->EndTimeblock();
 
-        // temporal resampling
-        cmd_list->BeginTimeblock("restir_pt_temporal");
-        {
-            RHI_Shader* shader_temporal = GetShader(Renderer_Shader::restir_pt_temporal_c);
-            if (!shader_temporal || !shader_temporal->IsCompiled())
-            {
-                cmd_list->EndTimeblock();
-                return;
-            }
-            
-            RHI_PipelineState pso;
-            pso.name             = "restir_pt_temporal";
-            pso.shaders[Compute] = shader_temporal;
-            cmd_list->SetPipelineState(pso);
-            
-            SetCommonTextures(cmd_list);
-            
-            for (uint32_t i = 0; i < 5; i++)
-            {
-                cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsSrv::reservoir_prev0) + i, reservoirs_prev[i]);
-                cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsUav::reservoir0) + i,      reservoirs[i], rhi_all_mips, 0, true);
-            }
-            
-            cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsUav::tex), tex_gi, rhi_all_mips, 0, true);
-            
-            const uint32_t thread_group_count_x = 8;
-            const uint32_t thread_group_count_y = 8;
-            uint32_t dispatch_x = (width + thread_group_count_x - 1) / thread_group_count_x;
-            uint32_t dispatch_y = (height + thread_group_count_y - 1) / thread_group_count_y;
-            cmd_list->Dispatch(dispatch_x, dispatch_y, 1);
-            
-            for (uint32_t i = 0; i < 5; i++)
-                cmd_list->InsertBarrier(reservoirs[i], RHI_BarrierType::EnsureWriteThenRead);
-        }
-        cmd_list->EndTimeblock();
-
-        // spatial resampling - two passes to propagate good samples across a wider neighborhood,
-        // reducing variance enough to skip denoising entirely
-        RHI_Texture* reservoirs_spatial[5];
-        for (uint32_t i = 0; i < 5; i++)
-            reservoirs_spatial[i] = GetRenderTarget(static_cast<Renderer_RenderTarget>(static_cast<uint32_t>(Renderer_RenderTarget::restir_reservoir_spatial0) + i));
-
-        RHI_Shader* shader_spatial = GetShader(Renderer_Shader::restir_pt_spatial_c);
-        if (!shader_spatial || !shader_spatial->IsCompiled())
-        {
-            cmd_list->InsertBarrier(tex_gi, RHI_BarrierType::EnsureWriteThenRead);
-            return;
-        }
-
         const uint32_t thread_group_count_x = 8;
         const uint32_t thread_group_count_y = 8;
         uint32_t dispatch_x = (width + thread_group_count_x - 1) / thread_group_count_x;
         uint32_t dispatch_y = (height + thread_group_count_y - 1) / thread_group_count_y;
+        bool ran_spatial = false;
 
-        // pass 1: reservoirs -> reservoirs_spatial
-        cmd_list->BeginTimeblock("restir_pt_spatial");
+        // temporal resampling
+        if (RHI_Shader* shader_temporal = GetShader(Renderer_Shader::restir_pt_temporal_c); shader_temporal && shader_temporal->IsCompiled())
         {
-            RHI_PipelineState pso;
-            pso.name             = "restir_pt_spatial";
-            pso.shaders[Compute] = shader_spatial;
-            cmd_list->SetPipelineState(pso);
-
-            m_pcb_pass_cpu.set_f3_value(0.0f);
-            cmd_list->PushConstants(m_pcb_pass_cpu);
-
-            SetCommonTextures(cmd_list);
-
-            cmd_list->SetAccelerationStructure(Renderer_BindingsSrv::tlas, tlas);
-
-            for (uint32_t i = 0; i < 5; i++)
+            cmd_list->BeginTimeblock("restir_pt_temporal");
             {
-                cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsSrv::reservoir_prev0) + i, reservoirs[i]);
-                cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsUav::reservoir0) + i,      reservoirs_spatial[i], rhi_all_mips, 0, true);
+                RHI_PipelineState pso;
+                pso.name             = "restir_pt_temporal";
+                pso.shaders[Compute] = shader_temporal;
+                cmd_list->SetPipelineState(pso);
+
+                SetCommonTextures(cmd_list);
+
+                for (uint32_t i = 0; i < 5; i++)
+                {
+                    cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsSrv::reservoir_prev0) + i, reservoirs_prev[i]);
+                    cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsUav::reservoir0) + i,      reservoirs[i], rhi_all_mips, 0, true);
+                }
+
+                cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsUav::tex), tex_gi, rhi_all_mips, 0, true);
+                cmd_list->Dispatch(dispatch_x, dispatch_y, 1);
+
+                for (uint32_t i = 0; i < 5; i++)
+                    cmd_list->InsertBarrier(reservoirs[i], RHI_BarrierType::EnsureWriteThenRead);
             }
-
-            cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsUav::tex), tex_gi, rhi_all_mips, 0, true);
-
-            cmd_list->Dispatch(dispatch_x, dispatch_y, 1);
-
-            for (uint32_t i = 0; i < 5; i++)
-                cmd_list->InsertBarrier(reservoirs_spatial[i], RHI_BarrierType::EnsureWriteThenRead);
-            cmd_list->InsertBarrier(tex_gi, RHI_BarrierType::EnsureWriteThenRead);
+            cmd_list->EndTimeblock();
         }
-        cmd_list->EndTimeblock();
 
-        // pass 2: reservoirs_spatial -> reservoirs (ping-pong back)
-        cmd_list->BeginTimeblock("restir_pt_spatial_2");
+        // spatial resampling - two passes to propagate good samples across a wider neighborhood,
+        // reducing variance before the denoiser
+        RHI_Texture* reservoirs_spatial[5];
+        for (uint32_t i = 0; i < 5; i++)
+            reservoirs_spatial[i] = GetRenderTarget(static_cast<Renderer_RenderTarget>(static_cast<uint32_t>(Renderer_RenderTarget::restir_reservoir_spatial0) + i));
+
+        if (RHI_Shader* shader_spatial = GetShader(Renderer_Shader::restir_pt_spatial_c); shader_spatial && shader_spatial->IsCompiled())
         {
-            RHI_PipelineState pso;
-            pso.name             = "restir_pt_spatial_2";
-            pso.shaders[Compute] = shader_spatial;
-            cmd_list->SetPipelineState(pso);
-
-            m_pcb_pass_cpu.set_f3_value(1.0f);
-            cmd_list->PushConstants(m_pcb_pass_cpu);
-
-            SetCommonTextures(cmd_list);
-
-            cmd_list->SetAccelerationStructure(Renderer_BindingsSrv::tlas, tlas);
-
-            for (uint32_t i = 0; i < 5; i++)
+            // pass 1: reservoirs -> reservoirs_spatial
+            cmd_list->BeginTimeblock("restir_pt_spatial");
             {
-                cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsSrv::reservoir_prev0) + i, reservoirs_spatial[i]);
-                cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsUav::reservoir0) + i,      reservoirs[i], rhi_all_mips, 0, true);
+                RHI_PipelineState pso;
+                pso.name             = "restir_pt_spatial";
+                pso.shaders[Compute] = shader_spatial;
+                cmd_list->SetPipelineState(pso);
+
+                m_pcb_pass_cpu.set_f3_value(0.0f);
+                cmd_list->PushConstants(m_pcb_pass_cpu);
+
+                SetCommonTextures(cmd_list);
+
+                cmd_list->SetAccelerationStructure(Renderer_BindingsSrv::tlas, tlas);
+
+                for (uint32_t i = 0; i < 5; i++)
+                {
+                    cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsSrv::reservoir_prev0) + i, reservoirs[i]);
+                    cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsUav::reservoir0) + i,      reservoirs_spatial[i], rhi_all_mips, 0, true);
+                }
+
+                cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsUav::tex), tex_gi, rhi_all_mips, 0, true);
+                cmd_list->Dispatch(dispatch_x, dispatch_y, 1);
+
+                for (uint32_t i = 0; i < 5; i++)
+                    cmd_list->InsertBarrier(reservoirs_spatial[i], RHI_BarrierType::EnsureWriteThenRead);
+                cmd_list->InsertBarrier(tex_gi, RHI_BarrierType::EnsureWriteThenRead);
             }
+            cmd_list->EndTimeblock();
 
-            cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsUav::tex), tex_gi, rhi_all_mips, 0, true);
+            // pass 2: reservoirs_spatial -> reservoirs (ping-pong back)
+            cmd_list->BeginTimeblock("restir_pt_spatial_2");
+            {
+                RHI_PipelineState pso;
+                pso.name             = "restir_pt_spatial_2";
+                pso.shaders[Compute] = shader_spatial;
+                cmd_list->SetPipelineState(pso);
 
-            cmd_list->Dispatch(dispatch_x, dispatch_y, 1);
+                m_pcb_pass_cpu.set_f3_value(1.0f);
+                cmd_list->PushConstants(m_pcb_pass_cpu);
 
-            for (uint32_t i = 0; i < 5; i++)
-                cmd_list->InsertBarrier(reservoirs[i], RHI_BarrierType::EnsureWriteThenRead);
-            cmd_list->InsertBarrier(tex_gi, RHI_BarrierType::EnsureWriteThenRead);
+                SetCommonTextures(cmd_list);
+
+                cmd_list->SetAccelerationStructure(Renderer_BindingsSrv::tlas, tlas);
+
+                for (uint32_t i = 0; i < 5; i++)
+                {
+                    cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsSrv::reservoir_prev0) + i, reservoirs_spatial[i]);
+                    cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsUav::reservoir0) + i,      reservoirs[i], rhi_all_mips, 0, true);
+                }
+
+                cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsUav::tex), tex_gi, rhi_all_mips, 0, true);
+                cmd_list->Dispatch(dispatch_x, dispatch_y, 1);
+
+                for (uint32_t i = 0; i < 5; i++)
+                    cmd_list->InsertBarrier(reservoirs[i], RHI_BarrierType::EnsureWriteThenRead);
+                cmd_list->InsertBarrier(tex_gi, RHI_BarrierType::EnsureWriteThenRead);
+            }
+            cmd_list->EndTimeblock();
+
+            ran_spatial = true;
         }
-        cmd_list->EndTimeblock();
+
+        if (!ran_spatial)
+            cmd_list->InsertBarrier(tex_gi, RHI_BarrierType::EnsureWriteThenRead);
 
         // swap for next frame's temporal pass
         {
@@ -1257,6 +1248,17 @@ namespace spartan
             cmd_list->InsertBarrier(tex_gi_denoised, RHI_BarrierType::EnsureReadThenWrite);
             Pass_Blit(cmd_list, tex_gi_raw, tex_gi_denoised);
             cmd_list->InsertBarrier(tex_gi_denoised, RHI_BarrierType::EnsureWriteThenRead);
+            return;
+        }
+
+        if (cvar_restir_pt_debug_mode.GetValue() > 0.0f)
+        {
+            cmd_list->InsertBarrier(tex_gi_denoised, RHI_BarrierType::EnsureReadThenWrite);
+            cmd_list->InsertBarrier(tex_gi_history,  RHI_BarrierType::EnsureReadThenWrite);
+            Pass_Blit(cmd_list, tex_gi_raw, tex_gi_denoised);
+            Pass_Blit(cmd_list, tex_gi_raw, tex_gi_history);
+            cmd_list->InsertBarrier(tex_gi_denoised, RHI_BarrierType::EnsureWriteThenRead);
+            cmd_list->InsertBarrier(tex_gi_history,  RHI_BarrierType::EnsureWriteThenRead);
             return;
         }
 

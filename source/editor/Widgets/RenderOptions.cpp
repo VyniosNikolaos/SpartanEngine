@@ -290,11 +290,26 @@ void RenderOptions::OnTickVisible()
                 if (option_header("Ray-traced Effects"))
                 {
                     ImGui::BeginDisabled(!RHI_Device::IsSupportedRayTracing());
+                    static vector<string> restir_debug_modes =
+                    {
+                        "Off",
+                        "Confidence",
+                        "Reservoir M",
+                        "Reservoir W",
+                        "Reuse Ratio",
+                        "Temporal Rejection"
+                    };
+
                     option_check_box("Reflections", "r.ray_traced_reflections");
                     option_check_box("Shadows", "r.ray_traced_shadows");
                     option_check_box("ReSTIR Path Tracing (WIP)", "r.restir_pt");
                     ImGui::BeginDisabled(!cvar_restir_pt.GetValueAs<bool>());
                     option_value("ReSTIR resolution scale", "r.restir_pt_scale", "Fraction of render resolution used for path tracing (0.1-1.0)", 0.05f, 0.1f, 1.0f, "%.2f");
+                    uint32_t restir_debug_mode = cvar_restir_pt_debug_mode.GetValueAs<uint32_t>();
+                    if (option_combo_box("ReSTIR debug view", restir_debug_modes, restir_debug_mode, "Visualize reservoir state and temporal rejection"))
+                    {
+                        ConsoleRegistry::Get().SetValueFromString("r.restir_pt_debug_mode", to_string(static_cast<float>(restir_debug_mode)));
+                    }
                     ImGui::EndDisabled();
                     ImGui::EndDisabled();
                 }

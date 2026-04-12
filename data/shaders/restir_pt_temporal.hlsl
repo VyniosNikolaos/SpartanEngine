@@ -85,15 +85,27 @@ float2 reproject_to_previous_frame(float2 current_uv)
     return current_uv - velocity_uv;
 }
 
-bool is_temporal_sample_valid(float2 current_uv, float2 prev_uv, float3 current_pos, float3 current_normal, float current_depth, float2 screen_resolution, out float confidence)
+bool is_temporal_sample_valid(float2 current_uv, float2 prev_uv, float3 current_pos, float3 current_normal,
+                              float3 current_albedo, float current_roughness, float current_metallic,
+                              float current_depth, float2 screen_resolution, out float confidence, out uint rejection_reason)
 {
     confidence = 0.0f;
+    rejection_reason = RESTIR_TEMPORAL_REASON_ACCEPTED;
 
     if (!is_valid_uv(prev_uv))
+    {
+        rejection_reason = RESTIR_TEMPORAL_REASON_INVALID_UV;
         return false;
+    }
 
     // verify reprojection accuracy against the previous frame transform
     float4 prev_clip        = mul(float4(current_pos, 1.0f), buffer_frame.view_projection_previous);
+    if (abs(prev_clip.w) <= 1e-6f)
+    {
+        rejection_reason = RESTIR_TEMPORAL_REASON_REPROJECTION;
+        return false;
+    }
+
     float3 prev_ndc         = prev_clip.xyz / prev_clip.w;
     float2 expected_prev_uv = prev_ndc.xy * float2(0.5f, -0.5f) + 0.5f;
     float2 reproj_diff = abs(prev_uv - expected_prev_uv) * screen_resolution;
@@ -105,13 +117,29 @@ bool is_temporal_sample_valid(float2 current_uv, float2 prev_uv, float3 current_
     float motion_factor = saturate(motion_length / 32.0f);
     float reproj_tolerance = lerp(1.5f, 0.75f, motion_factor);
     if (reproj_dist > reproj_tolerance)
+    {
+        rejection_reason = RESTIR_TEMPORAL_REASON_REPROJECTION;
         return false;
+    }
 
     float normal_threshold = lerp(0.9f, 0.97f, motion_factor);
     float3 prev_uv_normal   = get_normal(prev_uv);
     float normal_similarity = dot(current_normal, prev_uv_normal);
     if (normal_similarity < normal_threshold)
+    {
+        rejection_reason = RESTIR_TEMPORAL_REASON_NORMAL;
         return false;
+    }
+
+    float4 prev_uv_material = tex_material.SampleLevel(GET_SAMPLER(sampler_point_clamp), prev_uv, 0);
+    float3 prev_uv_albedo   = saturate(tex_albedo.SampleLevel(GET_SAMPLER(sampler_point_clamp), prev_uv, 0).rgb);
+    float prev_uv_roughness = max(prev_uv_material.r, RESTIR_MIN_ROUGHNESS);
+    float prev_uv_metallic  = prev_uv_material.g;
+    if (!are_materials_compatible(current_albedo, current_roughness, current_metallic, prev_uv_albedo, prev_uv_roughness, prev_uv_metallic))
+    {
+        rejection_reason = RESTIR_TEMPORAL_REASON_MATERIAL;
+        return false;
+    }
 
     // detect depth edges
     float2 texel_size    = 1.0f / screen_resolution;
@@ -128,7 +156,10 @@ bool is_temporal_sample_valid(float2 current_uv, float2 prev_uv, float3 current_
     }
 
     if (reproj_dist > reproj_tolerance || normal_similarity < normal_threshold)
+    {
+        rejection_reason = (normal_similarity < normal_threshold) ? RESTIR_TEMPORAL_REASON_NORMAL : RESTIR_TEMPORAL_REASON_REPROJECTION;
         return false;
+    }
 
     float edge_penalty = is_depth_edge ? saturate(1.0f - motion_length / 12.0f) : 1.0f;
 
@@ -139,7 +170,10 @@ bool is_temporal_sample_valid(float2 current_uv, float2 prev_uv, float3 current_
     confidence = reproj_confidence * normal_confidence * motion_confidence * edge_penalty;
 
     if (confidence < TEMPORAL_MIN_CONFIDENCE)
+    {
+        rejection_reason = RESTIR_TEMPORAL_REASON_LOW_CONFIDENCE;
         return false;
+    }
 
     return true;
 }
@@ -186,24 +220,13 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     Reservoir combined = create_empty_reservoir();
     float confidence_weight_sum   = 0.0f;
     float confidence_weight_total = 0.0f;
+    float reuse_weight_sum        = 0.0f;
+    uint temporal_rejection_reason = RESTIR_TEMPORAL_REASON_EMPTY_HISTORY;
 
-    float target_pdf_current;
-    if (is_sky_sample(current.sample))
-    {
-        target_pdf_current = calculate_target_pdf_sky(current.sample.radiance,
-            current.sample.direction, normal_ws, view_dir, albedo, roughness, metallic);
-    }
-    else
-    {
-        target_pdf_current = calculate_target_pdf_with_geometry(current.sample.radiance,
-            pos_ws, normal_ws, view_dir, current.sample.hit_position, current.sample.hit_normal,
-            albedo, roughness, metallic);
-    }
-    if (target_pdf_current <= 0.0f)
-        target_pdf_current = calculate_target_pdf(current.sample.radiance);
+    float target_pdf_current = calculate_target_pdf_for_sample(current.sample, pos_ws, normal_ws, view_dir, albedo, roughness, metallic);
 
     // initialize combined reservoir with the current stream contribution
-    float weight_current     = target_pdf_current * current.W * current.M;
+    float weight_current     = compute_reservoir_stream_weight(target_pdf_current, current.W, current.M);
     combined.weight_sum      = weight_current;
     combined.M               = current.M;
     combined.sample          = current.sample;
@@ -215,8 +238,10 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     float2 prev_uv = reproject_to_previous_frame(uv);
     float temporal_confidence = 0.0f;
     float linear_depth = linearize_depth(depth);
+    float prev_depth = tex_depth.SampleLevel(GET_SAMPLER(sampler_point_clamp), prev_uv, 0).r;
+    uint temporal_validation_reason = RESTIR_TEMPORAL_REASON_ACCEPTED;
 
-    if (is_temporal_sample_valid(uv, prev_uv, pos_ws, normal_ws, linear_depth, buffer_frame.resolution_render, temporal_confidence))
+    if (is_temporal_sample_valid(uv, prev_uv, pos_ws, normal_ws, albedo, roughness, metallic, linear_depth, buffer_frame.resolution_render, temporal_confidence, temporal_validation_reason))
     {
         float2 prev_pixel_f = prev_uv * resolution;
         bool in_bounds = prev_pixel_f.x >= 0.5f && prev_pixel_f.x < resolution.x - 0.5f &&
@@ -225,6 +250,7 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
         if (in_bounds && temporal_confidence > 0.0f)
         {
             int2 prev_pixel = int2(prev_pixel_f);
+            float3 reference_shading_pos = prev_depth > 0.0f ? get_position(prev_uv) : pos_ws;
 
             Reservoir temporal = unpack_reservoir(
                 tex_reservoir_prev0[prev_pixel],
@@ -236,6 +262,12 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
 
             if (is_reservoir_valid(temporal) && temporal.M > 0 && temporal.W > 0)
             {
+                if (!has_path_sample(temporal.sample))
+                {
+                    temporal_rejection_reason = RESTIR_TEMPORAL_REASON_EMPTY_HISTORY;
+                }
+                else
+                {
                 float temp_lum = dot(temporal.sample.radiance, float3(0.299f, 0.587f, 0.114f));
                 if (temp_lum > 50.0f)
                     temporal.sample.radiance *= 50.0f / temp_lum;
@@ -256,17 +288,18 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
                     float n_dot_sky = dot(normal_ws, temporal.sample.direction);
                     if (n_dot_sky > 0.0f)
                     {
-                        float target_pdf_temporal = calculate_target_pdf_sky(temporal.sample.radiance,
-                            temporal.sample.direction, normal_ws, view_dir, albedo, roughness, metallic);
+                        float target_pdf_temporal = calculate_target_pdf_for_sample(temporal.sample, pos_ws, normal_ws, view_dir, albedo, roughness, metallic);
 
                         if (target_pdf_temporal > 0.0f)
                         {
-                            float weight_temporal = target_pdf_temporal * temporal.W * temporal.M;
+                            float weight_temporal = compute_reservoir_stream_weight(target_pdf_temporal, temporal.W, temporal.M);
 
                             combined.weight_sum += weight_temporal;
                             combined.M += temporal.M;
+                            reuse_weight_sum       += weight_temporal;
                             confidence_weight_sum   += temporal.confidence * max(weight_temporal, 0.0f);
                             confidence_weight_total += max(weight_temporal, 0.0f);
+                            temporal_rejection_reason = RESTIR_TEMPORAL_REASON_ACCEPTED;
 
                             if (random_float(seed) * combined.weight_sum < weight_temporal)
                             {
@@ -274,14 +307,19 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
                                 combined.target_pdf = target_pdf_temporal;
                             }
                         }
+                        else
+                        {
+                            temporal_rejection_reason = RESTIR_TEMPORAL_REASON_TARGET_PDF;
+                        }
+                    }
+                    else
+                    {
+                        temporal_rejection_reason = RESTIR_TEMPORAL_REASON_VISIBILITY;
                     }
                 }
                 else if (temporal.M > 0.0f && temporal.weight_sum > 0.0f)
                 {
-                    float3 reference_shading_pos = pos_ws;
-
-                    bool temporal_visible = temporal.sample.path_length == 0 ||
-                                            all(temporal.sample.radiance <= 0.0f) ||
+                    bool temporal_visible = prev_depth > 0.0f &&
                                             check_temporal_visibility(pos_ws, normal_ws, temporal.sample.hit_position, temporal.sample.hit_normal, reference_shading_pos);
 
                     if (temporal_visible)
@@ -295,18 +333,18 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
 
                             if (n_dot_l > 0.0f)
                             {
-                                float target_pdf_temporal = calculate_target_pdf_with_geometry(temporal.sample.radiance,
-                                    pos_ws, normal_ws, view_dir, temporal.sample.hit_position, temporal.sample.hit_normal,
-                                    albedo, roughness, metallic);
+                                float target_pdf_temporal = calculate_target_pdf_for_sample(temporal.sample, pos_ws, normal_ws, view_dir, albedo, roughness, metallic);
 
                                 if (target_pdf_temporal > 0.0f)
                                 {
-                                    float weight_temporal = target_pdf_temporal * jacobian * temporal.W * temporal.M;
+                                    float weight_temporal = jacobian * compute_reservoir_stream_weight(target_pdf_temporal, temporal.W, temporal.M);
 
                                     combined.weight_sum += weight_temporal;
                                     combined.M += temporal.M;
+                                    reuse_weight_sum       += weight_temporal;
                                     confidence_weight_sum   += temporal.confidence * max(weight_temporal, 0.0f);
                                     confidence_weight_total += max(weight_temporal, 0.0f);
+                                    temporal_rejection_reason = RESTIR_TEMPORAL_REASON_ACCEPTED;
 
                                     if (random_float(seed) * combined.weight_sum < weight_temporal)
                                     {
@@ -314,39 +352,51 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
                                         combined.target_pdf = target_pdf_temporal;
                                     }
                                 }
+                                else
+                                {
+                                    temporal_rejection_reason = RESTIR_TEMPORAL_REASON_TARGET_PDF;
+                                }
+                            }
+                            else
+                            {
+                                temporal_rejection_reason = RESTIR_TEMPORAL_REASON_VISIBILITY;
                             }
                         }
+                        else
+                        {
+                            temporal_rejection_reason = RESTIR_TEMPORAL_REASON_JACOBIAN;
+                        }
+                    }
+                    else
+                    {
+                        temporal_rejection_reason = RESTIR_TEMPORAL_REASON_VISIBILITY;
                     }
                 }
+                else
+                {
+                    temporal_rejection_reason = RESTIR_TEMPORAL_REASON_EMPTY_HISTORY;
+                }
+                }
+            }
+            else
+            {
+                temporal_rejection_reason = RESTIR_TEMPORAL_REASON_INVALID_HISTORY;
             }
         }
+        else
+        {
+            temporal_rejection_reason = RESTIR_TEMPORAL_REASON_OUT_OF_BOUNDS;
+        }
+    }
+    else
+    {
+        temporal_rejection_reason = temporal_validation_reason;
     }
 
     clamp_reservoir_M(combined, RESTIR_M_CAP);
 
-    float final_target_pdf;
-    if (is_sky_sample(combined.sample))
-    {
-        final_target_pdf = calculate_target_pdf_sky(combined.sample.radiance,
-            combined.sample.direction, normal_ws, view_dir, albedo, roughness, metallic);
-    }
-    else
-    {
-        final_target_pdf = calculate_target_pdf_with_geometry(combined.sample.radiance,
-            pos_ws, normal_ws, view_dir, combined.sample.hit_position, combined.sample.hit_normal,
-            albedo, roughness, metallic);
-    }
-    if (final_target_pdf <= 0.0f)
-        final_target_pdf = calculate_target_pdf(combined.sample.radiance);
-    combined.target_pdf = final_target_pdf;
-
-    if (final_target_pdf > 0 && combined.M > 0)
-        combined.W = combined.weight_sum / (final_target_pdf * combined.M);
-    else
-        combined.W = 0;
-
-    float w_clamp = get_w_clamp_for_sample(combined.sample);
-    combined.W = min(combined.W, w_clamp);
+    float final_target_pdf = calculate_target_pdf_for_sample(combined.sample, pos_ws, normal_ws, view_dir, albedo, roughness, metallic);
+    finalize_reservoir_with_target(combined, final_target_pdf);
 
     combined.confidence = confidence_weight_total > 0.0f ? saturate(confidence_weight_sum / confidence_weight_total) : 0.0f;
 
@@ -360,8 +410,10 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     tex_reservoir4[pixel] = t4;
 
     // output GI with soft clamp
-    float3 gi = combined.sample.radiance * combined.W;
-    gi = soft_clamp_gi(gi, combined.sample);
+    float reuse_ratio = combined.weight_sum > 0.0f ? saturate(reuse_weight_sum / combined.weight_sum) : 0.0f;
+    float3 gi = get_restir_pt_debug_mode() == RESTIR_DEBUG_MODE_TEMPORAL_REJECTION
+        ? get_temporal_rejection_debug_visualization(temporal_rejection_reason)
+        : get_restir_debug_visualization(combined, reuse_ratio);
 
     tex_uav[pixel] = float4(gi, 1.0f);
 }
