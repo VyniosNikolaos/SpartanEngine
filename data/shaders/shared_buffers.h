@@ -303,16 +303,16 @@ struct EmitterParams
 #ifdef __cplusplus
 namespace spartan
 {
-    using Cb_Frame          = FrameBufferData;
-    using Pcb_Pass          = PassBufferData;
-    using Sb_Material       = MaterialParameters;
-    using Sb_Light          = LightParameters;
-    using Sb_Aabb           = Aabb;
-    using Sb_GeometryInfo   = GeometryInfo;
+    using Cb_Frame            = FrameBufferData;
+    using Pcb_Pass            = PassBufferData;
+    using Sb_Material         = MaterialParameters;
+    using Sb_Light            = LightParameters;
+    using Sb_Aabb             = Aabb;
+    using Sb_GeometryInfo     = GeometryInfo;
     using Sb_IndirectDrawArgs = IndirectDrawArgs;
-    using Sb_DrawData       = DrawData;
-    using Sb_Particle       = Particle;
-    using Sb_EmitterParams  = EmitterParams;
+    using Sb_DrawData         = DrawData;
+    using Sb_Particle         = Particle;
+    using Sb_EmitterParams    = EmitterParams;
 }
 #else
 // hlsl backward compatibility alias

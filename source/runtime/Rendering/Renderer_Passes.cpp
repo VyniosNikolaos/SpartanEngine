@@ -173,6 +173,7 @@ namespace spartan
 
                 Pass_RayTracedShadows(cmd_list_compute);
                 Pass_ReSTIR_PathTracing(cmd_list_compute);
+                Pass_ReSTIR_Denoising(cmd_list_compute);
 
                 // submit compute, wait on phase 1
                 cmd_list_compute->Submit(nullptr, false, nullptr, gfx_timeline, gfx_phase1_timeline_value);
@@ -1234,6 +1235,154 @@ namespace spartan
         }
     }
 
+    void Renderer::Pass_ReSTIR_Denoising(RHI_CommandList* cmd_list)
+    {
+        RHI_Texture* tex_gi_raw      = GetRenderTarget(Renderer_RenderTarget::restir_output);
+        RHI_Texture* tex_gi_denoised = GetRenderTarget(Renderer_RenderTarget::restir_denoised);
+        RHI_Texture* tex_gi_history  = GetRenderTarget(Renderer_RenderTarget::restir_denoised_history);
+        RHI_Texture* tex_gi_ping     = GetRenderTarget(Renderer_RenderTarget::restir_denoised_ping);
+
+        if (!tex_gi_raw || !tex_gi_denoised || !tex_gi_history || !tex_gi_ping)
+            return;
+
+        const uint32_t min_rt_dimension = 64;
+        if (Window::IsMinimized())
+            return;
+        if (tex_gi_raw->GetWidth() < min_rt_dimension || tex_gi_raw->GetHeight() < min_rt_dimension)
+            return;
+
+        if (!cvar_restir_pt.GetValueAs<bool>() || !RHI_Device::IsSupportedRayTracing())
+        {
+            cmd_list->ClearTexture(tex_gi_history, Color::standard_black);
+            cmd_list->InsertBarrier(tex_gi_denoised, RHI_BarrierType::EnsureReadThenWrite);
+            Pass_Blit(cmd_list, tex_gi_raw, tex_gi_denoised);
+            cmd_list->InsertBarrier(tex_gi_denoised, RHI_BarrierType::EnsureWriteThenRead);
+            return;
+        }
+
+        RHI_Shader* shader_temporal = GetShader(Renderer_Shader::restir_pt_denoise_temporal_c);
+        RHI_Shader* shader_spatial  = GetShader(Renderer_Shader::restir_pt_denoise_spatial_c);
+        if (!shader_temporal || !shader_spatial || !shader_temporal->IsCompiled() || !shader_spatial->IsCompiled())
+        {
+            cmd_list->InsertBarrier(tex_gi_denoised, RHI_BarrierType::EnsureReadThenWrite);
+            cmd_list->InsertBarrier(tex_gi_history,  RHI_BarrierType::EnsureReadThenWrite);
+            Pass_Blit(cmd_list, tex_gi_raw, tex_gi_denoised);
+            Pass_Blit(cmd_list, tex_gi_raw, tex_gi_history);
+            cmd_list->InsertBarrier(tex_gi_denoised, RHI_BarrierType::EnsureWriteThenRead);
+            cmd_list->InsertBarrier(tex_gi_history,  RHI_BarrierType::EnsureWriteThenRead);
+            return;
+        }
+
+        RHI_Texture* reservoirs[5];
+        for (uint32_t i = 0; i < 5; i++)
+        {
+            reservoirs[i] = GetRenderTarget(static_cast<Renderer_RenderTarget>(static_cast<uint32_t>(Renderer_RenderTarget::restir_reservoir_prev0) + i));
+        }
+
+        const uint32_t thread_group_count_x = 8;
+        const uint32_t thread_group_count_y = 8;
+        const uint32_t width                = tex_gi_raw->GetWidth();
+        const uint32_t height               = tex_gi_raw->GetHeight();
+        const uint32_t dispatch_x           = (width + thread_group_count_x - 1) / thread_group_count_x;
+        const uint32_t dispatch_y           = (height + thread_group_count_y - 1) / thread_group_count_y;
+
+        cmd_list->BeginTimeblock("restir_pt_denoise_temporal");
+        {
+            RHI_PipelineState pso;
+            pso.name             = "restir_pt_denoise_temporal";
+            pso.shaders[Compute] = shader_temporal;
+            cmd_list->SetPipelineState(pso);
+
+            cmd_list->InsertBarrier(tex_gi_denoised, RHI_BarrierType::EnsureReadThenWrite);
+            SetCommonTextures(cmd_list);
+            cmd_list->SetTexture(Renderer_BindingsSrv::tex,  tex_gi_raw);
+            cmd_list->SetTexture(Renderer_BindingsSrv::tex2, tex_gi_history);
+            for (uint32_t i = 0; i < 5; i++)
+            {
+                cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsSrv::reservoir_prev0) + i, reservoirs[i]);
+            }
+            cmd_list->SetTexture(Renderer_BindingsUav::tex, tex_gi_denoised);
+            cmd_list->Dispatch(dispatch_x, dispatch_y, 1);
+            cmd_list->InsertBarrier(tex_gi_denoised, RHI_BarrierType::EnsureWriteThenRead);
+        }
+        cmd_list->EndTimeblock();
+
+        cmd_list->BeginTimeblock("restir_pt_denoise_spatial");
+        {
+            RHI_PipelineState pso;
+            pso.name             = "restir_pt_denoise_spatial";
+            pso.shaders[Compute] = shader_spatial;
+            cmd_list->SetPipelineState(pso);
+
+            m_pcb_pass_cpu.set_f3_value(1.0f);
+            cmd_list->PushConstants(m_pcb_pass_cpu);
+
+            cmd_list->InsertBarrier(tex_gi_ping, RHI_BarrierType::EnsureReadThenWrite);
+            SetCommonTextures(cmd_list);
+            cmd_list->SetTexture(Renderer_BindingsSrv::tex, tex_gi_denoised);
+            for (uint32_t i = 0; i < 5; i++)
+            {
+                cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsSrv::reservoir_prev0) + i, reservoirs[i]);
+            }
+            cmd_list->SetTexture(Renderer_BindingsUav::tex, tex_gi_ping);
+            cmd_list->Dispatch(dispatch_x, dispatch_y, 1);
+            cmd_list->InsertBarrier(tex_gi_ping, RHI_BarrierType::EnsureWriteThenRead);
+        }
+        cmd_list->EndTimeblock();
+
+        cmd_list->BeginTimeblock("restir_pt_denoise_spatial_2");
+        {
+            RHI_PipelineState pso;
+            pso.name             = "restir_pt_denoise_spatial_2";
+            pso.shaders[Compute] = shader_spatial;
+            cmd_list->SetPipelineState(pso);
+
+            m_pcb_pass_cpu.set_f3_value(2.0f);
+            cmd_list->PushConstants(m_pcb_pass_cpu);
+
+            cmd_list->InsertBarrier(tex_gi_denoised, RHI_BarrierType::EnsureReadThenWrite);
+            SetCommonTextures(cmd_list);
+            cmd_list->SetTexture(Renderer_BindingsSrv::tex, tex_gi_ping);
+            for (uint32_t i = 0; i < 5; i++)
+            {
+                cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsSrv::reservoir_prev0) + i, reservoirs[i]);
+            }
+            cmd_list->SetTexture(Renderer_BindingsUav::tex, tex_gi_denoised);
+            cmd_list->Dispatch(dispatch_x, dispatch_y, 1);
+            cmd_list->InsertBarrier(tex_gi_denoised, RHI_BarrierType::EnsureWriteThenRead);
+        }
+        cmd_list->EndTimeblock();
+
+        cmd_list->BeginTimeblock("restir_pt_denoise_spatial_3");
+        {
+            RHI_PipelineState pso;
+            pso.name             = "restir_pt_denoise_spatial_3";
+            pso.shaders[Compute] = shader_spatial;
+            cmd_list->SetPipelineState(pso);
+
+            m_pcb_pass_cpu.set_f3_value(4.0f);
+            cmd_list->PushConstants(m_pcb_pass_cpu);
+
+            cmd_list->InsertBarrier(tex_gi_ping, RHI_BarrierType::EnsureReadThenWrite);
+            SetCommonTextures(cmd_list);
+            cmd_list->SetTexture(Renderer_BindingsSrv::tex, tex_gi_denoised);
+            for (uint32_t i = 0; i < 5; i++)
+            {
+                cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsSrv::reservoir_prev0) + i, reservoirs[i]);
+            }
+            cmd_list->SetTexture(Renderer_BindingsUav::tex, tex_gi_ping);
+            cmd_list->Dispatch(dispatch_x, dispatch_y, 1);
+            cmd_list->InsertBarrier(tex_gi_ping, RHI_BarrierType::EnsureWriteThenRead);
+        }
+        cmd_list->EndTimeblock();
+
+        cmd_list->InsertBarrier(tex_gi_denoised, RHI_BarrierType::EnsureReadThenWrite);
+        Pass_Blit(cmd_list, tex_gi_ping, tex_gi_denoised);
+        cmd_list->InsertBarrier(tex_gi_history, RHI_BarrierType::EnsureReadThenWrite);
+        Pass_Blit(cmd_list, tex_gi_ping, tex_gi_history);
+        cmd_list->InsertBarrier(tex_gi_history,  RHI_BarrierType::EnsureWriteThenRead);
+        cmd_list->InsertBarrier(tex_gi_denoised, RHI_BarrierType::EnsureWriteThenRead);
+    }
 
     void Renderer::Pass_ScreenSpaceShadows(RHI_CommandList* cmd_list)
     {
@@ -1419,7 +1568,8 @@ namespace spartan
         RHI_Texture* tex_light_diffuse    = GetRenderTarget(Renderer_RenderTarget::light_diffuse);
         RHI_Texture* tex_light_specular   = GetRenderTarget(Renderer_RenderTarget::light_specular);
         RHI_Texture* tex_light_volumetric = GetRenderTarget(Renderer_RenderTarget::light_volumetric);
-        RHI_Texture* tex_gi               = GetRenderTarget(Renderer_RenderTarget::restir_output);
+        RHI_Texture* tex_gi               = GetRenderTarget(Renderer_RenderTarget::restir_denoised);
+        tex_gi                            = tex_gi ? tex_gi : GetRenderTarget(Renderer_RenderTarget::restir_output);
 
         cmd_list->InsertBarrier(tex_out, RHI_BarrierType::EnsureReadThenWrite);
 

@@ -202,6 +202,8 @@ namespace spartan
         restir_pt_ray_hit_r,
         restir_pt_temporal_c,
         restir_pt_spatial_c,
+        restir_pt_denoise_temporal_c,
+        restir_pt_denoise_spatial_c,
         // volumetric clouds
         cloud_noise_shape_c,
         cloud_noise_detail_c,
@@ -262,6 +264,9 @@ namespace spartan
         ray_traced_shadows,
         // restir path tracing output
         restir_output,
+        restir_denoised,
+        restir_denoised_history,
+        restir_denoised_ping,
         // restir reservoir buffers (current frame)
         restir_reservoir0,
         restir_reservoir1,

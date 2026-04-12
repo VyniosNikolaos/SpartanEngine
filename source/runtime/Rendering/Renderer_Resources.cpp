@@ -279,10 +279,18 @@ namespace spartan
                 auto rt = static_cast<Renderer_RenderTarget>(static_cast<uint32_t>(Renderer_RenderTarget::restir_reservoir0) + i);
                 at(render_targets, rt) = nullptr;
             }
+            at(render_targets, Renderer_RenderTarget::restir_output)           = nullptr;
+            at(render_targets, Renderer_RenderTarget::restir_denoised)         = nullptr;
+            at(render_targets, Renderer_RenderTarget::restir_denoised_history) = nullptr;
+            at(render_targets, Renderer_RenderTarget::restir_denoised_ping)    = nullptr;
 
             uint32_t restir_out_width  = max(static_cast<uint32_t>(width * restir_scale), 64u);
             uint32_t restir_out_height = max(static_cast<uint32_t>(height * restir_scale), 64u);
-            at(render_targets, Renderer_RenderTarget::restir_output) = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, restir_out_width, restir_out_height, 1, 1, RHI_Format::R16G16B16A16_Float, flags | RHI_Texture_ConcurrentSharing, "restir_output");
+            uint32_t restir_out_flags  = flags | RHI_Texture_ConcurrentSharing;
+            at(render_targets, Renderer_RenderTarget::restir_output)           = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, restir_out_width, restir_out_height, 1, 1, RHI_Format::R16G16B16A16_Float, restir_out_flags, "restir_output");
+            at(render_targets, Renderer_RenderTarget::restir_denoised)         = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, restir_out_width, restir_out_height, 1, 1, RHI_Format::R16G16B16A16_Float, restir_out_flags, "restir_denoised");
+            at(render_targets, Renderer_RenderTarget::restir_denoised_history) = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, restir_out_width, restir_out_height, 1, 1, RHI_Format::R16G16B16A16_Float, restir_out_flags, "restir_denoised_history");
+            at(render_targets, Renderer_RenderTarget::restir_denoised_ping)    = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, restir_out_width, restir_out_height, 1, 1, RHI_Format::R16G16B16A16_Float, restir_out_flags, "restir_denoised_ping");
         }
 
         if (need_restir && !at(render_targets, Renderer_RenderTarget::restir_reservoir0))
@@ -347,6 +355,9 @@ namespace spartan
             at(render_targets, Renderer_RenderTarget::gbuffer_reflections_albedo)  = nullptr;
             at(render_targets, Renderer_RenderTarget::ray_traced_shadows)             = nullptr;
             at(render_targets, Renderer_RenderTarget::restir_output)                = nullptr;
+            at(render_targets, Renderer_RenderTarget::restir_denoised)              = nullptr;
+            at(render_targets, Renderer_RenderTarget::restir_denoised_history)      = nullptr;
+            at(render_targets, Renderer_RenderTarget::restir_denoised_ping)         = nullptr;
             for (uint32_t i = 0; i < 15; i++)
                 at(render_targets, static_cast<Renderer_RenderTarget>(static_cast<uint32_t>(Renderer_RenderTarget::restir_reservoir0) + i)) = nullptr;
             at(render_targets, Renderer_RenderTarget::shading_rate)                 = nullptr;
@@ -434,7 +445,11 @@ namespace spartan
                 float restir_scale          = cvar_restir_pt_scale.GetValue();
                 uint32_t restir_out_width   = max(static_cast<uint32_t>(width_render * restir_scale), 64u);
                 uint32_t restir_out_height  = max(static_cast<uint32_t>(height_render * restir_scale), 64u);
-                at(render_targets, Renderer_RenderTarget::restir_output) = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, restir_out_width, restir_out_height, 1, 1, RHI_Format::R16G16B16A16_Float, RHI_Texture_Uav | RHI_Texture_Srv | RHI_Texture_ClearBlit | RHI_Texture_ConcurrentSharing, "restir_output");
+                uint32_t restir_output_flags = RHI_Texture_Uav | RHI_Texture_Srv | RHI_Texture_ClearBlit | RHI_Texture_ConcurrentSharing;
+                at(render_targets, Renderer_RenderTarget::restir_output)           = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, restir_out_width, restir_out_height, 1, 1, RHI_Format::R16G16B16A16_Float, restir_output_flags, "restir_output");
+                at(render_targets, Renderer_RenderTarget::restir_denoised)         = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, restir_out_width, restir_out_height, 1, 1, RHI_Format::R16G16B16A16_Float, restir_output_flags, "restir_denoised");
+                at(render_targets, Renderer_RenderTarget::restir_denoised_history) = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, restir_out_width, restir_out_height, 1, 1, RHI_Format::R16G16B16A16_Float, restir_output_flags, "restir_denoised_history");
+                at(render_targets, Renderer_RenderTarget::restir_denoised_ping)    = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, restir_out_width, restir_out_height, 1, 1, RHI_Format::R16G16B16A16_Float, restir_output_flags, "restir_denoised_ping");
             }
             
             // optional render targets (ssao, rt reflections, restir)
@@ -618,6 +633,8 @@ namespace spartan
             compile_shader(Renderer_Shader::restir_pt_ray_hit_r,        RHI_Shader_Type::RayHit,        sd + "restir_pt.hlsl", true, RHI_Vertex_Type::Max, "MAIN_HIT");
             compile_shader(Renderer_Shader::restir_pt_temporal_c,       RHI_Shader_Type::Compute,       sd + "restir_pt_temporal.hlsl");
             compile_shader(Renderer_Shader::restir_pt_spatial_c,        RHI_Shader_Type::Compute,       sd + "restir_pt_spatial.hlsl");
+            compile_shader(Renderer_Shader::restir_pt_denoise_temporal_c, RHI_Shader_Type::Compute,     sd + "restir_pt_denoise_temporal.hlsl");
+            compile_shader(Renderer_Shader::restir_pt_denoise_spatial_c,  RHI_Shader_Type::Compute,     sd + "restir_pt_denoise_spatial.hlsl");
         }
 
         // volumetric clouds
