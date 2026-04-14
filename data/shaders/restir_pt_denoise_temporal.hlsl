@@ -68,7 +68,7 @@ float3 clamp_history(float3 history, float3 mean, float3 sigma, float3 minimum_v
     float mean_luma   = dot(mean, luminance_weights);
     float low_light_factor = saturate(1.0f - mean_luma / 0.2f);
     float sigma_scale = lerp(0.9f, 2.8f, saturate(min(current_confidence, history_confidence)));
-    sigma_scale      *= lerp(1.35f, 1.0f, 1.0f - low_light_factor);
+    sigma_scale      *= lerp(1.15f, 1.0f, 1.0f - low_light_factor);
     float3 lower      = max(minimum_value, mean - sigma * sigma_scale);
     float3 upper      = min(maximum_value, mean + sigma * sigma_scale);
     return clamp(history, lower, upper);
@@ -116,7 +116,7 @@ bool is_history_valid(float2 current_uv, float2 prev_uv, float3 current_position
     float motion_confidence = saturate(1.0f - motion_length / 24.0f);
     confidence = reproj_confidence * normal_confidence * depth_confidence * motion_confidence;
 
-    return confidence > 0.02f;
+    return confidence > 0.012f;
 }
 
 [numthreads(THREAD_GROUP_COUNT_X, THREAD_GROUP_COUNT_Y, 1)]
@@ -171,8 +171,8 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
         history_weight *= lerp(0.55f, 1.0f, history_confidence);
         history_weight *= lerp(0.65f, 0.95f, current_confidence);
         history_weight *= lerp(1.0f, 1.35f, saturate(relative_variance * 0.5f));
-        history_weight *= lerp(1.0f, 1.25f, low_light_factor);
-        history_weight  = saturate(min(history_weight, 0.985f));
+        history_weight *= lerp(1.0f, 1.45f, low_light_factor);
+        history_weight  = saturate(min(history_weight, 0.992f));
     }
 
     float3 output_color = lerp(current_color, history_color, history_weight);

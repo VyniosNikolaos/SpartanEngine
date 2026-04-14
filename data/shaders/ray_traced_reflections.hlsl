@@ -172,11 +172,8 @@ void closest_hit(inout Payload payload : SV_RayPayload, in BuiltInTriangleInters
     float3 hit_pos = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
     if (any(mat.world_space_uv))
     {
-        float3 abs_normal = abs(normal_world);
-        float2 uv_world   = hit_pos.yz * abs_normal.x + 
-                            hit_pos.xz * abs_normal.y + 
-                            hit_pos.xy * abs_normal.z;
-        uv_world          = uv_world * mat.tiling + mat.offset;
+        float2 uv_world = compute_world_space_uv(hit_pos, normal_world);
+        uv_world        = uv_world * mat.tiling + mat.offset;
         
         // branchless inversion
         float2 invert_mask = step(0.5f, mat.invert_uv);

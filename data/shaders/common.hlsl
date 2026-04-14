@@ -234,6 +234,23 @@ float2 rotate_uv_90(float2 uv, float rotation_index)
     return rotated + 0.5f;
 }
 
+float2 compute_world_space_uv(float3 position_world, float3 normal_world)
+{
+    float3 normal = normalize(normal_world);
+    float3 axis_v = float3(0.0f, 1.0f, 0.0f) - normal * dot(float3(0.0f, 1.0f, 0.0f), normal);
+
+    // horizontal surfaces need a second reference axis because world up collapses onto the normal.
+    if (dot(axis_v, axis_v) < 1e-4f)
+        axis_v = float3(0.0f, 0.0f, -1.0f) - normal * dot(float3(0.0f, 0.0f, -1.0f), normal);
+
+    axis_v = normalize(axis_v);
+
+    // keep v aligned with world up on walls and slopes, while u follows the surface plane.
+    float3 axis_u = normalize(cross(axis_v, normal));
+
+    return float2(dot(position_world, axis_u), dot(position_world, axis_v));
+}
+
 /*------------------------------------------------------------------------------
     NORMAL
 ------------------------------------------------------------------------------*/

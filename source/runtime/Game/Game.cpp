@@ -46,16 +46,16 @@ using namespace spartan::math;
 
 namespace spartan
 {
-    //= FORWARD DECLARATIONS (world functions) ================
+    //= FORWARD DECLARATIONS (world functions) =============
     namespace worlds
     {
-        namespace showroom      { void create(); void tick(); }
-        namespace forest        { void create(); void tick(); }
-        namespace sponza        { void create(); }
-        namespace basic         { void create(); }
-        namespace empty         { void create(); }
+        namespace showroom   { void create(); void tick(); }
+        namespace forest     { void create(); void tick(); }
+        namespace sponza     { void create(); }
+        namespace light_test { void create(); }
+        namespace empty      { void create(); }
     }
-    //=========================================================
+    //======================================================
 
     // entities shared with other files (external linkage required)
     Entity* default_car        = nullptr;
@@ -88,7 +88,7 @@ namespace spartan
             worlds::showroom::create,
             worlds::forest::create,
             worlds::sponza::create,
-            worlds::basic::create,
+            worlds::light_test::create,
             worlds::empty::create,
         };
 
@@ -1131,8 +1131,8 @@ namespace spartan
         }
         //====================================================================================
 
-        //= BASIC ============================================================================
-        namespace basic
+        //= LIGHT TEST =======================================================================
+        namespace light_test
         {
             void create()
             {

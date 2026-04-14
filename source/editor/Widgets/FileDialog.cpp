@@ -191,6 +191,7 @@ bool FileDialog::Show(bool* is_visible, Editor* editor, string* directory /*= nu
     if (!(*is_visible))
     {
         m_is_dirty = true;
+        m_file_path_pending_overwrite.clear();
         return false;
     }
 
@@ -214,6 +215,45 @@ bool FileDialog::Show(bool* is_visible, Editor* editor, string* directory /*= nu
     ShowMiddle();
     ShowBottom(is_visible);
 
+    EmptyAreaContextMenu();
+    HandleKeyboardNavigation();
+
+    if (m_selection_made)
+    {
+        if (file_path)
+        {
+            string dir = m_current_path;
+            if (FileSystem::IsFile(m_current_path))
+            {
+                dir = FileSystem::GetDirectoryFromFilePath(m_current_path);
+            }
+
+            // ensure there's a separator between directory and filename
+            if (!dir.empty() && dir.back() != '/' && dir.back() != '\\')
+            {
+                dir += "/";
+            }
+
+            const string selected_file_path = dir + m_input_box;
+            if (m_operation == FileDialog_Op_Save && FileSystem::IsFile(selected_file_path))
+            {
+                m_file_path_pending_overwrite = selected_file_path;
+                ImGui::OpenPopup("##overwrite_dialog");
+                m_selection_made = false;
+            }
+            else
+            {
+                if (directory)
+                {
+                    (*directory) = m_current_path;
+                }
+                (*file_path) = selected_file_path;
+            }
+        }
+    }
+
+    ShowOverwriteDialog(directory, file_path);
+
     if (m_is_window)
     {
         ImGui::End();
@@ -232,33 +272,61 @@ bool FileDialog::Show(bool* is_visible, Editor* editor, string* directory /*= nu
         m_is_dirty = false;
     }
 
-    if (m_selection_made)
+    return m_selection_made;
+}
+
+void FileDialog::ShowOverwriteDialog(string* directory, string* file_path)
+{
+    ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Appearing);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16, 16));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
+
+    if (ImGui::BeginPopupModal("##overwrite_dialog", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar))
     {
-        if (directory)
+        ImGui::Text("Overwrite existing file?");
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::TextWrapped("The selected file already exists:");
+        ImGui::Spacing();
+        ImGui::TextWrapped("%s", m_file_path_pending_overwrite.c_str());
+        ImGui::Spacing();
+        ImGui::Spacing();
+
+        float button_width = 90.0f;
+        float buttons_x    = ImGui::GetContentRegionAvail().x - button_width * 2 - 8;
+        ImGui::SetCursorPosX(buttons_x);
+
+        if (ImGui::Button("Cancel", ImVec2(button_width, 0)))
         {
-            (*directory) = m_current_path;
+            m_file_path_pending_overwrite.clear();
+            ImGui::CloseCurrentPopup();
         }
-        if (file_path)
+
+        ImGui::SameLine(0, 8);
+
+        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyle().Colors[ImGuiCol_CheckMark]);
+        if (ImGui::Button("Overwrite", ImVec2(button_width, 0)))
         {
-            string dir = m_current_path;
-            if (FileSystem::IsFile(m_current_path))
+            if (directory)
             {
-                dir = FileSystem::GetDirectoryFromFilePath(m_current_path);
+                (*directory) = m_current_path;
             }
 
-            // ensure there's a separator between directory and filename
-            if (!dir.empty() && dir.back() != '/' && dir.back() != '\\')
+            if (file_path)
             {
-                dir += "/";
+                (*file_path) = m_file_path_pending_overwrite;
             }
-            (*file_path) = dir + m_input_box;
+
+            m_selection_made = true;
+            m_file_path_pending_overwrite.clear();
+            ImGui::CloseCurrentPopup();
         }
+        ImGui::PopStyleColor();
+
+        ImGui::EndPopup();
     }
 
-    EmptyAreaContextMenu();
-    HandleKeyboardNavigation();
-
-    return m_selection_made;
+    ImGui::PopStyleVar(2);
 }
 
 void FileDialog::ShowTop(bool* is_visible, Editor* editor)

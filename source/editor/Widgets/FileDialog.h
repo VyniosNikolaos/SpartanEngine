@@ -143,6 +143,7 @@ private:
     void DialogUpdateFromDirectory(const std::string& path);
     void EmptyAreaContextMenu();
     void HandleKeyboardNavigation();
+    void ShowOverwriteDialog(std::string* directory, std::string* file_path);
 
     // flags
     bool m_is_window;
@@ -152,6 +153,7 @@ private:
     bool m_is_hovering_window;
     std::string m_title;
     std::string m_input_box;
+    std::string m_file_path_pending_overwrite;
     std::string m_hovered_item_path;
     uint32_t m_displayed_item_count;
 

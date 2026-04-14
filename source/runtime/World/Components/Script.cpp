@@ -6,6 +6,14 @@
 
 using namespace spartan;
 
+namespace
+{
+    bool is_simulation_active()
+    {
+        return Engine::IsFlagSet(EngineMode::Playing) && !Engine::IsFlagSet(EngineMode::Paused);
+    }
+}
+
 Script::Script(Entity* Entity)
     :Component(Entity)
 {
@@ -59,7 +67,7 @@ void Script::Start()
 {
     if (script.valid())
     {
-        sol::protected_function TickFunction = script["Stop"];
+        sol::protected_function TickFunction = script["Start"];
         if (TickFunction.valid())
         {
             (void)TickFunction(script, GetEntity());
@@ -93,6 +101,9 @@ void Script::Remove()
 
 void Script::PreTick()
 {
+    if (!is_simulation_active())
+        return;
+
     if (script.valid())
     {
         sol::protected_function TickFunction = script["PreTick"];
@@ -105,6 +116,9 @@ void Script::PreTick()
 
 void Script::Tick()
 {
+    if (!is_simulation_active())
+        return;
+
     if (script.valid())
     {
         sol::protected_function TickFunction = script["Tick"];

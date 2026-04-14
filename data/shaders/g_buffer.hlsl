@@ -162,11 +162,8 @@ gbuffer main_ps(gbuffer_vertex vertex, bool is_front_face : SV_IsFrontFace)
     // world space uv transformation
     if (any(material.world_space_uv))
     {
-        float3 abs_normal = abs(normal);
-        float2 uv_world   = position_world.yz * abs_normal.x + 
-                            position_world.xz * abs_normal.y + 
-                            position_world.xy * abs_normal.z;
-        uv_world          = uv_world * material.tiling + material.offset;
+        float2 uv_world = compute_world_space_uv(position_world, normal);
+        uv_world        = uv_world * material.tiling + material.offset;
         
         // branchless inversion
         float2 invert_mask = step(0.5f, material.invert_uv);

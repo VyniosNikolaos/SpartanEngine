@@ -72,7 +72,7 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     float depth_phi     = max(center_depth * lerp(0.12f, 0.03f, center_confidence), 0.015f);
     float luma_phi      = max((center_luma + 0.08f) * lerp(4.5f, 1.4f, center_confidence), 0.08f);
     float normal_power  = lerp(8.0f, 32.0f, center_confidence);
-    luma_phi           *= lerp(1.35f, 1.0f, 1.0f - low_light_factor);
+    luma_phi           *= lerp(1.55f, 1.0f, 1.0f - low_light_factor);
 
     float4 filtered_color = center_sample * spatial_kernel[4];
     float  total_weight   = spatial_kernel[4];
@@ -104,7 +104,7 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
         float luma_weight    = exp(-abs(sample_luma - center_luma) / luma_phi);
         float history_confidence = max(saturate(sample_history.a), sample_reservoir_confidence);
         float history_weight = lerp(0.45f, 1.0f, history_confidence);
-        history_weight *= lerp(1.25f, 1.0f, 1.0f - low_light_factor);
+        history_weight *= lerp(1.5f, 1.0f, 1.0f - low_light_factor);
 
         float weight = spatial_weight * depth_weight * normal_weight * luma_weight * history_weight;
         if (weight <= 0.0f)
@@ -116,7 +116,7 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
 
     float4 filtered_sample = total_weight > 0.0f ? filtered_color / total_weight : center_sample;
     float filter_strength  = lerp(1.0f, 0.35f, center_confidence);
-    filter_strength        = saturate(filter_strength + low_light_factor * 0.2f);
+    filter_strength        = saturate(filter_strength + low_light_factor * 0.4f);
     float4 output_sample   = lerp(center_sample, filtered_sample, filter_strength);
     output_sample.a        = saturate(lerp(center_history, filtered_sample.a, filter_strength * 0.75f));
 

@@ -2,6 +2,7 @@ local footsteps = {}
 
 -- material name -> sound file mapping
 local sound_map = {
+    carpet    = "project/music/footsteps_carpet.wav",
     tile_pool  = "project/music/footsteps_tiles.wav",
     grass      = "project/music/footsteps_grass.wav",
     water      = "project/music/footsteps_water.wav",
@@ -84,15 +85,6 @@ function footsteps.Tick(self, entity)
         return
     end
 
-    -- lerp between walk and run intervals based on speed
-    local t = math.max(0.0, math.min((smoothed_speed - walk_speed) / (run_speed - walk_speed), 1.0))
-    local interval = walk_interval + (run_interval - walk_interval) * t
-    if time_since_step < interval then
-        return
-    end
-
-    time_since_step = 0.0
-
     -- raycast straight down from the body to find the ground surface
     local origin    = Vector3(pos.x, pos.y, pos.z)
     local direction = Vector3(0.0, -1.0, 0.0)
@@ -102,7 +94,7 @@ function footsteps.Tick(self, entity)
     if hit and hit.entity then
         local renderable = hit.entity:GetComponent(ComponentType.Renderable)
         if renderable then
-            local mat_name = renderable:GetMaterialName()
+            local mat_name = string.lower(renderable:GetMaterialName() or "")
             for pattern, file in pairs(sound_map) do
                 if string.find(mat_name, pattern) then
                     sound_file = file
@@ -112,16 +104,34 @@ function footsteps.Tick(self, entity)
         end
     end
 
-    -- swap clip only if the surface changed
+    -- lerp between walk and run intervals based on speed
+    local t = math.max(0.0, math.min((smoothed_speed - walk_speed) / (run_speed - walk_speed), 1.0))
+    local interval = walk_interval + (run_interval - walk_interval) * t
+
+    -- if the floor changed, switch sounds on the next eligible step
     if sound_file ~= current_sound then
+        if audio:IsPlaying() then
+            if time_since_step < interval then
+                return
+            end
+
+            audio:StopClip()
+        end
+
         audio:SetAudioClip(sound_file)
         current_sound = sound_file
     end
 
-    -- stop previous step and play new one so sprint pitch changes take effect immediately
-    if audio:IsPlaying() then
-        audio:StopClip()
+    if time_since_step < interval then
+        return
     end
+
+    -- let the current step finish instead of restarting the clip mid-play
+    if audio:IsPlaying() then
+        return
+    end
+
+    time_since_step = 0.0
 
     -- walking = natural pitch, running = slightly faster
     local pitch = 1.0 + t * 0.15 + (math.random() * 0.1 - 0.05)
