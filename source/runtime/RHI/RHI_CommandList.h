@@ -152,7 +152,7 @@ namespace spartan
 
         // timestamp queries
         uint32_t BeginTimestamp();
-        void EndTimestamp();
+        uint32_t EndTimestamp();
         float GetTimestampResult(const uint32_t index_timestamp);
         float GetTimestampStartMs(const uint32_t index_timestamp);
 

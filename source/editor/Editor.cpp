@@ -27,9 +27,11 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "Widgets/MenuBar.h"
 #include "Core/Engine.h"
 #include "Core/Settings.h"
+#include "Core/Timer.h"
 #include "ImGui/ImGui_Extension.h"
 #include "ImGui/Implementation/ImGui_RHI.h"
 #include "ImGui/Implementation/imgui_impl_sdl3.h"
+#include "Profiling/Profiler.h"
 #include "Widgets/AssetBrowser.h"
 #include "Widgets/Console.h"
 #include "Widgets/Style.h"
@@ -181,6 +183,9 @@ void Editor::Tick()
                 ImGui::RenderPlatformWindowsDefault();
             }
         }
+
+        spartan::Timer::PostTick();
+        spartan::Profiler::PostTick();
     }
 }
 

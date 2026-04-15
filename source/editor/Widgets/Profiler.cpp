@@ -79,7 +79,7 @@ namespace
         ImGui::GetWindowDrawList()->AddRectFilled(pos_screen, ImVec2(pos_screen.x + width, pos_screen.y + text_height), col);
 
         ImGui::SetCursorPos(ImVec2(pos.x + m_tree_depth_stride * time_block.GetTreeDepth(), pos.y));
-        ImGui::Text("%s - %.2f ms", name, duration);
+        ImGui::Text("%s - %.3f ms", name, duration);
     }
 
     void show_memory_bar(const char* label, float used_mb, float budget_mb, float total_mb, ImVec2 size = ImVec2(-1, 0))
@@ -589,7 +589,7 @@ void Profiler::OnTickVisible()
                 const char* name  = block.GetName();
 
                 char full_label[128];
-                snprintf(full_label, sizeof(full_label), "%s - %.2fms", name, block.GetDuration());
+                snprintf(full_label, sizeof(full_label), "%s - %.3fms", name, block.GetDuration());
 
                 ImVec2 full_size = ImGui::CalcTextSize(full_label);
                 ImVec2 name_size = ImGui::CalcTextSize(name);

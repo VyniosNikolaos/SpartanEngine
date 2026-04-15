@@ -799,21 +799,46 @@ namespace spartan
         {
             const uint32_t query_count = 256;
             array<uint64_t, query_count> data;
+            array<uint64_t, query_count> availability;
 
-            void update(void* query_pool)
+            void update(void* query_pool, uint32_t query_count_to_read, const bool wait_for_results = false)
             {
+                data.fill(0);
+                availability.fill(0);
+
                 if (Debugging::IsGpuTimingEnabled())
                 {
-                    vkGetQueryPoolResults(
+                    query_count_to_read = min(query_count_to_read, query_count);
+                    if (query_count_to_read == 0)
+                        return;
+
+                    array<uint64_t, query_count * 2> results = {};
+                    VkResult result = vkGetQueryPoolResults(
                         RHI_Context::device,                  // device
                         static_cast<VkQueryPool>(query_pool), // queryPool
                         0,                                    // firstQuery
-                        query_count,                          // queryCount
-                        query_count * sizeof(uint64_t),       // dataSize
-                        data.data(),                          // pData
-                        sizeof(uint64_t),                     // stride
-                        VK_QUERY_RESULT_64_BIT                // flags
+                        query_count_to_read,                  // queryCount
+                        query_count_to_read * sizeof(uint64_t) * 2, // dataSize
+                        results.data(),                       // pData
+                        sizeof(uint64_t) * 2,                // stride
+                        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT | (wait_for_results ? VK_QUERY_RESULT_WAIT_BIT : 0) // flags
                     );
+
+                    if (wait_for_results)
+                    {
+                        SP_ASSERT_VK(result);
+                    }
+
+                    for (uint32_t i = 0; i < query_count_to_read; i++)
+                    {
+                        data[i]         = results[i * 2];
+                        availability[i] = results[i * 2 + 1];
+
+                        if (!availability[i])
+                        {
+                            data[i] = 0;
+                        }
+                    }
                 }
             }
 
@@ -1009,7 +1034,7 @@ namespace spartan
         {
             if (m_timestamp_index != 0)
             {
-                queries::timestamp::update(m_rhi_query_pool_timestamps);
+                queries::timestamp::update(m_rhi_query_pool_timestamps, m_timestamp_index);
 
                 // store per-command-list copy so other queues don't overwrite our results
                 m_timestamp_data = queries::timestamp::data;
@@ -2461,11 +2486,20 @@ namespace spartan
     {
         SP_ASSERT(m_state == RHI_CommandListState::Recording);
 
+        // timestamp writes must not happen inside an active render pass
+        if (m_render_pass_active)
+        {
+            RenderPassEnd();
+        }
+
         uint32_t timestamp_index = m_timestamp_index;
 
+        // top-of-pipe bunches timestamps near command buffer start, which makes later
+        // passes appear to share the same cumulative duration. all-commands gives us
+        // a monotonic point after previously recorded work has completed.
         vkCmdWriteTimestamp2(
             static_cast<VkCommandBuffer>(m_rhi_resource),
-            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
             static_cast<VkQueryPool>(m_rhi_query_pool_timestamps),
             m_timestamp_index++
         );
@@ -2473,16 +2507,26 @@ namespace spartan
         return timestamp_index;
     }
 
-    void RHI_CommandList::EndTimestamp()
+    uint32_t RHI_CommandList::EndTimestamp()
     {
         SP_ASSERT(m_state == RHI_CommandListState::Recording);
 
+        // timestamp writes must not happen inside an active render pass
+        if (m_render_pass_active)
+        {
+            RenderPassEnd();
+        }
+
+        uint32_t timestamp_index = m_timestamp_index;
+
         vkCmdWriteTimestamp2(
             static_cast<VkCommandBuffer>(m_rhi_resource),
-            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
             static_cast<VkQueryPool>(m_rhi_query_pool_timestamps),
             m_timestamp_index++
         );
+
+        return timestamp_index;
     }
 
     float RHI_CommandList::GetTimestampResult(const uint32_t index_timestamp)
@@ -2528,7 +2572,7 @@ namespace spartan
         }
 
         // read fresh results from the query pool into m_timestamp_data
-        queries::timestamp::update(m_rhi_query_pool_timestamps);
+        queries::timestamp::update(m_rhi_query_pool_timestamps, m_timestamp_index, true);
         m_timestamp_data          = queries::timestamp::data;
         m_gpu_frame_reference_tick = m_timestamp_data[0];
     }
@@ -2662,9 +2706,9 @@ namespace spartan
         // timing
         if (Debugging::IsGpuTimingEnabled())
         {
-            Profiler::TimeBlockEnd(); // gpu
+            Profiler::TimeBlockEnd(TimeBlockType::Gpu, this);
         }
-        Profiler::TimeBlockEnd(); // cpu
+        Profiler::TimeBlockEnd(TimeBlockType::Cpu, this);
     
         // pop the active time block
         m_active_timeblocks.pop();

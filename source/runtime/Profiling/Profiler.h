@@ -30,7 +30,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //====================
 
 #define SP_PROFILE_CPU_START(name) spartan::Profiler::TimeBlockStart(name, spartan::TimeBlockType::Cpu, nullptr);
-#define SP_PROFILE_CPU_END()       spartan::Profiler::TimeBlockEnd();
+#define SP_PROFILE_CPU_END()       spartan::Profiler::TimeBlockEnd(spartan::TimeBlockType::Cpu);
 
 // msvc's __FUNCTION__ already includes the class name (e.g. "World::Tick")
 // gcc/clang's __FUNCTION__ doesn't, so we use __PRETTY_FUNCTION__ there instead
@@ -50,7 +50,7 @@ namespace spartan
         static void PostTick();
 
         static void TimeBlockStart(const char* func_name, TimeBlockType type, RHI_CommandList* cmd_list = nullptr, RHI_Queue_Type queue_type = RHI_Queue_Type::Max);
-        static void TimeBlockEnd();
+        static void TimeBlockEnd(TimeBlockType type = TimeBlockType::Max, RHI_CommandList* cmd_list = nullptr);
         static void ClearMetrics();
         
         // properties
@@ -113,7 +113,7 @@ namespace spartan
         }
 
         static void DrawPerformanceMetrics();
-        static TimeBlock* GetLastIncompleteTimeBlock(const TimeBlockType type);
+        static TimeBlock* GetLastIncompleteTimeBlock(const TimeBlockType type, RHI_CommandList* cmd_list = nullptr);
     };
 
     class ScopedTimeBlock
@@ -126,7 +126,7 @@ namespace spartan
 
         ~ScopedTimeBlock()
         {
-            Profiler::TimeBlockEnd();
+            Profiler::TimeBlockEnd(spartan::TimeBlockType::Cpu);
         }
     };
 }

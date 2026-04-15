@@ -893,7 +893,7 @@ namespace spartan
                 m_cmd_list_present->Submit(nullptr, true);
             }
         }
-        Profiler::TimeBlockEnd();
+        Profiler::TimeBlockEnd(TimeBlockType::Cpu);
     }
 
     RHI_Api_Type Renderer::GetRhiApiType()

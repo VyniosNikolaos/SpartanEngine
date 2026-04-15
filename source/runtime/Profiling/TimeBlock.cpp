@@ -24,6 +24,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "TimeBlock.h"
 #include "Profiler.h"
 #include "../RHI/RHI_CommandList.h"
+#include "../RHI/RHI_Device.h"
 //=================================
 
 //= NAMESPACES =====
@@ -41,18 +42,20 @@ namespace spartan
 
     void TimeBlock::Begin(const uint32_t id, const char* name, TimeBlockType type, const TimeBlock* parent /*= nullptr*/, RHI_CommandList* cmd_list /*= nullptr*/, RHI_Queue_Type queue_type /*= RHI_Queue_Type::Max*/)
     {
-        m_id             = id;
-        m_name           = name;
-        m_parent         = parent;
-        m_tree_depth     = FindTreeDepth(this);
-        m_type           = type;
-        m_queue_type     = queue_type;
-        m_max_tree_depth = max(m_max_tree_depth, m_tree_depth);
-
-        if (cmd_list)
-        {
-            m_cmd_list = cmd_list;
-        }
+        m_id                    = id;
+        m_name                  = name;
+        m_parent                = parent;
+        m_type                  = type;
+        m_queue_type            = queue_type;
+        m_duration              = 0.0f;
+        m_is_complete           = false;
+        m_cmd_list              = cmd_list;
+        m_timestamp_index_start = 0;
+        m_timestamp_index_end   = 0;
+        m_start_ms              = 0.0f;
+        m_end_ms                = 0.0f;
+        m_tree_depth            = FindTreeDepth(this);
+        m_max_tree_depth        = max(m_max_tree_depth, m_tree_depth);
 
         // record cpu time for timeline position
         m_start    = chrono::high_resolution_clock::now();
@@ -60,7 +63,7 @@ namespace spartan
 
         if (type == TimeBlockType::Gpu)
         {
-            m_timestamp_index = cmd_list->BeginTimestamp();
+            m_timestamp_index_start = cmd_list->BeginTimestamp();
         }
     }
 
@@ -72,7 +75,7 @@ namespace spartan
         }
         else if (m_type == TimeBlockType::Gpu)
         {
-            m_cmd_list->EndTimestamp();
+            m_timestamp_index_end = m_cmd_list->EndTimestamp();
         }
 
         // compute duration and timeline offsets
@@ -92,16 +95,24 @@ namespace spartan
         m_is_complete = true;
     }
 
-    void TimeBlock::ResolveGpuTimestamps(uint64_t global_reference_tick, float timestamp_period)
+    void TimeBlock::ResolveGpuTimestamps(uint64_t global_reference_tick, float timestamp_period, uint64_t end_tick_override /*= 0*/)
     {
         if (m_type != TimeBlockType::Gpu || !m_cmd_list)
             return;
 
-        // recompute duration from fresh (post-execution) timestamp data
-        m_duration = m_cmd_list->GetTimestampResult(m_timestamp_index);
+        uint64_t start_tick = m_cmd_list->GetTimestampRawTick(m_timestamp_index_start);
+        uint64_t end_tick   = end_tick_override != 0 ? end_tick_override : m_cmd_list->GetTimestampRawTick(m_timestamp_index_end);
+        if (end_tick > start_tick)
+        {
+            uint64_t duration_ticks = end_tick - start_tick;
+            m_duration = clamp(static_cast<float>(duration_ticks * timestamp_period * 1e-6f), 0.0f, 1000.0f);
+        }
+        else
+        {
+            m_duration = 0.0f;
+        }
 
         // compute position relative to the global frame reference
-        uint64_t start_tick = m_cmd_list->GetTimestampRawTick(m_timestamp_index);
         if (start_tick >= global_reference_tick && global_reference_tick != 0)
         {
             m_start_ms = static_cast<float>((start_tick - global_reference_tick) * timestamp_period * 1e-6f);
@@ -110,13 +121,23 @@ namespace spartan
         m_end_ms = m_start_ms + m_duration;
     }
 
-    void TimeBlock::ResolveGpuDuration()
+    void TimeBlock::ResolveGpuDuration(uint64_t end_tick_override /*= 0*/)
     {
         if (m_type != TimeBlockType::Gpu || !m_cmd_list)
             return;
 
-        // approximate duration from existing (possibly stale) query pool data, no gpu wait needed
-        m_duration = m_cmd_list->GetTimestampResult(m_timestamp_index);
+        uint64_t start_tick = m_cmd_list->GetTimestampRawTick(m_timestamp_index_start);
+        uint64_t end_tick   = end_tick_override != 0 ? end_tick_override : m_cmd_list->GetTimestampRawTick(m_timestamp_index_end);
+        if (end_tick > start_tick)
+        {
+            uint64_t duration_ticks = end_tick - start_tick;
+            m_duration = clamp(static_cast<float>(duration_ticks * RHI_Device::PropertyGetTimestampPeriod() * 1e-6f), 0.0f, 1000.0f);
+        }
+        else
+        {
+            m_duration = 0.0f;
+        }
+
         m_end_ms   = m_start_ms + m_duration;
     }
 

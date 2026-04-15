@@ -155,9 +155,6 @@ namespace spartan
         Allocator::Tick();
         SmokeTest::Tick();
 
-        // post-tick
-        Timer::PostTick();
-        Profiler::PostTick();
     }
 
     bool Engine::IsFlagSet(const EngineMode flag)

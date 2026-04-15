@@ -569,9 +569,10 @@ namespace spartan
         return 0;
     }
 
-    void RHI_CommandList::EndTimestamp()
+    uint32_t RHI_CommandList::EndTimestamp()
     {
         // todo: implement timestamps
+        return 0;
     }
 
     float RHI_CommandList::GetTimestampResult(const uint32_t timestamp_index)
