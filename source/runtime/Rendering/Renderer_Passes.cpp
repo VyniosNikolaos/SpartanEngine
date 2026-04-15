@@ -1940,7 +1940,7 @@ namespace spartan
     
             cmd_list->SetTexture(Renderer_BindingsUav::tex, tex_bloom, 0, 1);
             cmd_list->SetTexture(Renderer_BindingsSrv::tex, tex_in);
-            cmd_list->Dispatch(tex_bloom->GetWidth(), tex_bloom->GetHeight());
+            cmd_list->Dispatch(tex_bloom);
         }
         cmd_list->EndMarker();
     
