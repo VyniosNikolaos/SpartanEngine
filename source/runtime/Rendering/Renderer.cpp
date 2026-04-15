@@ -275,14 +275,37 @@ namespace spartan
         {
             swapchain->AcquireNextImage();
             RHI_Device::Tick(frame_num);
-            RHI_VendorTechnology::Tick(&m_cb_frame_cpu, GetResolutionRender(), GetResolutionOutput(), GetResolutionScale());
-            dynamic_resolution();
+
+            if (RHI_Context::api_type != RHI_Api_Type::D3d12)
+            {
+                RHI_VendorTechnology::Tick(&m_cb_frame_cpu, GetResolutionRender(), GetResolutionOutput(), GetResolutionScale());
+                dynamic_resolution();
+            }
 
             // breadcrumbs
             if (Debugging::IsBreadcrumbsEnabled())
             {
                 Breadcrumbs::StartFrame();
             }
+        }
+
+        const bool is_d3d12_editor_minimal = RHI_Context::api_type == RHI_Api_Type::D3d12 && Engine::IsFlagSet(EngineMode::EditorVisible);
+        if (is_d3d12_editor_minimal)
+        {
+            m_cmd_list_present = RHI_Device::GetQueue(RHI_Queue_Type::Graphics)->NextCommandList();
+            m_cmd_list_present->Begin();
+            m_cmd_list_compute = nullptr;
+            m_draw_data_count  = 0;
+            m_lines_vertices.clear();
+            m_icons.clear();
+
+            frame_num++;
+            if (frame_num == 1)
+            {
+                SP_FIRE_EVENT(EventType::RendererOnFirstFrameCompleted);
+            }
+
+            return;
         }
         
         // recreate optional render targets when feature cvars change
@@ -883,10 +906,33 @@ namespace spartan
 
             if (swapchain->IsImageAcquired())
             {
-                m_cmd_list_present->InsertBarrier(swapchain->GetRhiRt(), swapchain->GetFormat(), 0, 1, 1, RHI_Image_Layout::Present_Source);
-                
-                m_cmd_list_present->Submit(swapchain->GetImageAcquiredSemaphore(), false, swapchain->GetRenderingCompleteSemaphore());
-                swapchain->Present(m_cmd_list_present);
+                #if defined(API_GRAPHICS_D3D12)
+                if (RHI_Context::api_type == RHI_Api_Type::D3d12)
+                {
+                    m_cmd_list_present->RenderPassEnd();
+
+                    ID3D12GraphicsCommandList* cmd_list = static_cast<ID3D12GraphicsCommandList*>(m_cmd_list_present->GetRhiResource());
+                    ID3D12Resource* backbuffer          = static_cast<ID3D12Resource*>(swapchain->GetRhiRt());
+
+                    D3D12_RESOURCE_BARRIER barrier = {};
+                    barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                    barrier.Transition.pResource   = backbuffer;
+                    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+                    barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_PRESENT;
+                    cmd_list->ResourceBarrier(1, &barrier);
+
+                    m_cmd_list_present->Submit(swapchain->GetImageAcquiredSemaphore(), false, swapchain->GetRenderingCompleteSemaphore());
+                    swapchain->Present(m_cmd_list_present);
+                }
+                else
+                #endif
+                {
+                    m_cmd_list_present->InsertBarrier(swapchain->GetRhiRt(), swapchain->GetFormat(), 0, 1, 1, RHI_Image_Layout::Present_Source);
+                    
+                    m_cmd_list_present->Submit(swapchain->GetImageAcquiredSemaphore(), false, swapchain->GetRenderingCompleteSemaphore());
+                    swapchain->Present(m_cmd_list_present);
+                }
             }
             else
             {

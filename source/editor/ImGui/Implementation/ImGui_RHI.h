@@ -94,6 +94,11 @@ namespace ImGui::RHI
         shared_ptr<RHI_BlendState>        g_blend_state;
         shared_ptr<RHI_Shader>            g_shader_vertex;
         shared_ptr<RHI_Shader>            g_shader_pixel;
+
+        struct imgui_d3d12_push_constants
+        {
+            Matrix transform;
+        };
     }
 
     // forward declarations
@@ -159,9 +164,17 @@ namespace ImGui::RHI
                 bool async = false;
 
                 g_shader_vertex = make_shared<RHI_Shader>();
+                if (Renderer::GetRhiApiType() == RHI_Api_Type::D3d12)
+                {
+                    g_shader_vertex->AddDefine("SPARTAN_D3D12_IMGUI", "1");
+                }
                 g_shader_vertex->Compile(RHI_Shader_Type::Vertex, shader_path, async, RHI_Vertex_Type::Pos2dUvCol8);
 
                 g_shader_pixel = make_shared<RHI_Shader>();
+                if (Renderer::GetRhiApiType() == RHI_Api_Type::D3d12)
+                {
+                    g_shader_pixel->AddDefine("SPARTAN_D3D12_IMGUI", "1");
+                }
                 g_shader_pixel->Compile(RHI_Shader_Type::Pixel, shader_path, async);
             }
         }
@@ -212,8 +225,9 @@ namespace ImGui::RHI
         // skip the first two frames to let the renderer fully initialize.
         // frame 0: pipeline layouts and descriptor sets are still being created.
         // frame 1: bindless draw_data buffer descriptor may not have been written yet.
+        const bool use_d3d12_imgui_path = Renderer::GetRhiApiType() == RHI_Api_Type::D3d12;
         uint64_t frame = Renderer::GetFrameNumber();
-        if (frame < 2)
+        if (!use_d3d12_imgui_path && frame < 2)
             return;
 
         // get resources
@@ -307,6 +321,23 @@ namespace ImGui::RHI
         cmd_list->SetBufferIndex(index_buffer);
         cmd_list->SetCullMode(RHI_CullMode::None);
 
+        imgui_d3d12_push_constants push_constants_d3d12 = {};
+        if (use_d3d12_imgui_path)
+        {
+            const float left   = draw_data->DisplayPos.x;
+            const float right  = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
+            const float top    = draw_data->DisplayPos.y;
+            const float bottom = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
+
+            push_constants_d3d12.transform = Matrix
+            (
+                2.0f / (right - left), 0.0f, 0.0f, (right + left) / (left - right),
+                0.0f, 2.0f / (top - bottom), 0.0f, (top + bottom) / (bottom - top),
+                0.0f, 0.0f, 0.5f, 0.5f,
+                0.0f, 0.0f, 0.0f, 1.0f
+            );
+        }
+
         // render
         {
             uint32_t global_vtx_offset = 0;
@@ -337,6 +368,27 @@ namespace ImGui::RHI
                         }
 
                         // push pass/draw call constants
+                        if (use_d3d12_imgui_path)
+                        {
+                            bool texture_bound = false;
+
+                            if (spartan::RHI_Texture* texture = reinterpret_cast<spartan::RHI_Texture*>(pcmd->TextureId))
+                            {
+                                if (texture->GetResourceState() == ResourceState::PreparedForGpu)
+                                {
+                                    cmd_list->SetTexture(Renderer_BindingsSrv::tex, texture);
+                                    texture_bound = true;
+                                }
+                            }
+
+                            if (!texture_bound)
+                            {
+                                cmd_list->SetTexture(Renderer_BindingsSrv::tex, g_font_atlas.get());
+                            }
+
+                            cmd_list->PushConstants(0, sizeof(imgui_d3d12_push_constants), &push_constants_d3d12);
+                        }
+                        else
                         {
                             // set texture and update texture viewer parameters
                             {

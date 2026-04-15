@@ -268,6 +268,19 @@ namespace spartan
             D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = get_swapchain_rtv_handle(swapchain);
 
             ID3D12GraphicsCommandList* cmd_list = static_cast<ID3D12GraphicsCommandList*>(m_rhi_resource);
+
+            ID3D12Resource* backbuffer = static_cast<ID3D12Resource*>(swapchain->GetRhiRt());
+            if (backbuffer)
+            {
+                D3D12_RESOURCE_BARRIER barrier = {};
+                barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                barrier.Transition.pResource   = backbuffer;
+                barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+                barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_RENDER_TARGET;
+                cmd_list->ResourceBarrier(1, &barrier);
+            }
+
             cmd_list->OMSetRenderTargets(1, &rtv_handle, FALSE, nullptr);
 
             // clear if requested

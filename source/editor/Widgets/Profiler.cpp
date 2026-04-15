@@ -23,7 +23,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "pch.h"
 #include "Profiler.h"
 #include "../ImGui/ImGui_Extension.h"
-#include "Profiling/Profiler.h"
+#include "Profiling/Profiler.h"e 
 #include "../RHI/RHI_Device.h"
 #include "../Memory/Allocator.h"
 //===================================

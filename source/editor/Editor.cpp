@@ -70,9 +70,13 @@ Editor::Editor(const vector<string>& args)
 
     // configure ImGui
     ImGuiIO& io                      = ImGui::GetIO();
+    const bool is_d3d12             = spartan::Renderer::GetRhiApiType() == spartan::RHI_Api_Type::D3d12;
     io.ConfigFlags                  |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags                  |= ImGuiConfigFlags_DockingEnable;
-    io.ConfigFlags                  |= ImGuiConfigFlags_ViewportsEnable;
+    if (!is_d3d12)
+    {
+        io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+    }
     io.ConfigFlags                  |= ImGuiConfigFlags_NoMouseCursorChange; // cursor control is given to ImGui, but dynamically, from the engine
     io.ConfigWindowsResizeFromEdges  = true;
     io.IniFilename                   = "editor.ini";
@@ -87,7 +91,10 @@ Editor::Editor(const vector<string>& args)
     io.FontGlobalScale     = font_scale;
 
     // initialize imgui backends
-    SP_ASSERT_MSG(ImGui_ImplSDL3_InitForVulkan(static_cast<SDL_Window*>(spartan::Window::GetHandleSDL())), "Failed to initialize ImGui's SDL backend");
+    const bool imgui_sdl_initialized = is_d3d12 ?
+        ImGui_ImplSDL3_InitForD3D(static_cast<SDL_Window*>(spartan::Window::GetHandleSDL())) :
+        ImGui_ImplSDL3_InitForVulkan(static_cast<SDL_Window*>(spartan::Window::GetHandleSDL()));
+    SP_ASSERT_MSG(imgui_sdl_initialized, "Failed to initialize ImGui's SDL backend");
     ImGui::RHI::Initialize();
 
     // create all imgui widgets
