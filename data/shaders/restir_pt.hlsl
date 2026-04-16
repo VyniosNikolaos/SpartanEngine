@@ -24,11 +24,14 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "restir_reservoir.hlsl"
 //==============================
 
-static const uint INITIAL_CANDIDATE_SAMPLES   = 24;
+static const uint INITIAL_CANDIDATE_SAMPLES   = 8;
 static const float RUSSIAN_ROULETTE_PROB      = 0.85f;
 static const uint RUSSIAN_ROULETTE_START      = 3;
 static const float MIN_AREA_LIGHT_SOLID_ANGLE = 1e-4f;
 static const float SKY_MIP_LEVEL              = 2.0f;
+// half-angle (radians) of the cone sampled around the dominant directional light
+static const float SUN_CONE_HALF_ANGLE        = 0.015f;
+static const float SUN_SAMPLE_PROBABILITY     = 0.5f;
 
 struct [raypayload] PathPayload
 {
@@ -171,17 +174,28 @@ float3 sample_brdf(float3 albedo, float roughness, float metallic, float3 n, flo
 
 bool trace_shadow_ray(float3 origin, float3 direction, float max_dist)
 {
+    float epsilon = max(RESTIR_RAY_T_MIN, compute_ray_offset(origin));
+
     RayDesc ray;
     ray.Origin    = origin;
     ray.Direction = direction;
-    ray.TMin      = RESTIR_RAY_T_MIN;
-    ray.TMax      = max(max_dist - RESTIR_RAY_T_MIN, RESTIR_RAY_T_MIN);
+    ray.TMin      = epsilon;
+    ray.TMax      = max(max_dist - epsilon, epsilon);
 
     RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> query;
     query.TraceRayInline(tlas, RAY_FLAG_NONE, 0xFF, ray);
     query.Proceed();
 
     return query.CommittedStatus() == COMMITTED_NOTHING;
+}
+
+// approximation used when the closest-hit shader is bypassed (rayquery), since the
+// emissive texture can't be sampled from here
+float3 probe_emission_estimate(MaterialParameters mat)
+{
+    if (mat.emissive_from_albedo() || mat.has_texture_emissive())
+        return mat.color.rgb * 10.0f;
+    return float3(0.0f, 0.0f, 0.0f);
 }
 
 PathSample trace_path(float3 origin, float3 direction, inout uint seed)
@@ -200,7 +214,9 @@ PathSample trace_path(float3 origin, float3 direction, inout uint seed)
     float prev_brdf_pdf = 1.0f;
     bool prev_specular  = false;
     bool did_env_sample = false;
+    float prev_env_pdf = 0.0f;
     float3 last_bounce_normal = float3(0, 1, 0);
+    uint light_count = (uint)buffer_frame.restir_pt_light_count;
 
     for (uint bounce = 0; bounce < RESTIR_MAX_PATH_LENGTH; bounce++)
     {
@@ -228,11 +244,8 @@ PathSample trace_path(float3 origin, float3 direction, inout uint seed)
             }
             else
             {
-                // env sampling now uses cosine hemisphere around surface normal (same as BRDF diffuse lobe)
-                // use n_dot_l/PI as the env PDF for MIS since that matches the cosine hemisphere sampling
-                float cos_at_prev = max(dot(last_bounce_normal, ray_dir), 0.0f);
-                float env_pdf    = cos_at_prev / PI;
-                float mis_weight = did_env_sample ? power_heuristic(prev_brdf_pdf, max(env_pdf, RESTIR_MIN_PDF)) : 1.0f;
+                float env_pdf    = max(prev_env_pdf, RESTIR_MIN_PDF);
+                float mis_weight = did_env_sample ? power_heuristic(prev_brdf_pdf, env_pdf) : 1.0f;
                 sample.radiance += throughput * sky_radiance * mis_weight;
             }
 
@@ -246,11 +259,11 @@ PathSample trace_path(float3 origin, float3 direction, inout uint seed)
             break;
         }
 
-        // store first hit info
+        // store the geometric normal so visibility/jacobian checks aren't fooled by normal maps
         if (first_hit)
         {
             sample.hit_position = payload.hit_position;
-            sample.hit_normal   = payload.hit_normal;
+            sample.hit_normal   = payload.geometric_normal;
             sample.flags        = (payload.roughness < RESTIR_SPECULAR_THRESHOLD) ? PATH_FLAG_SPECULAR : PATH_FLAG_DIFFUSE;
             first_hit = false;
         }
@@ -259,24 +272,16 @@ PathSample trace_path(float3 origin, float3 direction, inout uint seed)
         float3 view_dir = -ray_dir;
         last_bounce_normal = payload.hit_normal;
 
-        // emission contribution with per-bounce clamping
-        // no MIS here because there is no explicit emissive geometry sampling strategy;
-        // applying MIS without a complementary sampling term would incorrectly discard energy
         if (luminance(payload.emission) > 0.0f)
         {
-            float3 emission_contribution = throughput * payload.emission;
-
-            float emission_lum = dot(emission_contribution, float3(0.299f, 0.587f, 0.114f));
-            if (emission_lum > 50.0f)
-                emission_contribution *= 50.0f / emission_lum;
-
-            sample.radiance += emission_contribution;
+            sample.radiance += throughput * payload.emission;
         }
 
-        float3 shading_pos = payload.hit_position + payload.geometric_normal * RESTIR_RAY_NORMAL_OFFSET;
+        float shading_offset = compute_ray_offset(payload.hit_position);
+        float3 shading_pos   = payload.hit_position + payload.geometric_normal * shading_offset;
 
-        // direct lighting from scene lights
-        for (uint light_idx = 0; light_idx < 4u; light_idx++)
+        // direct lighting
+        for (uint light_idx = 0; light_idx < light_count; light_idx++)
         {
             LightParameters light = light_parameters[light_idx];
 
@@ -404,30 +409,69 @@ PathSample trace_path(float3 origin, float3 direction, inout uint seed)
             float3 Li = light_color * light.intensity * attenuation;
             float3 light_contribution = throughput * brdf * Li * mis_weight / max(light_pdf, 1e-6f);
 
-            float light_lum = dot(light_contribution, float3(0.299f, 0.587f, 0.114f));
-            if (light_lum > 50.0f)
-                light_contribution *= 50.0f / light_lum;
-
             sample.radiance += light_contribution;
         }
 
-        // emissive geometry probe + environment sampling
-        // trace a cosine-weighted hemisphere ray to find emissive surfaces and sky
+        // emissive / environment probe with sun-aware mixture sampling
         did_env_sample = false;
-        if (payload.roughness > RESTIR_SPECULAR_THRESHOLD || payload.metallic < 0.5f)
+        prev_env_pdf   = 0.0f;
         {
             float2 env_xi = random_float2(seed);
-            float env_pdf;
-            float3 env_local = sample_cosine_hemisphere(env_xi, env_pdf);
-            float3 env_dir   = local_to_world(env_local, payload.hit_normal);
+
+            float3 sun_dir = float3(0, 1, 0);
+            bool   has_sun = false;
+            if (light_count > 0)
+            {
+                LightParameters primary_light = light_parameters[0];
+                if ((primary_light.flags & (1u << 0)) != 0 && primary_light.intensity > 0.0f)
+                {
+                    sun_dir = -primary_light.direction;
+                    has_sun = true;
+                }
+            }
+
+            float sun_cos_max   = cos(SUN_CONE_HALF_ANGLE);
+            float sun_cone_pdf  = 1.0f / (2.0f * PI * (1.0f - sun_cos_max));
+            float sun_prob      = has_sun ? SUN_SAMPLE_PROBABILITY : 0.0f;
+
+            float3 env_dir;
+            float  env_pdf_cos;
+            float  env_pdf_sun;
+            float  strategy_xi = random_float(seed);
+
+            if (has_sun && strategy_xi < sun_prob)
+            {
+                // uniform on the spherical cap of the sun cone
+                float phi     = 2.0f * PI * env_xi.x;
+                float cos_th  = lerp(sun_cos_max, 1.0f, env_xi.y);
+                float sin_th  = sqrt(max(0.0f, 1.0f - cos_th * cos_th));
+                float3 local  = float3(cos(phi) * sin_th, sin(phi) * sin_th, cos_th);
+                env_dir       = local_to_world(local, sun_dir);
+
+                float cos_to_sun = dot(env_dir, sun_dir);
+                env_pdf_sun = (cos_to_sun >= sun_cos_max) ? sun_cone_pdf : 0.0f;
+                env_pdf_cos = max(dot(env_dir, payload.hit_normal), 0.0f) / PI;
+            }
+            else
+            {
+                float3 env_local = sample_cosine_hemisphere(env_xi, env_pdf_cos);
+                env_dir = local_to_world(env_local, payload.hit_normal);
+
+                float cos_to_sun = has_sun ? dot(env_dir, sun_dir) : -1.0f;
+                env_pdf_sun = (has_sun && cos_to_sun >= sun_cos_max) ? sun_cone_pdf : 0.0f;
+            }
+
+            // mixture pdf
+            float env_pdf = (1.0f - sun_prob) * env_pdf_cos + sun_prob * env_pdf_sun;
 
             float env_n_dot_l = dot(payload.hit_normal, env_dir);
-            if (env_n_dot_l > 0.0f && env_pdf > 1e-6f)
+            if (env_n_dot_l > 0.0f && env_pdf > RESTIR_MIN_PDF)
             {
+                float probe_offset = compute_ray_offset(payload.hit_position);
                 RayDesc probe_ray;
                 probe_ray.Origin    = shading_pos;
                 probe_ray.Direction = env_dir;
-                probe_ray.TMin      = RESTIR_RAY_T_MIN;
+                probe_ray.TMin      = probe_offset;
                 probe_ray.TMax      = 10000.0f;
 
                 RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> probe_query;
@@ -436,19 +480,9 @@ PathSample trace_path(float3 origin, float3 direction, inout uint seed)
 
                 if (probe_query.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
                 {
-                    // hit geometry - check if emissive
                     uint probe_instance = probe_query.CommittedInstanceID();
                     MaterialParameters probe_mat = material_parameters[probe_instance];
-
-                    float3 probe_emission = float3(0, 0, 0);
-                    if (probe_mat.emissive_from_albedo())
-                    {
-                        probe_emission = probe_mat.color.rgb * 10.0f;
-                    }
-                    if (probe_mat.has_texture_emissive())
-                    {
-                        probe_emission += probe_mat.color.rgb * 10.0f;
-                    }
+                    float3 probe_emission = probe_emission_estimate(probe_mat);
 
                     if (luminance(probe_emission) > 0.0f)
                     {
@@ -457,19 +491,14 @@ PathSample trace_path(float3 origin, float3 direction, inout uint seed)
                                                           payload.hit_normal, view_dir, env_dir, brdf_pdf_probe);
 
                         float mis_weight = power_heuristic(env_pdf, brdf_pdf_probe);
-                        float3 emissive_contribution = throughput * brdf_probe * probe_emission * mis_weight / env_pdf;
-
-                        float em_lum = dot(emissive_contribution, float3(0.299f, 0.587f, 0.114f));
-                        if (em_lum > 50.0f)
-                            emissive_contribution *= 50.0f / em_lum;
-
-                        sample.radiance += emissive_contribution;
+                        sample.radiance += throughput * brdf_probe * probe_emission * mis_weight / env_pdf;
                     }
                 }
                 else
                 {
                     // missed all geometry - sky contribution
                     did_env_sample = true;
+                    prev_env_pdf   = env_pdf;
 
                     float2 env_uv       = direction_sphere_uv(env_dir);
                     float3 env_radiance = tex3.SampleLevel(GET_SAMPLER(sampler_trilinear_clamp), env_uv, SKY_MIP_LEVEL).rgb;
@@ -480,13 +509,7 @@ PathSample trace_path(float3 origin, float3 direction, inout uint seed)
                                                     payload.hit_normal, view_dir, env_dir, brdf_pdf_env);
 
                     float mis_weight_env = power_heuristic(env_pdf, brdf_pdf_env);
-                    float3 env_contribution = throughput * brdf_env * env_radiance * mis_weight_env / max(env_pdf, 1e-6f);
-
-                    float env_lum = dot(env_contribution, float3(0.299f, 0.587f, 0.114f));
-                    if (env_lum > 50.0f)
-                        env_contribution *= 50.0f / env_lum;
-
-                    sample.radiance += env_contribution;
+                    sample.radiance += throughput * brdf_env * env_radiance * mis_weight_env / env_pdf;
                 }
             }
         }
@@ -513,24 +536,15 @@ PathSample trace_path(float3 origin, float3 direction, inout uint seed)
         float3 brdf = evaluate_brdf(payload.albedo, payload.roughness, payload.metallic,
                                      payload.hit_normal, view_dir, new_dir, unused_pdf);
 
-        // update throughput with clamping
         throughput *= brdf / pdf;
         prev_brdf_pdf = pdf;
         prev_specular = (payload.roughness < RESTIR_SPECULAR_THRESHOLD);
 
-        float max_throughput = max(max(throughput.r, throughput.g), throughput.b);
-        if (max_throughput > 50.0f)
-            throughput *= 50.0f / max_throughput;
-
-        ray_origin = payload.hit_position + payload.geometric_normal * RESTIR_RAY_NORMAL_OFFSET;
+        ray_origin = payload.hit_position + payload.geometric_normal * shading_offset;
         ray_dir    = new_dir;
     }
 
-    // final radiance clamp
-    float final_lum = dot(sample.radiance, float3(0.299f, 0.587f, 0.114f));
-    if (final_lum > 50.0f)
-        sample.radiance *= 50.0f / final_lum;
-
+    sample.radiance = soft_saturate_radiance(sample.radiance, RESTIR_FIREFLY_LUMA);
     return sample;
 }
 
@@ -571,9 +585,11 @@ void ray_gen()
     float roughness = max(material.r, 0.04f);
     float metallic  = material.g;
 
+    float primary_offset = compute_ray_offset(pos_ws);
+
     Reservoir reservoir = create_empty_reservoir();
 
-    // generate initial candidate samples
+    // cosine-hemisphere sampling for diffuse-only gi; specular is handled by the reflection pipeline
     for (uint i = 0; i < INITIAL_CANDIDATE_SAMPLES; i++)
     {
         float stratum = float(i) / float(INITIAL_CANDIDATE_SAMPLES);
@@ -584,38 +600,29 @@ void ray_gen()
         );
 
         float pdf;
-        float3 ray_dir = sample_brdf(albedo, roughness, metallic, normal_ws, view_dir, xi, pdf);
+        float3 local_dir = sample_cosine_hemisphere(xi, pdf);
+        float3 ray_dir   = local_to_world(local_dir, normal_ws);
 
-        if (dot(ray_dir, normal_ws) <= 0 || pdf < 1e-6f)
+        if (dot(ray_dir, normal_ws) <= 0 || pdf < RESTIR_MIN_PDF)
             continue;
 
-        float3 ray_origin     = pos_ws + normal_ws * RESTIR_RAY_NORMAL_OFFSET;
+        float3 ray_origin     = pos_ws + normal_ws * primary_offset;
         PathSample candidate  = trace_path(ray_origin, ray_dir, seed);
         candidate.direction   = ray_dir;
         candidate.pdf         = pdf;
 
-        float candidate_lum = dot(candidate.radiance, float3(0.299f, 0.587f, 0.114f));
-        if (candidate_lum > 50.0f)
-            candidate.radiance *= 50.0f / candidate_lum;
-
-        // weight includes the primary surface BRDF response for the sampled direction
-        // this makes RIS prefer candidates that actually contribute light to this pixel
-        float brdf_eval_pdf;
-        float3 brdf_response = evaluate_brdf(albedo, roughness, metallic, normal_ws, view_dir, ray_dir, brdf_eval_pdf);
-        float brdf_lum       = dot(brdf_response, float3(0.299f, 0.587f, 0.114f));
-        float target_pdf     = calculate_target_pdf(candidate.radiance) * max(brdf_lum, 0.01f);
-        float weight         = target_pdf / max(pdf, 1e-6f);
+        float target_pdf = calculate_target_pdf_diffuse(candidate.radiance, ray_dir, normal_ws, albedo, metallic);
+        float weight     = target_pdf / max(pdf, RESTIR_MIN_PDF);
 
         update_reservoir(reservoir, candidate, weight, random_float(seed));
     }
 
-    // finalize with BRDF-weighted target to match the initial RIS weighting
     {
-        float brdf_eval_pdf;
-        float3 brdf_response = evaluate_brdf(albedo, roughness, metallic, normal_ws, view_dir,
-                                              reservoir.sample.direction, brdf_eval_pdf);
-        float brdf_lum = dot(brdf_response, float3(0.299f, 0.587f, 0.114f));
-        float target   = calculate_target_pdf(reservoir.sample.radiance) * max(brdf_lum, 0.01f);
+        float3 final_dir = is_sky_sample(reservoir.sample)
+            ? reservoir.sample.direction
+            : normalize(reservoir.sample.hit_position - pos_ws);
+
+        float target = calculate_target_pdf_diffuse(reservoir.sample.radiance, final_dir, normal_ws, albedo, metallic);
 
         reservoir.target_pdf = target;
         if (target > 0 && reservoir.M > 0)
@@ -627,15 +634,14 @@ void ray_gen()
         reservoir.W = min(reservoir.W, w_clamp);
     }
 
-    // confidence should track sample stability, not brightness, otherwise dim indirect light
-    // gets rejected by temporal and spatial reuse and shows up as patchy bounce lighting.
+    // confidence tracks sample stability, not brightness
     float sample_count_quality = saturate(reservoir.M / float(INITIAL_CANDIDATE_SAMPLES));
     float pdf_quality          = saturate(reservoir.sample.pdf * 4.0f);
     float sample_luma          = dot(reservoir.sample.radiance, float3(0.299f, 0.587f, 0.114f));
     float low_light_factor     = saturate(1.0f - sample_luma / 0.2f);
     float confidence_base      = sample_count_quality * lerp(0.55f, 1.0f, pdf_quality);
     reservoir.confidence       = (reservoir.target_pdf > 0.0f) ? saturate(confidence_base * lerp(1.15f, 1.0f, 1.0f - low_light_factor)) : 0.0f;
-    reservoir.age          = 0.0f;
+    reservoir.age              = 0.0f;
 
     // store reservoir
     float4 t0, t1, t2, t3, t4;
@@ -646,8 +652,8 @@ void ray_gen()
     tex_reservoir3[launch_id] = t3;
     tex_reservoir4[launch_id] = t4;
 
-    // output GI with soft clamp
-    float3 gi = reservoir.sample.radiance * reservoir.W;
+    // pre-shaded gi = diffuse_brdf * cos * radiance * W
+    float3 gi = shade_reservoir_diffuse(reservoir, pos_ws, normal_ws, albedo, metallic);
     gi = soft_clamp_gi(gi, reservoir.sample);
 
     tex_uav[launch_id] = float4(gi, 1.0f);

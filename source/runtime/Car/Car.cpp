@@ -35,6 +35,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "../World/Components/Light.h"
 #include "../World/Components/Physics.h"
 #include "../IO/pugixml.hpp"
+#include "../../editor/ImGui/Source/imgui.h"
 //==========================================
 
 namespace spartan

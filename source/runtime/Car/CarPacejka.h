@@ -1,0 +1,92 @@
+/*
+Copyright(c) 2015-2026 Panos Karabelas
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and / or sell
+copies of the Software, and to permit persons to whom the Software is furnished
+to do so, subject to the following conditions :
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+*/
+
+//= INCLUDES ===============================
+#pragma once
+#include "CarState.h"
+//==========================================
+
+// tire math: pacejka magic formula curves, load-sensitive grip, temperature factors,
+// camber factors, per-surface friction scalars, brake efficiency. all pure functions,
+// no state mutation.
+
+namespace car
+{
+    inline float pacejka(float slip, float B, float C, float D, float E)
+    {
+        float Bx = B * slip;
+        return D * sinf(C * atanf(Bx - E * (Bx - atanf(Bx))));
+    }
+
+    // derived from com z-offset and wheelbase, no need to store separately
+    inline float get_weight_distribution_front()
+    {
+        if (cfg.wheelbase < 0.01f) return 0.5f;
+        return PxClamp(0.5f + tuning::spec.center_of_mass_z / cfg.wheelbase, 0.0f, 1.0f);
+    }
+
+    inline float load_sensitive_grip(float load)
+    {
+        if (load <= 0.0f) return 0.0f;
+        return load * powf(load / tuning::spec.load_reference, tuning::spec.load_sensitivity - 1.0f);
+    }
+
+    inline float get_tire_temp_grip_factor(float temperature)
+    {
+        float penalty = PxClamp(fabsf(temperature - tuning::spec.tire_optimal_temp) / tuning::spec.tire_temp_range, 0.0f, 1.0f);
+        return 1.0f - penalty * tuning::spec.tire_grip_temp_factor;
+    }
+
+    inline float get_camber_grip_factor(int wheel_index, float slip_angle)
+    {
+        float camber = is_front(wheel_index) ? tuning::spec.front_camber : tuning::spec.rear_camber;
+        float effective_camber = camber - slip_angle * 0.3f;
+        return 1.0f - fabsf(effective_camber) * 0.1f;
+    }
+
+    inline float get_surface_friction(surface_type surface)
+    {
+        static constexpr float friction[] = {
+            tuning::surface_friction_asphalt,
+            tuning::surface_friction_concrete,
+            tuning::surface_friction_wet_asphalt,
+            tuning::surface_friction_gravel,
+            tuning::surface_friction_grass,
+            tuning::surface_friction_ice
+        };
+        return (surface >= 0 && surface < surface_count) ? friction[surface] : 1.0f;
+    }
+
+    inline float get_brake_efficiency(float temp)
+    {
+        if (temp >= tuning::spec.brake_fade_temp)
+            return 0.6f;
+
+        if (temp < tuning::spec.brake_optimal_temp)
+        {
+            float t = PxClamp((temp - tuning::spec.brake_ambient_temp) / (tuning::spec.brake_optimal_temp - tuning::spec.brake_ambient_temp), 0.0f, 1.0f);
+            return 0.85f + 0.15f * t;
+        }
+
+        float t = (temp - tuning::spec.brake_optimal_temp) / (tuning::spec.brake_fade_temp - tuning::spec.brake_optimal_temp);
+        return 1.0f - 0.4f * t;
+    }
+}

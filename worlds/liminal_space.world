@@ -1,5 +1,8 @@
 <?xml version="1.0"?>
 <World name="liminal_space" description="Shifts your frequency to a nearby reality">
+ <ConsoleVariables>
+  <Variable name="r.restir_pt" value="1" />
+ </ConsoleVariables>
  <Entities>
   <Entity name="physics_body_camera" id="96622692557092671" active="true" position="-9.3851 2.91245 8.11057" rotation="0 0 0 1" scale="1 1 1">
    <audio_source path="project/music/footsteps_carpet.wav" is_3d="false" mute="false" loop="false" play_on_start="false" volume="0.5" pitch="1.04450059" reverb_enabled="false" reverb_room_size="0.5" reverb_decay="0.5" reverb_wet="0.300000012" />

@@ -24,8 +24,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "restir_reservoir.hlsl"
 //==============================
 
-static const float SPATIAL_RADIUS_MIN  = 8.0f;
-static const float SPATIAL_RADIUS_MAX  = 32.0f;
+static const float SPATIAL_RADIUS_MIN  = 4.0f;
+static const float SPATIAL_RADIUS_MAX  = 24.0f;
 static const float SPATIAL_DEPTH_SCALE = 0.5f;
 
 static const float2 SPATIAL_OFFSETS[16] = {
@@ -50,7 +50,7 @@ bool check_spatial_visibility(float3 center_pos, float3 center_normal, float3 sa
     dir /= dist;
 
     float cos_theta = dot(dir, center_normal);
-    if (cos_theta <= 0.05f)
+    if (cos_theta <= RESTIR_VIS_COS_FRONT)
         return false;
 
     float cos_back = dot(sample_hit_normal, -dir);
@@ -74,11 +74,13 @@ bool check_spatial_visibility(float3 center_pos, float3 center_normal, float3 sa
     if (dist < RESTIR_VIS_MIN_DIST)
         return true;
 
+    float offset = max(RESTIR_RAY_T_MIN, compute_ray_offset(center_pos));
+
     RayDesc ray;
-    ray.Origin    = center_pos + center_normal * RESTIR_RAY_NORMAL_OFFSET;
+    ray.Origin    = center_pos + center_normal * offset;
     ray.Direction = dir;
-    ray.TMin      = RESTIR_RAY_T_MIN;
-    ray.TMax      = max(dist - RESTIR_RAY_NORMAL_OFFSET, RESTIR_RAY_T_MIN);
+    ray.TMin      = offset;
+    ray.TMax      = max(dist - offset, offset);
 
     RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> query;
     query.TraceRayInline(tlas, RAY_FLAG_NONE, 0xFF, ray);
@@ -113,7 +115,7 @@ bool is_neighbor_valid(int2 neighbor_pixel, float3 center_pos, float3 center_nor
     float normal_similarity = dot(center_normal, neighbor_normal);
 
     // tighter normal threshold at distance for flat surfaces
-    float adaptive_normal_threshold = lerp(RESTIR_NORMAL_THRESHOLD, 0.95f,
+    float adaptive_normal_threshold = lerp(RESTIR_NORMAL_THRESHOLD, 0.98f,
                                             saturate(center_linear_depth / 150.0f));
     if (normal_similarity < adaptive_normal_threshold)
         return false;
@@ -222,24 +224,17 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     float adaptive_radius = compute_adaptive_radius(linear_depth, roughness, edge_factor, normal_ws, view_dir);
     adaptive_radius      *= lerp(0.35f, 1.0f, center_confidence);
 
-    // second pass uses a wider radius, but only when the center reservoir is trustworthy
+    // second pass refines rather than blurs further: tighter radius, fewer samples
+    uint spatial_sample_count = RESTIR_SPATIAL_SAMPLES;
     if (spatial_pass_index > 0)
-        adaptive_radius *= lerp(1.05f, 1.5f, center_confidence);
+    {
+        adaptive_radius     *= lerp(0.4f, 0.65f, center_confidence);
+        spatial_sample_count = max(RESTIR_SPATIAL_SAMPLES - 2u, 4u);
+    }
 
     Reservoir combined = create_empty_reservoir();
 
-    float target_pdf_center;
-    if (is_sky_sample(center.sample))
-    {
-        target_pdf_center = calculate_target_pdf_sky(center.sample.radiance,
-            center.sample.direction, normal_ws, view_dir, albedo, roughness, metallic);
-    }
-    else
-    {
-        target_pdf_center = calculate_target_pdf_with_geometry(center.sample.radiance,
-            pos_ws, normal_ws, view_dir, center.sample.hit_position, center.sample.hit_normal,
-            albedo, roughness, metallic);
-    }
+    float target_pdf_center = calculate_target_pdf_for_sample(center.sample, pos_ws, normal_ws, albedo, metallic);
     if (target_pdf_center <= 0.0f)
         target_pdf_center = calculate_target_pdf(center.sample.radiance);
 
@@ -253,7 +248,7 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
 
     float base_angle = random_float(seed) * 2.0f * PI;
 
-    for (uint i = 0; i < RESTIR_SPATIAL_SAMPLES; i++)
+    for (uint i = 0; i < spatial_sample_count; i++)
     {
         float rotation_angle = base_angle + float(i) * 2.39996323f;
         float cos_rot = cos(rotation_angle);
@@ -296,10 +291,6 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
         if (all(neighbor.sample.radiance <= 0.0f))
             continue;
 
-        float nb_lum = dot(neighbor.sample.radiance, float3(0.299f, 0.587f, 0.114f));
-        if (nb_lum > 50.0f)
-            neighbor.sample.radiance *= 50.0f / nb_lum;
-
         float target_pdf_at_center = 0.0f;
         float jacobian = 1.0f;
 
@@ -309,8 +300,8 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
             if (n_dot_sky <= 0.0f)
                 continue;
 
-            target_pdf_at_center = calculate_target_pdf_sky(neighbor.sample.radiance,
-                neighbor.sample.direction, normal_ws, view_dir, albedo, roughness, metallic);
+            target_pdf_at_center = calculate_target_pdf_diffuse(neighbor.sample.radiance,
+                neighbor.sample.direction, normal_ws, albedo, metallic);
             jacobian = 1.0f;
         }
         else
@@ -331,9 +322,7 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
             if (jacobian <= 0.0f)
                 continue;
 
-            target_pdf_at_center = calculate_target_pdf_with_geometry(neighbor.sample.radiance,
-                pos_ws, normal_ws, view_dir, neighbor.sample.hit_position, neighbor.sample.hit_normal,
-                albedo, roughness, metallic);
+            target_pdf_at_center = calculate_target_pdf_for_sample(neighbor.sample, pos_ws, normal_ws, albedo, metallic);
         }
 
         if (target_pdf_at_center <= 0.0f)
@@ -361,18 +350,7 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
 
     clamp_reservoir_M(combined, RESTIR_M_CAP);
 
-    float final_target_pdf;
-    if (is_sky_sample(combined.sample))
-    {
-        final_target_pdf = calculate_target_pdf_sky(combined.sample.radiance,
-            combined.sample.direction, normal_ws, view_dir, albedo, roughness, metallic);
-    }
-    else
-    {
-        final_target_pdf = calculate_target_pdf_with_geometry(combined.sample.radiance,
-            pos_ws, normal_ws, view_dir, combined.sample.hit_position, combined.sample.hit_normal,
-            albedo, roughness, metallic);
-    }
+    float final_target_pdf = calculate_target_pdf_for_sample(combined.sample, pos_ws, normal_ws, albedo, metallic);
     if (final_target_pdf <= 0.0f)
         final_target_pdf = calculate_target_pdf(combined.sample.radiance);
     combined.target_pdf = final_target_pdf;
@@ -395,7 +373,7 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     tex_reservoir3[pixel] = t3;
     tex_reservoir4[pixel] = t4;
 
-    float3 gi = combined.sample.radiance * combined.W;
+    float3 gi = shade_reservoir_diffuse(combined, pos_ws, normal_ws, albedo, metallic);
     gi = soft_clamp_gi(gi, combined.sample);
 
     tex_uav[pixel] = float4(gi, 1.0f);

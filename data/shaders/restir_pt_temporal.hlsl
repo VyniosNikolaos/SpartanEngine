@@ -38,7 +38,7 @@ bool check_temporal_visibility(float3 shading_pos, float3 shading_normal, float3
 
     // reject samples behind the surface
     float cos_theta = dot(dir, shading_normal);
-    if (cos_theta <= 0.05f)
+    if (cos_theta <= RESTIR_VIS_COS_FRONT)
         return false;
 
     // reject backfacing samples
@@ -64,12 +64,14 @@ bool check_temporal_visibility(float3 shading_pos, float3 shading_normal, float3
     if (dist < RESTIR_VIS_MIN_DIST)
         return true;
 
+    float offset = max(RESTIR_RAY_T_MIN, compute_ray_offset(shading_pos));
+
     // trace shadow ray to verify visibility
     RayDesc ray;
-    ray.Origin    = shading_pos + shading_normal * RESTIR_RAY_NORMAL_OFFSET;
+    ray.Origin    = shading_pos + shading_normal * offset;
     ray.Direction = dir;
-    ray.TMin      = RESTIR_RAY_T_MIN;
-    ray.TMax      = max(dist - RESTIR_RAY_NORMAL_OFFSET, RESTIR_RAY_T_MIN);
+    ray.TMin      = offset;
+    ray.TMax      = max(dist - offset, offset);
 
     RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> query;
     query.TraceRayInline(tlas, RAY_FLAG_NONE, 0xFF, ray);
@@ -164,10 +166,8 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     // gather surface properties
     float3 pos_ws    = get_position(uv);
     float3 normal_ws = get_normal(uv);
-    float3 view_dir  = normalize(buffer_frame.camera_position - pos_ws);
     float4 material = tex_material.SampleLevel(GET_SAMPLER(sampler_point_clamp), uv, 0);
     float3 albedo   = saturate(tex_albedo.SampleLevel(GET_SAMPLER(sampler_point_clamp), uv, 0).rgb);
-    float roughness = max(material.r, 0.04f);
     float metallic  = material.g;
 
     // load current reservoir
@@ -187,18 +187,7 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     float confidence_weight_sum   = 0.0f;
     float confidence_weight_total = 0.0f;
 
-    float target_pdf_current;
-    if (is_sky_sample(current.sample))
-    {
-        target_pdf_current = calculate_target_pdf_sky(current.sample.radiance,
-            current.sample.direction, normal_ws, view_dir, albedo, roughness, metallic);
-    }
-    else
-    {
-        target_pdf_current = calculate_target_pdf_with_geometry(current.sample.radiance,
-            pos_ws, normal_ws, view_dir, current.sample.hit_position, current.sample.hit_normal,
-            albedo, roughness, metallic);
-    }
+    float target_pdf_current = calculate_target_pdf_for_sample(current.sample, pos_ws, normal_ws, albedo, metallic);
     if (target_pdf_current <= 0.0f)
         target_pdf_current = calculate_target_pdf(current.sample.radiance);
 
@@ -236,10 +225,6 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
 
             if (is_reservoir_valid(temporal) && temporal.M > 0 && temporal.W > 0)
             {
-                float temp_lum = dot(temporal.sample.radiance, float3(0.299f, 0.587f, 0.114f));
-                if (temp_lum > 50.0f)
-                    temporal.sample.radiance *= 50.0f / temp_lum;
-
                 // decay low-confidence history before it can dominate the new frame
                 float temporal_scale = RESTIR_TEMPORAL_DECAY * temporal_confidence;
                 temporal.M          *= temporal_scale;
@@ -256,8 +241,8 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
                     float n_dot_sky = dot(normal_ws, temporal.sample.direction);
                     if (n_dot_sky > 0.0f)
                     {
-                        float target_pdf_temporal = calculate_target_pdf_sky(temporal.sample.radiance,
-                            temporal.sample.direction, normal_ws, view_dir, albedo, roughness, metallic);
+                        float target_pdf_temporal = calculate_target_pdf_diffuse(temporal.sample.radiance,
+                            temporal.sample.direction, normal_ws, albedo, metallic);
 
                         if (target_pdf_temporal > 0.0f)
                         {
@@ -290,29 +275,21 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
 
                         if (jacobian > 0.0f)
                         {
-                            float3 dir_to_hit = normalize(temporal.sample.hit_position - pos_ws);
-                            float n_dot_l = dot(normal_ws, dir_to_hit);
+                            float target_pdf_temporal = calculate_target_pdf_for_sample(temporal.sample, pos_ws, normal_ws, albedo, metallic);
 
-                            if (n_dot_l > 0.0f)
+                            if (target_pdf_temporal > 0.0f)
                             {
-                                float target_pdf_temporal = calculate_target_pdf_with_geometry(temporal.sample.radiance,
-                                    pos_ws, normal_ws, view_dir, temporal.sample.hit_position, temporal.sample.hit_normal,
-                                    albedo, roughness, metallic);
+                                float weight_temporal = target_pdf_temporal * jacobian * temporal.W * temporal.M;
 
-                                if (target_pdf_temporal > 0.0f)
+                                combined.weight_sum += weight_temporal;
+                                combined.M += temporal.M;
+                                confidence_weight_sum   += temporal.confidence * max(weight_temporal, 0.0f);
+                                confidence_weight_total += max(weight_temporal, 0.0f);
+
+                                if (random_float(seed) * combined.weight_sum < weight_temporal)
                                 {
-                                    float weight_temporal = target_pdf_temporal * jacobian * temporal.W * temporal.M;
-
-                                    combined.weight_sum += weight_temporal;
-                                    combined.M += temporal.M;
-                                    confidence_weight_sum   += temporal.confidence * max(weight_temporal, 0.0f);
-                                    confidence_weight_total += max(weight_temporal, 0.0f);
-
-                                    if (random_float(seed) * combined.weight_sum < weight_temporal)
-                                    {
-                                        combined.sample     = temporal.sample;
-                                        combined.target_pdf = target_pdf_temporal;
-                                    }
+                                    combined.sample     = temporal.sample;
+                                    combined.target_pdf = target_pdf_temporal;
                                 }
                             }
                         }
@@ -324,18 +301,7 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
 
     clamp_reservoir_M(combined, RESTIR_M_CAP);
 
-    float final_target_pdf;
-    if (is_sky_sample(combined.sample))
-    {
-        final_target_pdf = calculate_target_pdf_sky(combined.sample.radiance,
-            combined.sample.direction, normal_ws, view_dir, albedo, roughness, metallic);
-    }
-    else
-    {
-        final_target_pdf = calculate_target_pdf_with_geometry(combined.sample.radiance,
-            pos_ws, normal_ws, view_dir, combined.sample.hit_position, combined.sample.hit_normal,
-            albedo, roughness, metallic);
-    }
+    float final_target_pdf = calculate_target_pdf_for_sample(combined.sample, pos_ws, normal_ws, albedo, metallic);
     if (final_target_pdf <= 0.0f)
         final_target_pdf = calculate_target_pdf(combined.sample.radiance);
     combined.target_pdf = final_target_pdf;
@@ -359,8 +325,7 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     tex_reservoir3[pixel] = t3;
     tex_reservoir4[pixel] = t4;
 
-    // output GI with soft clamp
-    float3 gi = combined.sample.radiance * combined.W;
+    float3 gi = shade_reservoir_diffuse(combined, pos_ws, normal_ws, albedo, metallic);
     gi = soft_clamp_gi(gi, combined.sample);
 
     tex_uav[pixel] = float4(gi, 1.0f);

@@ -59,6 +59,7 @@ namespace spartan
         string file_path;
         string world_name; // cached to avoid per-frame allocation
         string world_description;
+        vector<string> world_console_variables; // cvar names overridden by this world (preserved across save/load)
         mutex entity_access_mutex;
         vector<Entity*> pending_add;
         set<uint64_t> pending_remove;
@@ -1042,6 +1043,22 @@ namespace spartan
         world_node.append_attribute("name")        = FileSystem::GetFileNameWithoutExtensionFromFilePath(file_path).c_str();
         world_node.append_attribute("description") = world_description.c_str();
 
+        // console variables (only those explicitly overridden by this world are persisted)
+        if (!world_console_variables.empty())
+        {
+            pugi::xml_node cvars_node = world_node.append_child("ConsoleVariables");
+            for (const string& cvar_name : world_console_variables)
+            {
+                optional<string> value = ConsoleRegistry::Get().GetValueAsString(cvar_name);
+                if (!value.has_value())
+                    continue;
+
+                pugi::xml_node var_node = cvars_node.append_child("Variable");
+                var_node.append_attribute("name")  = cvar_name.c_str();
+                var_node.append_attribute("value") = value->c_str();
+            }
+        }
+
         // entities
         {
             // node
@@ -1180,6 +1197,27 @@ namespace spartan
 
             // read metadata
             world_description = world_node.attribute("description").as_string();
+
+            // console variables: apply any cvars defined by the world
+            // format:
+            //   <ConsoleVariables>
+            //     <Variable name="r.restir_pt" value="1" />
+            //   </ConsoleVariables>
+            world_console_variables.clear();
+            if (pugi::xml_node cvars_node = world_node.child("ConsoleVariables"))
+            {
+                for (pugi::xml_node var_node = cvars_node.child("Variable"); var_node; var_node = var_node.next_sibling("Variable"))
+                {
+                    const char* name  = var_node.attribute("name").as_string();
+                    const char* value = var_node.attribute("value").as_string();
+
+                    if (name && name[0] != '\0')
+                    {
+                        ConsoleRegistry::Get().SetValueFromString(name, value);
+                        world_console_variables.emplace_back(name);
+                    }
+                }
+            }
 
             // entities
             {

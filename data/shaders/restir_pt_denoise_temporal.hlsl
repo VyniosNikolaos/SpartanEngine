@@ -67,8 +67,9 @@ float3 clamp_history(float3 history, float3 mean, float3 sigma, float3 minimum_v
 {
     float mean_luma   = dot(mean, luminance_weights);
     float low_light_factor = saturate(1.0f - mean_luma / 0.2f);
-    float sigma_scale = lerp(0.9f, 2.8f, saturate(min(current_confidence, history_confidence)));
-    sigma_scale      *= lerp(1.15f, 1.0f, 1.0f - low_light_factor);
+    float sigma_scale = lerp(0.9f, 2.0f, saturate(min(current_confidence, history_confidence)));
+    // tighten further in dark regions to preserve shadow-edge detail
+    sigma_scale      *= lerp(0.9f, 1.0f, 1.0f - low_light_factor);
     float3 lower      = max(minimum_value, mean - sigma * sigma_scale);
     float3 upper      = min(maximum_value, mean + sigma * sigma_scale);
     return clamp(history, lower, upper);

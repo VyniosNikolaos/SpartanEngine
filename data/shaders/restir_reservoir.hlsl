@@ -25,26 +25,26 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 // core parameters
 static const uint RESTIR_MAX_PATH_LENGTH     = 5;
 static const uint RESTIR_M_CAP               = 256;
-static const uint RESTIR_SPATIAL_SAMPLES     = 16;
+static const uint RESTIR_SPATIAL_SAMPLES     = 8;
 static const float RESTIR_SPATIAL_RADIUS     = 32.0f;
 static const float RESTIR_DEPTH_THRESHOLD    = 0.05f;
 static const float RESTIR_NORMAL_THRESHOLD   = 0.75f;
 static const float RESTIR_TEMPORAL_DECAY     = 0.97f;
-static const float RESTIR_RAY_NORMAL_OFFSET  = 0.05f;
-static const float RESTIR_RAY_T_MIN          = 0.01f;
+static const float RESTIR_RAY_NORMAL_OFFSET  = 0.002f;
+static const float RESTIR_RAY_T_MIN          = 0.001f;
 
 // sky/environment
-static const float RESTIR_SKY_RADIANCE_CLAMP = 5.0f;
-static const float RESTIR_SKY_W_CLAMP        = 15.0f;
+static const float RESTIR_SKY_RADIANCE_CLAMP = 50.0f;
+static const float RESTIR_SKY_W_CLAMP        = 30.0f;
 static const float RESTIR_SKY_DIR_THRESHOLD  = 0.95f;
 static const float RESTIR_ENV_SAMPLE_PROB    = 0.3f;
 static const float RESTIR_SKY_DISTANCE       = 1e10f;
 
 // visibility/geometry
-static const float RESTIR_VIS_COS_FRONT      = 0.1f;
-static const float RESTIR_VIS_COS_BACK       = 0.05f;
+static const float RESTIR_VIS_COS_FRONT      = 0.2f;
+static const float RESTIR_VIS_COS_BACK       = 0.1f;
 static const float RESTIR_VIS_MIN_DIST       = 0.02f;
-static const float RESTIR_VIS_PLANE_MIN      = 0.001f;
+static const float RESTIR_VIS_PLANE_MIN      = 0.01f;
 
 // BRDF thresholds
 static const float RESTIR_MIN_ROUGHNESS      = 0.04f;
@@ -53,8 +53,9 @@ static const float RESTIR_W_CLAMP_DEFAULT    = 50.0f;
 static const float RESTIR_SPECULAR_THRESHOLD = 0.2f;
 
 // firefly suppression
-static const float RESTIR_SOFT_CLAMP_SKY     = 10.0f;
-static const float RESTIR_SOFT_CLAMP_DEFAULT = 12.0f;
+static const float RESTIR_SOFT_CLAMP_SKY     = 25.0f;
+static const float RESTIR_SOFT_CLAMP_DEFAULT = 40.0f;
+static const float RESTIR_FIREFLY_LUMA       = 150.0f;
 
 struct PathSample
 {
@@ -195,87 +196,67 @@ float calculate_target_pdf(float3 radiance)
     return max(lum, 1e-6f);
 }
 
-float calculate_target_pdf_with_brdf(float3 radiance, float3 sample_dir, float3 shading_normal, float3 view_dir,
-                                      float3 albedo, float roughness, float metallic)
+// luminance of f = (albedo/PI) * (1 - metallic) * n_dot_l * L, used as p_hat across
+// initial, temporal and spatial reuse so the weights stay consistent with the actual contribution
+float calculate_target_pdf_diffuse(float3 radiance, float3 sample_dir, float3 shading_normal,
+                                    float3 albedo, float metallic)
 {
-    float base_target = calculate_target_pdf(radiance);
-
     float n_dot_l = dot(shading_normal, sample_dir);
     if (n_dot_l <= 0.0f)
         return 0.0f;
 
-    float3 h      = normalize(view_dir + sample_dir);
-    float n_dot_v = max(dot(shading_normal, view_dir), 0.001f);
-    float n_dot_h = max(dot(shading_normal, h), 0.0f);
-    float v_dot_h = max(dot(view_dir, h), 0.0f);
-
-    float3 diffuse_response = albedo * (1.0f - metallic) * n_dot_l;
-
-    float alpha   = max(roughness * roughness, 0.001f);
-    float alpha2  = alpha * alpha;
-    float d_denom = n_dot_h * n_dot_h * (alpha2 - 1.0f) + 1.0f;
-    float d       = alpha2 / (3.14159265f * d_denom * d_denom + 1e-6f);
-
-    float3 f0 = lerp(float3(0.04f, 0.04f, 0.04f), albedo, metallic);
-    float3 f  = f0 + (1.0f - f0) * pow(1.0f - v_dot_h, 5.0f);
-
-    float spec_weight = d * dot(f, float3(0.299, 0.587, 0.114)) * n_dot_l;
-    float diff_weight = dot(diffuse_response, float3(0.299, 0.587, 0.114));
-
-    float brdf_weight = clamp(diff_weight + spec_weight, 0.0f, 10.0f);
-
-    return base_target * max(brdf_weight, 0.01f);
+    float3 diffuse_brdf = albedo * (1.0f - metallic) * (1.0f / PI);
+    float3 contribution = diffuse_brdf * n_dot_l * radiance;
+    return max(dot(contribution, float3(0.299f, 0.587f, 0.114f)), 1e-6f);
 }
 
-float calculate_target_pdf_sky(float3 radiance, float3 sample_dir, float3 shading_normal, float3 view_dir,
-                                float3 albedo, float roughness, float metallic)
+// recomputes the incident direction from the new primary surface for non-sky samples,
+// used when transporting a sample between pixels during temporal/spatial reuse
+float calculate_target_pdf_for_sample(PathSample s, float3 shading_pos, float3 shading_normal,
+                                       float3 albedo, float metallic)
 {
-    float base_target = calculate_target_pdf(radiance);
+    if ((s.flags & PATH_FLAG_SKY) != 0)
+    {
+        return calculate_target_pdf_diffuse(s.radiance, s.direction, shading_normal, albedo, metallic);
+    }
 
-    float n_dot_l = dot(shading_normal, sample_dir);
-    if (n_dot_l <= 0.0f)
-        return 0.0f;
-
-    float3 h      = normalize(view_dir + sample_dir);
-    float n_dot_v = max(dot(shading_normal, view_dir), 0.001f);
-    float n_dot_h = max(dot(shading_normal, h), 0.0f);
-    float v_dot_h = max(dot(view_dir, h), 0.0f);
-
-    float3 diffuse_response = albedo * (1.0f - metallic) * n_dot_l;
-
-    float alpha   = max(roughness * roughness, 0.001f);
-    float alpha2  = alpha * alpha;
-    float d_denom = n_dot_h * n_dot_h * (alpha2 - 1.0f) + 1.0f;
-    float d       = alpha2 / (3.14159265f * d_denom * d_denom + 1e-6f);
-
-    float3 f0 = lerp(float3(0.04f, 0.04f, 0.04f), albedo, metallic);
-    float3 f  = f0 + (1.0f - f0) * pow(1.0f - v_dot_h, 5.0f);
-
-    float spec_weight = d * dot(f, float3(0.299, 0.587, 0.114)) * n_dot_l;
-    float diff_weight = dot(diffuse_response, float3(0.299, 0.587, 0.114));
-
-    float brdf_weight = clamp(diff_weight + spec_weight, 0.0f, 10.0f);
-
-    return base_target * max(brdf_weight, 0.01f);
-}
-
-float calculate_target_pdf_with_geometry(float3 radiance, float3 shading_pos, float3 shading_normal, float3 view_dir,
-                                          float3 sample_hit_pos, float3 sample_hit_normal,
-                                          float3 albedo, float roughness, float metallic)
-{
-    float3 to_sample = sample_hit_pos - shading_pos;
-    float dist_sq = dot(to_sample, to_sample);
+    float3 to_sample = s.hit_position - shading_pos;
+    float  dist_sq   = dot(to_sample, to_sample);
     if (dist_sq < 1e-6f)
         return 0.0f;
 
-    float dist = sqrt(dist_sq);
-    float3 sample_dir = to_sample / dist;
+    float3 sample_dir = to_sample * rsqrt(dist_sq);
+    return calculate_target_pdf_diffuse(s.radiance, sample_dir, shading_normal, albedo, metallic);
+}
 
-    // the radiance stored in the sample already accounts for the geometry term (1/r^2, cosines)
-    // from the path tracer, so we only need the BRDF-weighted luminance as the target PDF
-    // including a geometry term here would double-count it and cause corners to be overbright
-    return calculate_target_pdf_with_brdf(radiance, sample_dir, shading_normal, view_dir,
-                                           albedo, roughness, metallic);
+// returns the estimator output f(x) * W, with f = diffuse_brdf * cos, so the composition
+// pass can add it on top of direct lighting without re-applying albedo
+float3 shade_reservoir_diffuse(Reservoir r, float3 shading_pos, float3 shading_normal,
+                                float3 albedo, float metallic)
+{
+    if (r.M <= 0.0f || r.W <= 0.0f)
+        return float3(0.0f, 0.0f, 0.0f);
+
+    float3 dir;
+    if ((r.sample.flags & PATH_FLAG_SKY) != 0)
+    {
+        dir = r.sample.direction;
+    }
+    else
+    {
+        float3 to_hit = r.sample.hit_position - shading_pos;
+        float  len_sq = dot(to_hit, to_hit);
+        if (len_sq < 1e-6f)
+            return float3(0.0f, 0.0f, 0.0f);
+        dir = to_hit * rsqrt(len_sq);
+    }
+
+    float n_dot_l = dot(shading_normal, dir);
+    if (n_dot_l <= 0.0f)
+        return float3(0.0f, 0.0f, 0.0f);
+
+    float3 diffuse_brdf = albedo * (1.0f - metallic) * (1.0f / PI);
+    return diffuse_brdf * n_dot_l * r.sample.radiance * r.W;
 }
 
 bool is_sky_sample(PathSample s)
@@ -514,8 +495,7 @@ float compute_jacobian(float3 sample_pos, float3 original_shading_pos, float3 ne
     }
 
     float jacobian = (cos_new * dist_original_sq) / max(cos_original * dist_new_sq, 1e-4f);
-
-    return clamp(jacobian, 0.0f, 10.0f);
+    return clamp(jacobian, 0.0f, 50.0f);
 }
 
 float power_heuristic(float pdf_a, float pdf_b)
@@ -561,29 +541,32 @@ float3 clamp_sky_radiance(float3 radiance)
     return radiance;
 }
 
+// depth-scaled normal offset for ray origins
+float compute_ray_offset(float3 pos_ws)
+{
+    float3 to_cam = pos_ws - buffer_frame.camera_position;
+    float  dist   = sqrt(dot(to_cam, to_cam));
+    return clamp(dist * 1e-4f, 2e-4f, 1e-2f);
+}
+
+float3 soft_saturate_radiance(float3 radiance, float threshold)
+{
+    float lum = dot(radiance, float3(0.299f, 0.587f, 0.114f));
+    if (lum > threshold)
+    {
+        float scale = threshold + (lum - threshold) / (1.0f + (lum - threshold) / threshold);
+        radiance *= scale / lum;
+    }
+    return radiance;
+}
+
 float3 soft_clamp_gi(float3 gi, PathSample sample)
 {
     if (any(isnan(gi)) || any(isinf(gi)))
         return float3(0.0f, 0.0f, 0.0f);
 
-    float lum = dot(gi, float3(0.299f, 0.587f, 0.114f));
-
     float soft_clamp = is_sky_sample(sample) ? RESTIR_SOFT_CLAMP_SKY : RESTIR_SOFT_CLAMP_DEFAULT;
-
-    if (lum > soft_clamp)
-    {
-        float excess = lum - soft_clamp;
-        float scale  = soft_clamp + excess / (1.0f + excess / soft_clamp);
-        gi *= scale / lum;
-    }
-
-    // hard clamp
-    float max_lum = 100.0f;
-    float final_lum = dot(gi, float3(0.299f, 0.587f, 0.114f));
-    if (final_lum > max_lum)
-        gi *= max_lum / final_lum;
-
-    return gi;
+    return soft_saturate_radiance(gi, soft_clamp);
 }
 
 #endif // SPARTAN_RESTIR_RESERVOIR
