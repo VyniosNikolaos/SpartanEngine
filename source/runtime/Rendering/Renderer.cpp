@@ -62,7 +62,8 @@ namespace spartan
     // constant and push constant buffers
     Cb_Frame Renderer::m_cb_frame_cpu;
     Pcb_Pass Renderer::m_pcb_pass_cpu;
-    math::Matrix Renderer::m_view_projection_previous_right = math::Matrix::Identity;
+    math::Matrix Renderer::m_view_projection_previous_right           = math::Matrix::Identity;
+    math::Matrix Renderer::m_view_projection_previous_unjittered_left = math::Matrix::Identity;
     Renderer::PassState Renderer::m_pass_state;
 
     // bindless draw data
@@ -815,26 +816,40 @@ namespace spartan
             m_cb_frame_cpu.view_projection_inverted = Matrix::Invert(m_cb_frame_cpu.view_projection);
             m_cb_frame_cpu.camera_position          = m_cb_frame_cpu.view_inverted.GetTranslation();
 
-            // right eye
-            m_cb_frame_cpu.view_right                     = Xr::GetViewMatrix(1);
-            m_cb_frame_cpu.view_inverted_right            = Matrix::Invert(m_cb_frame_cpu.view_right);
-            m_cb_frame_cpu.projection_right               = Xr::GetProjectionMatrix(1);
-            m_cb_frame_cpu.projection_inverted_right      = Matrix::Invert(m_cb_frame_cpu.projection_right);
-            m_cb_frame_cpu.view_projection_right          = m_cb_frame_cpu.view_right * m_cb_frame_cpu.projection_right;
-            m_cb_frame_cpu.view_projection_inverted_right = Matrix::Invert(m_cb_frame_cpu.view_projection_right);
-            m_cb_frame_cpu.view_projection_previous_right = m_view_projection_previous_right;
-            m_cb_frame_cpu.camera_position_right          = m_cb_frame_cpu.view_inverted_right.GetTranslation();
-            m_cb_frame_cpu.is_multiview                   = 1;
+            // vr has no taa jitter applied to the projection, so jittered == unjittered.
+            // these fields were computed earlier in the function using the mono camera, so
+            // replace them now with the left-eye xr matrices so motion-blur sky reprojection
+            // and any other unjittered-vp consumer sees eye-consistent data.
+            m_cb_frame_cpu.view_projection_previous_unjittered = m_view_projection_previous_unjittered_left;
+            m_cb_frame_cpu.view_projection_unjittered          = m_cb_frame_cpu.view_projection;
 
-            // store the current right-eye view-projection so the next frame can use it as
-            // view_projection_previous_right (the left eye already gets this via the main path)
-            m_view_projection_previous_right = m_cb_frame_cpu.view_projection_right;
+            // right eye
+            m_cb_frame_cpu.view_right                                 = Xr::GetViewMatrix(1);
+            m_cb_frame_cpu.view_inverted_right                        = Matrix::Invert(m_cb_frame_cpu.view_right);
+            m_cb_frame_cpu.projection_right                           = Xr::GetProjectionMatrix(1);
+            m_cb_frame_cpu.projection_inverted_right                  = Matrix::Invert(m_cb_frame_cpu.projection_right);
+            m_cb_frame_cpu.view_projection_right                      = m_cb_frame_cpu.view_right * m_cb_frame_cpu.projection_right;
+            m_cb_frame_cpu.view_projection_inverted_right             = Matrix::Invert(m_cb_frame_cpu.view_projection_right);
+            m_cb_frame_cpu.view_projection_previous_right             = m_view_projection_previous_right;
+            m_cb_frame_cpu.view_projection_unjittered_right           = m_cb_frame_cpu.view_projection_right;
+            m_cb_frame_cpu.view_projection_previous_unjittered_right  = m_view_projection_previous_right;
+            m_cb_frame_cpu.camera_position_right                      = m_cb_frame_cpu.view_inverted_right.GetTranslation();
+            m_cb_frame_cpu.is_multiview                               = 1;
+
+            // store the current per-eye view-projection so the next frame can use it as the
+            // previous-frame matrix (the mono path only tracks the left eye through the
+            // shared view_projection, so the right eye needs a dedicated history slot)
+            m_view_projection_previous_right            = m_cb_frame_cpu.view_projection_right;
+            m_view_projection_previous_unjittered_left  = m_cb_frame_cpu.view_projection;
         }
         else
         {
-            m_cb_frame_cpu.is_multiview                   = 0;
-            m_cb_frame_cpu.view_projection_previous_right = Matrix::Identity;
-            m_view_projection_previous_right              = Matrix::Identity;
+            m_cb_frame_cpu.is_multiview                               = 0;
+            m_cb_frame_cpu.view_projection_previous_right             = Matrix::Identity;
+            m_cb_frame_cpu.view_projection_unjittered_right           = Matrix::Identity;
+            m_cb_frame_cpu.view_projection_previous_unjittered_right  = Matrix::Identity;
+            m_view_projection_previous_right                          = Matrix::Identity;
+            m_view_projection_previous_unjittered_left                = Matrix::Identity;
         }
 
         GetBuffer(Renderer_Buffer::ConstantFrame)->Update(cmd_list, &m_cb_frame_cpu);

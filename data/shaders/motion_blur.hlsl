@@ -108,10 +108,16 @@ float2 get_tile_max_velocity(float2 uv, float2 texel_size, float2 resolution)
 // infinity - camera translation (wasd) should not produce sky velocity.
 float2 compute_sky_velocity(float2 uv)
 {
+    // per-eye matrices: this pass runs inside the per-eye compute loop so
+    // buffer_pass.eye_index selects the correct eye via the get_* helpers
+    matrix vp_curr_inv = get_view_projection_inverted();
+    matrix vp_curr     = pass_is_right_eye() ? buffer_frame.view_projection_unjittered_right          : buffer_frame.view_projection_unjittered;
+    matrix vp_prev     = pass_is_right_eye() ? buffer_frame.view_projection_previous_unjittered_right : buffer_frame.view_projection_previous_unjittered;
+
     // reconstruct view direction from the pixel's ndc position
-    float2 ndc = uv_to_ndc(uv);
-    float4 clip = float4(ndc, 0.0001f, 1.0f);
-    float4 world = mul(clip, get_view_projection_inverted());
+    float2 ndc      = uv_to_ndc(uv);
+    float4 clip     = float4(ndc, 0.0001f, 1.0f);
+    float4 world    = mul(clip, vp_curr_inv);
     float3 view_dir = normalize(world.xyz / world.w - get_camera_position());
 
     // place the direction at a fixed large distance from each frame's camera position
@@ -121,10 +127,10 @@ float2 compute_sky_velocity(float2 uv)
     float3 sky_point_prev = buffer_frame.camera_position_previous + view_dir * sky_distance;
 
     // project through each frame's unjittered matrix
-    float4 curr_clip = mul(float4(sky_point_curr, 1.0f), buffer_frame.view_projection_unjittered);
+    float4 curr_clip = mul(float4(sky_point_curr, 1.0f), vp_curr);
     float2 curr_ndc  = curr_clip.xy / curr_clip.w;
 
-    float4 prev_clip = mul(float4(sky_point_prev, 1.0f), buffer_frame.view_projection_previous_unjittered);
+    float4 prev_clip = mul(float4(sky_point_prev, 1.0f), vp_prev);
     float2 prev_ndc  = prev_clip.xy / prev_clip.w;
 
     return curr_ndc - prev_ndc;

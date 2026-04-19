@@ -339,6 +339,7 @@ namespace spartan
         static Cb_Frame m_cb_frame_cpu;
         static Pcb_Pass m_pcb_pass_cpu;
         static math::Matrix m_view_projection_previous_right;
+        static math::Matrix m_view_projection_previous_unjittered_left;
         static std::shared_ptr<RHI_Buffer> m_lines_vertex_buffer;
         static std::vector<RHI_Vertex_PosCol> m_lines_vertices;
         static std::vector<PersistentLine> m_persistent_lines;

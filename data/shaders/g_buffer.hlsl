@@ -155,8 +155,11 @@ gbuffer main_ps(gbuffer_vertex vertex, bool is_front_face : SV_IsFrontFace)
     float2 velocity              = position_ndc - position_ndc_previous;
     
     // world position and distance
-    float3 position_world  = get_position(vertex.position.z, ndc_to_uv(position_ndc_jittered));
-    float3 camera_to_pixel = position_world - buffer_frame.camera_position;
+    // in multiview the g-buffer is drawn in a single call for both eyes, so buffer_pass.eye_index
+    // is static and cannot be used to pick the right eye's inverse vp. drive the per-fragment
+    // eye from the interpolated SV_ViewID (vertex.view_id) instead.
+    float3 position_world  = get_position_for_view(vertex.position.z, ndc_to_uv(position_ndc_jittered), vertex.view_id);
+    float3 camera_to_pixel = position_world - get_camera_position_for_view(vertex.view_id);
     float distance         = fast_sqrt(dot(camera_to_pixel, camera_to_pixel));
 
     // world space uv transformation

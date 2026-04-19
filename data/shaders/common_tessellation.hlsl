@@ -51,7 +51,12 @@ gbuffer_vertex main_hs(InputPatch<gbuffer_vertex, MAX_POINTS> input_patch, uint 
 HsConstantDataOutput patch_constant_function(InputPatch<gbuffer_vertex, MAX_POINTS> input_patch, uint patch_id : SV_PrimitiveID)
 {
     HsConstantDataOutput output;
-   
+
+    // in multiview the clip positions on the input patch were produced with the per-view vp, so
+    // reconstruct world positions with the matching per-view inverse vp; using the mono/left
+    // inverse vp here warps right-eye positions and feeds them back into clip space via the ds
+    uint patch_view_id = input_patch[0].view_id;
+
     // calculate distance from camera to triangle center
     float3 avg_pos = 0.0f;
     for (int i = 0; i < 3; i++)
@@ -60,10 +65,10 @@ HsConstantDataOutput patch_constant_function(InputPatch<gbuffer_vertex, MAX_POIN
         float2 ndc        = input_patch[i].position.xy / clip_w;
         float depth       = input_patch[i].position.z / clip_w;
         float2 screen_uv  = float2(ndc.x * 0.5f + 0.5f, 0.5f - ndc.y * 0.5f);
-        avg_pos          += get_position(depth, screen_uv);
+        avg_pos          += get_position_for_view(depth, screen_uv, patch_view_id);
     }
     avg_pos                /= 3.0f;
-    float3 to_camera        = avg_pos - buffer_frame.camera_position;
+    float3 to_camera        = avg_pos - get_camera_position_for_view(patch_view_id);
     float distance_squared  = dot(to_camera, to_camera);
     float tess_factor       = (distance_squared <= TESS_DISTANCE_SQUARED) ? TESS_FACTOR : 1.0f;
     
@@ -112,14 +117,18 @@ gbuffer_vertex main_ds(HsConstantDataOutput input, float3 bary_coords : SV_Domai
     vertex.uv_misc.w         = patch[0].uv_misc.w; // instance_id is constant per patch
     vertex.view_id           = patch[0].view_id;    // view_id is constant per patch
 
-    // reconstruct world positions from interpolated clip
+    // reconstruct world positions from interpolated clip.  in a multiview raster pass this ds
+    // invocation belongs to a specific view (patch[0].view_id == vertex.view_id), so the inverse
+    // vp must match that view; otherwise right-eye clip positions are unprojected with the left-eye
+    // inverse vp, producing world positions that get re-projected into a warped right eye image
     float clip_w             = vertex.position.w;
     float clip_previous_w    = vertex.position_previous.w;
-    float3 position          = get_position(vertex.position.z / clip_w, vertex.position.xy / clip_w);
-    float3 position_previous = get_position(vertex.position_previous.z / clip_previous_w, vertex.position_previous.xy / clip_previous_w);
+    float3 position          = get_position_for_view(vertex.position.z / clip_w, vertex.position.xy / clip_w, vertex.view_id);
+    float3 position_previous = get_position_for_view(vertex.position_previous.z / clip_previous_w, vertex.position_previous.xy / clip_previous_w, vertex.view_id);
 
-    // fade based on real distance
-    float distance_from_cam = fast_length(position - buffer_frame.camera_position);
+    // fade based on real distance (use the matching per-eye camera position so the fade does
+    // not disagree between eyes and create inconsistent displacement)
+    float distance_from_cam = fast_length(position - get_camera_position_for_view(vertex.view_id));
     float fade_factor       = saturate((TESS_DISTANCE - distance_from_cam) / 4.0f);
 
     MaterialParameters material = GetMaterial();

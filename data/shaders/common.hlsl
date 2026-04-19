@@ -344,6 +344,17 @@ float3 get_position(float z, float2 uv)
     return pos_world.xyz / pos_world.w;
 }
 
+// explicit-view overload: used by raster pixel shaders in multiview passes where the per-fragment
+// eye must be selected via SV_ViewID rather than the (static) buffer_pass.eye_index push constant.
+float3 get_position_for_view(float z, float2 uv, uint view_id)
+{
+    float x          = uv.x * 2.0f - 1.0f;
+    float y          = (1.0f - uv.y) * 2.0f - 1.0f;
+    float4 pos_clip  = float4(x, y, z, 1.0f);
+    float4 pos_world = mul(pos_clip, get_view_projection_inverted_for_view(view_id));
+    return pos_world.xyz / pos_world.w;
+}
+
 float3 get_position(float2 uv)
 {
     return get_position(get_depth(uv), uv / buffer_frame.resolution_scale);

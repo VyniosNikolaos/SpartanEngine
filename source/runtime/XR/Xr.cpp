@@ -27,6 +27,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "../RHI/RHI_Device.h"
 #include "../World/World.h"
 #include "../World/Components/Camera.h"
+#include "../World/Entity.h"
 #if defined(API_GRAPHICS_VULKAN)
 #define XR_USE_GRAPHICS_API_VULKAN
 #include <openxr/openxr.h>
@@ -106,22 +107,6 @@ namespace spartan
                 return false;
             }
             return true;
-        }
-
-        // build the engine-space, rig-local transform for an openxr pose.
-        // openxr uses right-handed (+x right, +y up, -z forward); the engine uses left-handed
-        // (+x right, +y up, +z forward).  mirror across the z axis to convert between them.
-        // returns the rig-local transform (row-vector: rotation * translation), ready to be
-        // composed with the engine camera's world transform in UpdateViews.
-        math::Matrix xr_pose_to_rig_local(const XrPosef& pose)
-        {
-            // mirror z to go from openxr (rh) to engine (lh)
-            const math::Vector3 position       = math::Vector3(pose.position.x, pose.position.y, -pose.position.z);
-            const math::Quaternion orientation = math::Quaternion(pose.orientation.x, pose.orientation.y, -pose.orientation.z, -pose.orientation.w);
-
-            const math::Matrix rotation    = math::Matrix::CreateRotation(orientation);
-            const math::Matrix translation = math::Matrix::CreateTranslation(position);
-            return rotation * translation;
         }
 
         // build an asymmetric left-handed reverse-z projection matrix from openxr fov angles.
@@ -736,20 +721,23 @@ namespace spartan
             xr_views[0].pose.orientation.w
         );
 
-        // resolve the engine camera's world transform so hmd poses can be anchored to it.
-        // the camera entity defines the "rig root" in the game world (e.g. the head position
-        // on top of the player capsule).  using the view matrix's inverse keeps the transform
-        // orthonormal and matches the convention Camera::UpdateViewMatrix produces.
-        // fall back to identity if no camera is active, which just leaves the hmd pose in
-        // LOCAL space, preserving the previous behavior for non-gameplay scenes.
-        math::Matrix camera_world = math::Matrix::Identity;
-        float near_z              = 0.1f;
-        float far_z               = 10000.0f;
+        // resolve the engine camera's world pose so hmd poses can be anchored to it.
+        // the camera entity defines the "rig root" in the game world (e.g. the head
+        // position on top of the player capsule).  we read position and rotation
+        // directly from the entity and compose per-eye transforms with primitives so
+        // the final view matrix is built via CreateLookAtLH, exactly like the mono
+        // camera path in Camera::UpdateViewMatrix.  that avoids any ambiguity around
+        // matrix composition order between this code and the rest of the engine.
+        math::Vector3    camera_pos = math::Vector3::Zero;
+        math::Quaternion camera_rot = math::Quaternion::Identity;
+        float            near_z     = 0.1f;
+        float            far_z      = 10000.0f;
         if (auto camera = World::GetCamera())
         {
-            camera_world = math::Matrix::Invert(camera->GetViewMatrix());
-            near_z       = camera->GetNearPlane();
-            far_z        = camera->GetFarPlane();
+            camera_pos = camera->GetEntity()->GetPosition();
+            camera_rot = camera->GetEntity()->GetRotation();
+            near_z     = camera->GetNearPlane();
+            far_z      = camera->GetFarPlane();
         }
 
         // update per-eye data
@@ -757,16 +745,38 @@ namespace spartan
         {
             const XrView& view = xr_views[i];
 
-            // rig-local eye transform in engine space (rh -> lh handled inside the helper),
-            // then composed with the camera's world transform.  row-vector convention means
-            // child * parent, so we apply the hmd offset first and the rig location second.
-            const math::Matrix eye_rig_local = xr_pose_to_rig_local(view.pose);
-            const math::Matrix eye_world     = eye_rig_local * camera_world;
+            // convert openxr (right-handed, -z forward) pose into engine space
+            // (left-handed, +z forward) by mirroring the z axis.  the required mapping
+            // for a quaternion (qx, qy, qz, qw) is to negate qx and qy (equivalent to
+            // negating qz and qw, since q and -q represent the same rotation).  we use
+            // the (qz, qw) form below.
+            const math::Vector3 rig_local_pos(
+                view.pose.position.x,
+                view.pose.position.y,
+                -view.pose.position.z
+            );
+            const math::Quaternion rig_local_rot(
+                view.pose.orientation.x,
+                view.pose.orientation.y,
+                -view.pose.orientation.z,
+                -view.pose.orientation.w
+            );
 
-            // final per-eye data
-            m_eye_views[i].view        = math::Matrix::Invert(eye_world);
-            m_eye_views[i].position    = eye_world.GetTranslation();
-            m_eye_views[i].orientation = eye_world.GetRotation();
+            // compose rig-local eye pose with camera world pose to get eye world pose.
+            // the rig-local offset is rotated into world space by the camera's rotation
+            // and added to the camera's world position; orientation composes as usual.
+            const math::Vector3    world_eye_pos = camera_pos + camera_rot * rig_local_pos;
+            const math::Quaternion world_eye_rot = camera_rot * rig_local_rot;
+
+            // derive view basis from the composed orientation and build the view matrix
+            // using the exact same call the mono camera uses, so there is no convention
+            // mismatch between xr and non-xr view matrices.
+            const math::Vector3 forward = world_eye_rot * math::Vector3::Forward;
+            const math::Vector3 up      = world_eye_rot * math::Vector3::Up;
+
+            m_eye_views[i].view        = math::Matrix::CreateLookAtLH(world_eye_pos, world_eye_pos + forward, up);
+            m_eye_views[i].position    = world_eye_pos;
+            m_eye_views[i].orientation = world_eye_rot;
 
             // store fov angles
             m_eye_views[i].fov_left  = view.fov.angleLeft;

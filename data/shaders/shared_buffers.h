@@ -114,6 +114,8 @@ struct FrameBufferData
     SHARED_MATRIX view_projection_right;
     SHARED_MATRIX view_projection_inverted_right;
     SHARED_MATRIX view_projection_previous_right;
+    SHARED_MATRIX view_projection_unjittered_right;
+    SHARED_MATRIX view_projection_previous_unjittered_right;
     SHARED_FLOAT3 camera_position_right;
     SHARED_FLOAT  padding_mv_cam;
     SHARED_UINT   is_multiview;

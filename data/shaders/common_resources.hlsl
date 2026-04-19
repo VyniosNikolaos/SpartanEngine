@@ -158,6 +158,16 @@ matrix get_view_projection_inverted() { return pass_is_right_eye() ? buffer_fram
 matrix get_view_projection_previous() { return pass_is_right_eye() ? buffer_frame.view_projection_previous_right : buffer_frame.view_projection_previous; }
 float3 get_camera_position()          { return pass_is_right_eye() ? buffer_frame.camera_position_right          : buffer_frame.camera_position; }
 
+// explicit-view variants: used by raster pixel shaders in multiview passes where a single draw
+// covers both eyes, so buffer_pass.eye_index is static and the per-fragment eye must be
+// selected from the interpolated SV_ViewID propagated through the vertex payload.
+bool   is_right_eye_for_view(uint view_id)            { return is_multiview_active() && view_id == 1; }
+matrix get_view_for_view(uint view_id)                { return is_right_eye_for_view(view_id) ? buffer_frame.view_right                     : buffer_frame.view; }
+matrix get_view_inverted_for_view(uint view_id)       { return is_right_eye_for_view(view_id) ? buffer_frame.view_inverted_right            : buffer_frame.view_inverted; }
+matrix get_view_projection_for_view(uint view_id)     { return is_right_eye_for_view(view_id) ? buffer_frame.view_projection_right          : buffer_frame.view_projection; }
+matrix get_view_projection_inverted_for_view(uint v)  { return is_right_eye_for_view(v)       ? buffer_frame.view_projection_inverted_right : buffer_frame.view_projection_inverted; }
+float3 get_camera_position_for_view(uint view_id)     { return is_right_eye_for_view(view_id) ? buffer_frame.camera_position_right          : buffer_frame.camera_position; }
+
 // generic pass parameter accessors - read from push constant values[]
 // values[0].xyz = f3_value, values[0].w = f2_value.x
 // values[1].xyz = f3_value2, values[1].w = f2_value.y

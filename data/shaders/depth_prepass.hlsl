@@ -47,9 +47,12 @@ void main_ps(gbuffer_vertex vertex)
     pass_load_draw_data_from_vertex(vertex.material_index);
 
     // distance based alpha threshold
+    // in multiview the depth prepass is drawn once for both eyes, so buffer_pass.eye_index is
+    // static and cannot be used to pick the right eye's inverse vp; drive the per-fragment
+    // eye from the interpolated SV_ViewID (vertex.view_id) instead.
     const bool has_albedo       = pass_get_f3_value().y == 1.0f;
     const float2 screen_uv      = vertex.position.xy / (buffer_frame.resolution_render * buffer_frame.resolution_scale);
-    const float3 position_world = get_position(vertex.position.z, screen_uv);
+    const float3 position_world = get_position_for_view(vertex.position.z, screen_uv, vertex.view_id);
     const float alpha_threshold = get_alpha_threshold(position_world);
 
     if (has_albedo && GET_TEXTURE(material_texture_index_albedo).Sample(samplers[sampler_anisotropic_wrap], vertex.uv_misc.xy).a <= alpha_threshold)
