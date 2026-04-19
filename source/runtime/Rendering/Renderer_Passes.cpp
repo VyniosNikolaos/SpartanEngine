@@ -203,6 +203,11 @@ namespace spartan
             {
                 uint32_t eye_layer = xr_stereo ? eye : rhi_all_mips;
 
+                // tag the push-constant with the current eye so compute passes can pick the
+                // correct per-eye view/projection/camera_position via the get_* selectors in
+                // common_resources.hlsl. remains 0 for non-stereo rendering.
+                m_pcb_pass_cpu.eye_index = xr_stereo ? eye : 0;
+
                 {
                     bool is_transparent = false;
                     Pass_Light(cmd_list_graphics_present, is_transparent, eye_layer);
@@ -245,6 +250,9 @@ namespace spartan
                     );
                 }
             }
+
+            // reset eye index for any subsequent non-per-eye passes (e.g. text, editor overlays)
+            m_pcb_pass_cpu.eye_index = 0;
         }
         else
         {

@@ -25,6 +25,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "../Rendering/Renderer.h"
 #include "../RHI/RHI_Implementation.h"
 #include "../RHI/RHI_Device.h"
+#include "../World/World.h"
+#include "../World/Components/Camera.h"
 #if defined(API_GRAPHICS_VULKAN)
 #define XR_USE_GRAPHICS_API_VULKAN
 #include <openxr/openxr.h>
@@ -76,6 +78,12 @@ namespace spartan
         vector<XrSwapchainImageVulkanKHR> swapchain_images;
         vector<VkImageView> swapchain_image_views;
 
+        // tracks whether a swapchain image was acquired/released between the current
+        // xrBeginFrame and xrEndFrame. when it hasn't been (e.g. the renderer was still
+        // loading resources and skipped the blit), xrEndFrame must submit zero layers
+        // or the runtime responds with XR_ERROR_LAYER_INVALID.
+        bool swapchain_image_released_this_frame = false;
+
         // views for stereo rendering
         vector<XrView> xr_views;
         vector<XrViewConfigurationView> xr_view_configs;
@@ -100,50 +108,54 @@ namespace spartan
             return true;
         }
 
-        // convert openxr pose to engine matrices
-        void xr_pose_to_matrix(const XrPosef& pose, math::Matrix& out_view, math::Vector3& out_position, math::Quaternion& out_orientation)
+        // build the engine-space, rig-local transform for an openxr pose.
+        // openxr uses right-handed (+x right, +y up, -z forward); the engine uses left-handed
+        // (+x right, +y up, +z forward).  mirror across the z axis to convert between them.
+        // returns the rig-local transform (row-vector: rotation * translation), ready to be
+        // composed with the engine camera's world transform in UpdateViews.
+        math::Matrix xr_pose_to_rig_local(const XrPosef& pose)
         {
-            // openxr coordinate system: +x right, +y up, -z forward
-            out_position = math::Vector3(pose.position.x, pose.position.y, pose.position.z);
-            out_orientation = math::Quaternion(pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w);
+            // mirror z to go from openxr (rh) to engine (lh)
+            const math::Vector3 position       = math::Vector3(pose.position.x, pose.position.y, -pose.position.z);
+            const math::Quaternion orientation = math::Quaternion(pose.orientation.x, pose.orientation.y, -pose.orientation.z, -pose.orientation.w);
 
-            // create view matrix (inverse of pose transform)
-            math::Matrix rotation = math::Matrix::CreateRotation(out_orientation);
-            math::Matrix translation = math::Matrix::CreateTranslation(out_position);
-            math::Matrix transform = rotation * translation;
-            out_view = transform.Inverted();
+            const math::Matrix rotation    = math::Matrix::CreateRotation(orientation);
+            const math::Matrix translation = math::Matrix::CreateTranslation(position);
+            return rotation * translation;
         }
 
-        // create asymmetric projection matrix from fov
+        // build an asymmetric left-handed reverse-z projection matrix from openxr fov angles.
+        // the engine uses row-vector multiplication (clip = view * proj), left-handed view space
+        // (+z forward), and reverse-z (near maps to 1, far maps to 0) to match Camera::ComputeProjection.
+        // openxr fov angles are signed relative to the forward axis (angleLeft/angleDown typically
+        // negative, angleRight/angleUp typically positive); they apply directly in lh since only
+        // the z axis was mirrored during the pose conversion.
         math::Matrix create_projection_matrix(float fov_left, float fov_right, float fov_up, float fov_down, float near_z, float far_z)
         {
-            // convert fov angles to tangents
-            float tan_left  = tanf(fov_left);
-            float tan_right = tanf(fov_right);
-            float tan_up    = tanf(fov_up);
-            float tan_down  = tanf(fov_down);
+            const float tan_left  = tanf(fov_left);
+            const float tan_right = tanf(fov_right);
+            const float tan_up    = tanf(fov_up);
+            const float tan_down  = tanf(fov_down);
 
-            float tan_width  = tan_right - tan_left;
-            float tan_height = tan_up - tan_down;
+            const float tan_width  = tan_right - tan_left;
+            const float tan_height = tan_up - tan_down;
 
-            // create asymmetric projection (vulkan style with inverted y and 0-1 depth)
-            math::Matrix projection;
-            projection.m00 = 2.0f / tan_width;
-            projection.m11 = 2.0f / tan_height; // vulkan: flip y if needed
-            projection.m02 = (tan_right + tan_left) / tan_width;
-            projection.m12 = (tan_up + tan_down) / tan_height;
-            projection.m22 = far_z / (near_z - far_z);
-            projection.m32 = -1.0f;
-            projection.m23 = (near_z * far_z) / (near_z - far_z);
-            projection.m33 = 0.0f;
+            const float x_scale = 2.0f / tan_width;
+            const float y_scale = 2.0f / tan_height;
+            const float x_shift = -(tan_right + tan_left) / tan_width;
+            const float y_shift = -(tan_up + tan_down) / tan_height;
 
-            // zero out unused elements
-            projection.m01 = projection.m03 = 0.0f;
-            projection.m10 = projection.m13 = 0.0f;
-            projection.m20 = projection.m21 = 0.0f;
-            projection.m30 = projection.m31 = 0.0f;
+            // reverse-z: at z=near clip.z/w = 1, at z=far clip.z/w = 0
+            const float z_scale = near_z / (near_z - far_z);
+            const float z_bias  = (near_z * far_z) / (far_z - near_z);
 
-            return projection;
+            // row-major constructor: rows below correspond to (row, col) = (m00..m03, m10..m13, ...)
+            return math::Matrix(
+                x_scale, 0.0f,    0.0f,    0.0f,
+                0.0f,    y_scale, 0.0f,    0.0f,
+                x_shift, y_shift, z_scale, 1.0f,
+                0.0f,    0.0f,    z_bias,  0.0f
+            );
         }
     }
 #endif // API_GRAPHICS_VULKAN
@@ -570,33 +582,15 @@ namespace spartan
 
     bool Xr::CreateReferenceSpace()
     {
-        // try stage space first (standing), fall back to local (seated)
-        XrReferenceSpaceType space_type = XR_REFERENCE_SPACE_TYPE_STAGE;
-
-        uint32_t space_count = 0;
-        xrEnumerateReferenceSpaces(xr_session, 0, &space_count, nullptr);
-        vector<XrReferenceSpaceType> spaces(space_count);
-        xrEnumerateReferenceSpaces(xr_session, space_count, &space_count, spaces.data());
-
-        bool stage_supported = false;
-        for (XrReferenceSpaceType space : spaces)
-        {
-            if (space == XR_REFERENCE_SPACE_TYPE_STAGE)
-            {
-                stage_supported = true;
-                break;
-            }
-        }
-
-        if (!stage_supported)
-        {
-            space_type = XR_REFERENCE_SPACE_TYPE_LOCAL;
-            SP_LOG_INFO("openxr: using local (seated) reference space");
-        }
-        else
-        {
-            SP_LOG_INFO("openxr: using stage (standing) reference space");
-        }
+        // we always request LOCAL reference space.  its origin sits near the user's
+        // initial head pose (runtime-chosen, gravity aligned), so when the user is
+        // still the eye poses we get back are close to the origin.  that makes the
+        // hmd pose a small offset that can be composed on top of the game camera's
+        // world transform, keeping the in-world head at the camera's position (e.g.
+        // on top of the player capsule) rather than at the vr room floor like STAGE
+        // space would.
+        const XrReferenceSpaceType space_type = XR_REFERENCE_SPACE_TYPE_LOCAL;
+        SP_LOG_INFO("openxr: using local reference space (origin near initial head pose)");
 
         XrPosef identity_pose = {};
         identity_pose.orientation.w = 1.0f;
@@ -610,6 +604,12 @@ namespace spartan
 
     void Xr::ProcessEvents()
     {
+        // track whether stereo rendering was active on the previous pass through this
+        // function. any change in the effective stereo state (session running + stereo
+        // enabled) triggers a render target rebuild so the g-buffer switches between
+        // Type2D and Type2DArray as the user puts on / takes off the headset.
+        const bool stereo_active_before = m_session_running && m_stereo_3d;
+
         XrEventDataBuffer event_buffer = { XR_TYPE_EVENT_DATA_BUFFER };
 
         while (xrPollEvent(xr_instance, &event_buffer) == XR_SUCCESS)
@@ -626,22 +626,26 @@ namespace spartan
                     {
                         case XR_SESSION_STATE_READY:
                         {
-                            // begin session
+                            // the runtime drives this transition when the hmd becomes ready
+                            // to present frames (typically when the user puts it on).
                             XrSessionBeginInfo begin_info = { XR_TYPE_SESSION_BEGIN_INFO };
                             begin_info.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
                             if (xr_check(xrBeginSession(xr_session, &begin_info), "begin session"))
                             {
                                 m_session_running = true;
-                                SP_LOG_INFO("openxr: session started");
+                                SP_LOG_INFO("openxr: session started (headset active)");
                             }
                             break;
                         }
                         case XR_SESSION_STATE_STOPPING:
                         {
+                            // driven by the runtime when the user removes the headset or
+                            // otherwise stops the session.  the session stays alive and
+                            // can transition back to READY the next time the headset is worn.
                             m_session_running = false;
                             m_session_focused = false;
                             xrEndSession(xr_session);
-                            SP_LOG_INFO("openxr: session stopped");
+                            SP_LOG_INFO("openxr: session stopped (headset inactive)");
                             break;
                         }
                         case XR_SESSION_STATE_FOCUSED:
@@ -678,6 +682,16 @@ namespace spartan
 
             event_buffer = { XR_TYPE_EVENT_DATA_BUFFER };
         }
+
+        // if the effective stereo state flipped during this tick, rebuild the render
+        // targets so they match the new layout (Type2DArray vs Type2D) before the next
+        // frame kicks off.  Xr::Tick runs before Renderer::Tick each frame, so the queue
+        // is idle here and RecreateRenderTargets can safely wait for gpu completion.
+        const bool stereo_active_after = m_session_running && m_stereo_3d;
+        if (stereo_active_before != stereo_active_after)
+        {
+            Renderer::RecreateRenderTargets();
+        }
     }
 
     void Xr::UpdateViews()
@@ -706,7 +720,7 @@ namespace spartan
         if (!pose_valid)
             return;
 
-        // calculate head position (average of both eyes)
+        // calculate head position (average of both eyes), still in rig-local / openxr space
         XrVector3f head_pos = {
             (xr_views[0].pose.position.x + xr_views[1].pose.position.x) * 0.5f,
             (xr_views[0].pose.position.y + xr_views[1].pose.position.y) * 0.5f,
@@ -722,13 +736,37 @@ namespace spartan
             xr_views[0].pose.orientation.w
         );
 
+        // resolve the engine camera's world transform so hmd poses can be anchored to it.
+        // the camera entity defines the "rig root" in the game world (e.g. the head position
+        // on top of the player capsule).  using the view matrix's inverse keeps the transform
+        // orthonormal and matches the convention Camera::UpdateViewMatrix produces.
+        // fall back to identity if no camera is active, which just leaves the hmd pose in
+        // LOCAL space, preserving the previous behavior for non-gameplay scenes.
+        math::Matrix camera_world = math::Matrix::Identity;
+        float near_z              = 0.1f;
+        float far_z               = 10000.0f;
+        if (auto camera = World::GetCamera())
+        {
+            camera_world = math::Matrix::Invert(camera->GetViewMatrix());
+            near_z       = camera->GetNearPlane();
+            far_z        = camera->GetFarPlane();
+        }
+
         // update per-eye data
         for (uint32_t i = 0; i < eye_count; i++)
         {
             const XrView& view = xr_views[i];
 
-            // convert pose to view matrix
-            xr_pose_to_matrix(view.pose, m_eye_views[i].view, m_eye_views[i].position, m_eye_views[i].orientation);
+            // rig-local eye transform in engine space (rh -> lh handled inside the helper),
+            // then composed with the camera's world transform.  row-vector convention means
+            // child * parent, so we apply the hmd offset first and the rig location second.
+            const math::Matrix eye_rig_local = xr_pose_to_rig_local(view.pose);
+            const math::Matrix eye_world     = eye_rig_local * camera_world;
+
+            // final per-eye data
+            m_eye_views[i].view        = math::Matrix::Invert(eye_world);
+            m_eye_views[i].position    = eye_world.GetTranslation();
+            m_eye_views[i].orientation = eye_world.GetRotation();
 
             // store fov angles
             m_eye_views[i].fov_left  = view.fov.angleLeft;
@@ -736,9 +774,6 @@ namespace spartan
             m_eye_views[i].fov_up    = view.fov.angleUp;
             m_eye_views[i].fov_down  = view.fov.angleDown;
 
-            // create projection matrix
-            float near_z = 0.1f;
-            float far_z  = 1000.0f;
             m_eye_views[i].projection = create_projection_matrix(
                 view.fov.angleLeft, view.fov.angleRight,
                 view.fov.angleUp, view.fov.angleDown,
@@ -761,8 +796,9 @@ namespace spartan
         if (!xr_check(xrBeginFrame(xr_session, nullptr), "begin frame"))
             return false;
 
-        m_frame_began = true;
-        xr_predicted_display_time = xr_frame_state.predictedDisplayTime;
+        m_frame_began                         = true;
+        swapchain_image_released_this_frame   = false;
+        xr_predicted_display_time             = xr_frame_state.predictedDisplayTime;
 
         // update view poses
         UpdateViews();
@@ -787,16 +823,17 @@ namespace spartan
 
         for (uint32_t i = 0; i < eye_count; i++)
         {
-            uint32_t other_eye = (i == 0) ? 1 : 0; // swap for PSVR2
             projection_views[i] = { XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW };
-            projection_views[i].subImage.swapchain = xr_swapchain;
-            projection_views[i].subImage.imageRect.offset = { 0, 0 };
-            projection_views[i].subImage.imageRect.extent = { static_cast<int32_t>(swapchain_width), static_cast<int32_t>(swapchain_height) };
-            projection_views[i].subImage.imageArrayIndex = i;
+            projection_views[i].subImage.swapchain         = xr_swapchain;
+            projection_views[i].subImage.imageRect.offset  = { 0, 0 };
+            projection_views[i].subImage.imageRect.extent  = { static_cast<int32_t>(swapchain_width), static_cast<int32_t>(swapchain_height) };
+            projection_views[i].subImage.imageArrayIndex   = i;
 
-            // swap pose and FOV for correct eye mapping (PSVR2 quirk)
-            projection_views[i].pose = xr_views[other_eye].pose;
-            projection_views[i].fov  = xr_views[other_eye].fov;
+            // submit the pose/fov matching the eye that was actually rendered into array layer i.
+            // this is the correct pairing now that per-eye matrices are used end-to-end; no
+            // runtime-specific swap is required.
+            projection_views[i].pose = xr_views[i].pose;
+            projection_views[i].fov  = xr_views[i].fov;
         }
 
         XrCompositionLayerProjection projection_layer = { XR_TYPE_COMPOSITION_LAYER_PROJECTION };
@@ -806,11 +843,17 @@ namespace spartan
 
         const XrCompositionLayerBaseHeader* layers[] = { reinterpret_cast<XrCompositionLayerBaseHeader*>(&projection_layer) };
 
+        // only submit the projection layer if a swapchain image was actually produced
+        // this frame.  if the renderer skipped the blit (e.g. resources were still being
+        // loaded on the background thread right after the session came up), we must
+        // submit zero layers or the runtime returns XR_ERROR_LAYER_INVALID.
+        const bool submit_layer = xr_frame_state.shouldRender && swapchain_image_released_this_frame;
+
         XrFrameEndInfo end_info = { XR_TYPE_FRAME_END_INFO };
         end_info.displayTime          = xr_predicted_display_time;
         end_info.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-        end_info.layerCount           = xr_frame_state.shouldRender ? 1 : 0;
-        end_info.layers               = xr_frame_state.shouldRender ? layers : nullptr;
+        end_info.layerCount           = submit_layer ? 1 : 0;
+        end_info.layers               = submit_layer ? layers : nullptr;
 
         xr_check(xrEndFrame(xr_session, &end_info), "end frame");
         m_frame_began = false;
@@ -839,7 +882,12 @@ namespace spartan
             return;
 
         XrSwapchainImageReleaseInfo release_info = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
-        xr_check(xrReleaseSwapchainImage(xr_swapchain, &release_info), "release swapchain image");
+        if (xr_check(xrReleaseSwapchainImage(xr_swapchain, &release_info), "release swapchain image"))
+        {
+            // mark the frame as having produced a swapchain image so EndFrame knows it
+            // is valid to submit a projection layer referencing it.
+            swapchain_image_released_this_frame = true;
+        }
     }
 
     bool Xr::IsAvailable()

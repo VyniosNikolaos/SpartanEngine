@@ -73,11 +73,11 @@ void ray_gen()
     // reflection ray setup
     float3 pos_ws    = get_position(uv);
     float3 normal_ws = get_normal(uv);
-    float3 V         = normalize(buffer_frame.camera_position - pos_ws);
+    float3 V         = normalize(get_camera_position() - pos_ws);
     float3 R         = reflect(-V, normal_ws);
     
     // ray origin offset
-    float camera_distance = length(buffer_frame.camera_position - pos_ws);
+    float camera_distance = length(get_camera_position() - pos_ws);
     float base_offset     = 0.0001f + camera_distance * 0.00005f;
     float n_dot_v         = saturate(dot(normal_ws, V));
     float grazing_factor  = 1.0f - n_dot_v;

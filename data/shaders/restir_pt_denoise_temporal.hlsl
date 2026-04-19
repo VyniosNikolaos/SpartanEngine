@@ -82,7 +82,7 @@ bool is_history_valid(float2 current_uv, float2 prev_uv, float3 current_position
     if (!is_valid_uv(prev_uv))
         return false;
 
-    float4 prev_clip        = mul(float4(current_position, 1.0f), buffer_frame.view_projection_previous);
+    float4 prev_clip        = mul(float4(current_position, 1.0f), get_view_projection_previous());
     float3 prev_ndc         = prev_clip.xyz / max(prev_clip.w, FLT_MIN);
     float2 expected_prev_uv = prev_ndc.xy * float2(0.5f, -0.5f) + 0.5f;
     float2 reproj_diff      = abs(prev_uv - expected_prev_uv) * history_resolution;

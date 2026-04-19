@@ -71,7 +71,7 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
         uint sky_mip = 4; // it just looks good
     
         // compute view direction
-        float3 camera_position = buffer_frame.camera_position;
+        float3 camera_position = get_camera_position();
         float3 view_dir        = normalize(surface.position - camera_position);
     
         // sample sky in view direction

@@ -111,13 +111,13 @@ float2 compute_sky_velocity(float2 uv)
     // reconstruct view direction from the pixel's ndc position
     float2 ndc = uv_to_ndc(uv);
     float4 clip = float4(ndc, 0.0001f, 1.0f);
-    float4 world = mul(clip, buffer_frame.view_projection_inverted);
-    float3 view_dir = normalize(world.xyz / world.w - buffer_frame.camera_position);
+    float4 world = mul(clip, get_view_projection_inverted());
+    float3 view_dir = normalize(world.xyz / world.w - get_camera_position());
 
     // place the direction at a fixed large distance from each frame's camera position
     // this cancels out any translation between frames, isolating pure rotation
     static const float sky_distance = 10000.0f;
-    float3 sky_point_curr = buffer_frame.camera_position          + view_dir * sky_distance;
+    float3 sky_point_curr = get_camera_position()                 + view_dir * sky_distance;
     float3 sky_point_prev = buffer_frame.camera_position_previous + view_dir * sky_distance;
 
     // project through each frame's unjittered matrix

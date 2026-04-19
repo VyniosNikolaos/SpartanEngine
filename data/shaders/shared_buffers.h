@@ -108,10 +108,14 @@ struct FrameBufferData
 
     // vr stereo - right eye matrices (left eye uses the primary matrices above)
     SHARED_MATRIX view_right;
+    SHARED_MATRIX view_inverted_right;
     SHARED_MATRIX projection_right;
+    SHARED_MATRIX projection_inverted_right;
     SHARED_MATRIX view_projection_right;
     SHARED_MATRIX view_projection_inverted_right;
     SHARED_MATRIX view_projection_previous_right;
+    SHARED_FLOAT3 camera_position_right;
+    SHARED_FLOAT  padding_mv_cam;
     SHARED_UINT   is_multiview;
     SHARED_UINT   padding_mv0;
     SHARED_UINT   padding_mv1;
@@ -134,7 +138,7 @@ struct PassBufferData
     SHARED_UINT draw_index     SHARED_DEFAULT(0);
     SHARED_UINT material_index SHARED_DEFAULT(0);
     SHARED_UINT is_transparent SHARED_DEFAULT(0);
-    SHARED_UINT padding        SHARED_DEFAULT(0);
+    SHARED_UINT eye_index      SHARED_DEFAULT(0); // 0 = left / monoscopic, 1 = right
 
 #ifdef __cplusplus
     // c++ uses a flat float array with setter helpers

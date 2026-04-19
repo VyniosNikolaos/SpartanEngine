@@ -772,7 +772,7 @@ void main_cs(uint3 tid : SV_DispatchThreadID)
     float day_factor = 1.0 / (1.0 + exp(-sun_elev * 20.0));
     
     // camera in atmosphere
-    float3 cam_pos = buffer_frame.camera_position;
+    float3 cam_pos = get_camera_position();
     float cam_h = get_height(cam_pos);
     if (cam_h < 0.0)
         cam_pos = earth_center + normalize(cam_pos - earth_center) * (earth_radius + 1.0);

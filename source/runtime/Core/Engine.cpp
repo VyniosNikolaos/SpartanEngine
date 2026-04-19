@@ -83,6 +83,11 @@ namespace spartan
             World::Initialize();
             Settings::Initialize();
             SmokeTest::Initialize();
+
+            // bring xr up at startup so the engine can react to the headset being worn
+            // or removed without any manual input. if no openxr runtime/hmd is present,
+            // Xr::Initialize is a safe no-op and subsequent checks short-circuit.
+            Xr::Initialize();
         }
 
         // post-initialize
@@ -132,7 +137,9 @@ namespace spartan
         // pre-tick
         Input::PreTick();
 
-        // ctrl+0 to toggle xr
+        // ctrl+0 to force-toggle xr (useful for tearing the stack down without exiting).
+        // normal headset-on/off transitions are handled automatically by the openxr session
+        // state machine in Xr::ProcessEvents, so the user does not need to touch this.
         if ((Input::GetKey(KeyCode::Ctrl_Left) || Input::GetKey(KeyCode::Ctrl_Right)) && Input::GetKeyDown(KeyCode::Alpha0))
         {
             if (!Xr::IsAvailable())

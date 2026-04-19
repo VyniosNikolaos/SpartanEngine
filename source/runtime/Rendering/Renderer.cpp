@@ -62,6 +62,7 @@ namespace spartan
     // constant and push constant buffers
     Cb_Frame Renderer::m_cb_frame_cpu;
     Pcb_Pass Renderer::m_pcb_pass_cpu;
+    math::Matrix Renderer::m_view_projection_previous_right = math::Matrix::Identity;
     Renderer::PassState Renderer::m_pass_state;
 
     // bindless draw data
@@ -527,16 +528,22 @@ namespace spartan
                 }
             }
     
-            UpdateFrameConstantBuffer(m_cmd_list_present);
             UpdatePersistentLines();
             AddLinesToBeRendered();
         }
 
-        // xr
+        // xr: begin the frame before updating the frame constant buffer so the per-eye
+        // pose/projection matrices used for shading reflect the predicted pose for this
+        // frame rather than the previous one. xrBeginFrame must pair with xrEndFrame below.
         bool xr_should_render = false;
         if (Xr::IsSessionRunning())
         {
             xr_should_render = Xr::BeginFrame();
+        }
+
+        if (can_render)
+        {
+            UpdateFrameConstantBuffer(m_cmd_list_present);
         }
 
         {
@@ -795,28 +802,39 @@ namespace spartan
         m_cb_frame_cpu.set_bit(cvar_ray_traced_shadows.GetValueAs<bool>(),     1 << 2);
         m_cb_frame_cpu.set_bit(cvar_restir_pt.GetValueAs<bool>(),              1 << 3);
 
-        // vr stereo: override primary matrices with left eye and populate right eye
+        // vr stereo: override primary matrices with the left eye and populate the right eye
+        // so that every shader helper can pick the correct per-eye matrices via eye_index
         if (Xr::IsSessionRunning() && Xr::GetStereoMode())
         {
             // left eye -> primary matrices
-            m_cb_frame_cpu.view       = Xr::GetViewMatrix(0);
-            m_cb_frame_cpu.view_inverted   = Matrix::Invert(m_cb_frame_cpu.view);
-            m_cb_frame_cpu.projection = Xr::GetProjectionMatrix(0);
-            m_cb_frame_cpu.projection_inverted = Matrix::Invert(m_cb_frame_cpu.projection);
+            m_cb_frame_cpu.view                     = Xr::GetViewMatrix(0);
+            m_cb_frame_cpu.view_inverted            = Matrix::Invert(m_cb_frame_cpu.view);
+            m_cb_frame_cpu.projection               = Xr::GetProjectionMatrix(0);
+            m_cb_frame_cpu.projection_inverted      = Matrix::Invert(m_cb_frame_cpu.projection);
             m_cb_frame_cpu.view_projection          = m_cb_frame_cpu.view * m_cb_frame_cpu.projection;
             m_cb_frame_cpu.view_projection_inverted = Matrix::Invert(m_cb_frame_cpu.view_projection);
+            m_cb_frame_cpu.camera_position          = m_cb_frame_cpu.view_inverted.GetTranslation();
 
             // right eye
-            m_cb_frame_cpu.view_right                      = Xr::GetViewMatrix(1);
-            m_cb_frame_cpu.projection_right                = Xr::GetProjectionMatrix(1);
-            m_cb_frame_cpu.view_projection_right           = m_cb_frame_cpu.view_right * m_cb_frame_cpu.projection_right;
-            m_cb_frame_cpu.view_projection_inverted_right   = Matrix::Invert(m_cb_frame_cpu.view_projection_right);
-            m_cb_frame_cpu.view_projection_previous_right  = m_cb_frame_cpu.view_projection_right; // todo: track per-eye previous
-            m_cb_frame_cpu.is_multiview                    = 1;
+            m_cb_frame_cpu.view_right                     = Xr::GetViewMatrix(1);
+            m_cb_frame_cpu.view_inverted_right            = Matrix::Invert(m_cb_frame_cpu.view_right);
+            m_cb_frame_cpu.projection_right               = Xr::GetProjectionMatrix(1);
+            m_cb_frame_cpu.projection_inverted_right      = Matrix::Invert(m_cb_frame_cpu.projection_right);
+            m_cb_frame_cpu.view_projection_right          = m_cb_frame_cpu.view_right * m_cb_frame_cpu.projection_right;
+            m_cb_frame_cpu.view_projection_inverted_right = Matrix::Invert(m_cb_frame_cpu.view_projection_right);
+            m_cb_frame_cpu.view_projection_previous_right = m_view_projection_previous_right;
+            m_cb_frame_cpu.camera_position_right          = m_cb_frame_cpu.view_inverted_right.GetTranslation();
+            m_cb_frame_cpu.is_multiview                   = 1;
+
+            // store the current right-eye view-projection so the next frame can use it as
+            // view_projection_previous_right (the left eye already gets this via the main path)
+            m_view_projection_previous_right = m_cb_frame_cpu.view_projection_right;
         }
         else
         {
-            m_cb_frame_cpu.is_multiview = 0;
+            m_cb_frame_cpu.is_multiview                   = 0;
+            m_cb_frame_cpu.view_projection_previous_right = Matrix::Identity;
+            m_view_projection_previous_right              = Matrix::Identity;
         }
 
         GetBuffer(Renderer_Buffer::ConstantFrame)->Update(cmd_list, &m_cb_frame_cpu);

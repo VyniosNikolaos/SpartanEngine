@@ -198,7 +198,7 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     float linear_depth = linearize_depth(depth);
     float3 pos_ws      = get_position(uv);
     float3 normal_ws   = get_normal(uv);
-    float3 view_dir    = normalize(buffer_frame.camera_position - pos_ws);
+    float3 view_dir    = normalize(get_camera_position() - pos_ws);
 
     float4 material = tex_material.SampleLevel(GET_SAMPLER(sampler_point_clamp), uv, 0);
     float3 albedo   = saturate(tex_albedo.SampleLevel(GET_SAMPLER(sampler_point_clamp), uv, 0).rgb);

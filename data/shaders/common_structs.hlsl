@@ -125,7 +125,7 @@ struct Surface
         }
 
         position               = get_position(depth, uv / buffer_frame.resolution_scale);
-        camera_to_pixel        = position - buffer_frame.camera_position.xyz;
+        camera_to_pixel        = position - get_camera_position();
         camera_to_pixel_length = length(camera_to_pixel);
         camera_to_pixel        = normalize(camera_to_pixel);
     }

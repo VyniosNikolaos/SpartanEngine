@@ -120,7 +120,7 @@ void ray_gen()
     }
     
     // ray origin with normal offset
-    float camera_distance = length(buffer_frame.camera_position - pos_ws);
+    float camera_distance = length(get_camera_position() - pos_ws);
     float base_offset     = 0.01f + camera_distance * 0.0001f;
     float3 ray_origin     = pos_ws + normal_ws * base_offset;
     

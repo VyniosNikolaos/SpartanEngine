@@ -80,24 +80,12 @@ namespace spartan
         // always process input for movement (gamepad, keyboard, physics body control)
         ProcessInput();
 
-        // xr head tracking - apply hmd orientation to camera (position is relative to body)
-        if (Xr::IsSessionRunning())
-        {
-            // get xr head tracking data
-            const Vector3& xr_position    = Xr::GetHeadPosition();
-            const Quaternion& xr_rotation = Xr::GetHeadOrientation();
-
-            // convert from openxr (right-handed: +x right, +y up, -z forward)
-            // to engine (left-handed: +x right, +y up, +z forward)
-            // negate z for position, and negate z and w for quaternion to flip handedness
-            Vector3 position = Vector3(xr_position.x, xr_position.y, -xr_position.z);
-            Quaternion rotation = Quaternion(xr_rotation.x, xr_rotation.y, -xr_rotation.z, -xr_rotation.w);
-
-            GetEntity()->SetPositionLocal(position);
-            GetEntity()->SetRotationLocal(rotation);
-
-            SetFlag(CameraFlags::IsDirty, true);
-        }
+        // note: when an xr session is running, we intentionally do NOT overwrite the
+        // camera entity's local transform with the hmd pose.  the entity stays where
+        // gameplay placed it (e.g. on the player capsule at head height) and acts as
+        // the "rig root" in world space.  the hmd eye poses are then composed on top
+        // of the camera's world transform inside Xr::UpdateViews, which is what turns
+        // head motion into per-eye world-space translations/rotations for rendering.
 
         ComputeMatrices();
     }

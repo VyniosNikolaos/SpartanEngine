@@ -78,7 +78,7 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
     float3 F0              = lerp(0.04f, albedo, metallic);
     
     // compute view direction from camera to hit point
-    float3 camera_to_pixel        = position - buffer_frame.camera_position.xyz;
+    float3 camera_to_pixel        = position - get_camera_position();
     float  camera_to_pixel_length = length(camera_to_pixel);
     camera_to_pixel               = normalize(camera_to_pixel);
     

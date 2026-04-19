@@ -95,7 +95,7 @@ bool is_temporal_sample_valid(float2 current_uv, float2 prev_uv, float3 current_
         return false;
 
     // verify reprojection accuracy against the previous frame transform
-    float4 prev_clip        = mul(float4(current_pos, 1.0f), buffer_frame.view_projection_previous);
+    float4 prev_clip        = mul(float4(current_pos, 1.0f), get_view_projection_previous());
     float3 prev_ndc         = prev_clip.xyz / prev_clip.w;
     float2 expected_prev_uv = prev_ndc.xy * float2(0.5f, -0.5f) + 0.5f;
     float2 reproj_diff = abs(prev_uv - expected_prev_uv) * screen_resolution;

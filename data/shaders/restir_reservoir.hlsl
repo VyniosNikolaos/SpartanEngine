@@ -544,7 +544,7 @@ float3 clamp_sky_radiance(float3 radiance)
 // depth-scaled normal offset for ray origins
 float compute_ray_offset(float3 pos_ws)
 {
-    float3 to_cam = pos_ws - buffer_frame.camera_position;
+    float3 to_cam = pos_ws - get_camera_position();
     float  dist   = sqrt(dot(to_cam, to_cam));
     return clamp(dist * 1e-4f, 2e-4f, 1e-2f);
 }

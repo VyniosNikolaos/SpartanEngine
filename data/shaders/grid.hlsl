@@ -94,7 +94,7 @@ float4 main_ps(PixelInput input) : SV_TARGET
     color_output = lerp(color_output, color_axis_x, align_axis_x);
 
     // camera distance test
-    float camera_dist = length(buffer_frame.camera_position.xz - world_pos.xz);
+    float camera_dist = length(get_camera_position().xz - world_pos.xz);
     float alpha_dist  = 1.0 - smoothstep(0.0, max_camera_dist, camera_dist);
 
     float alpha = min(alpha_dist, alpha_grid);

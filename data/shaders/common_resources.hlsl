@@ -139,6 +139,24 @@ uint   pass_get_material_index()     { return _draw.material_index; }
 // pass-level state - read from push constant (works in both raster and compute shaders)
 bool pass_is_transparent() { return buffer_pass.is_transparent != 0; }
 bool pass_is_opaque()      { return buffer_pass.is_transparent == 0; }
+uint pass_get_eye_index()  { return buffer_pass.eye_index; }
+
+// stereo/per-eye matrix selectors
+// compute passes run once per eye and push buffer_pass.eye_index so view-dependent math picks
+// the correct eye; raster passes with SV_ViewID can pass the view id through this path as well.
+// when multiview is off the right-eye members are not populated and these collapse to the
+// primary matrices.
+bool is_multiview_active()            { return buffer_frame.is_multiview != 0; }
+bool pass_is_right_eye()              { return is_multiview_active() && buffer_pass.eye_index == 1; }
+
+matrix get_view()                     { return pass_is_right_eye() ? buffer_frame.view_right                     : buffer_frame.view; }
+matrix get_view_inverted()            { return pass_is_right_eye() ? buffer_frame.view_inverted_right            : buffer_frame.view_inverted; }
+matrix get_projection()               { return pass_is_right_eye() ? buffer_frame.projection_right               : buffer_frame.projection; }
+matrix get_projection_inverted()      { return pass_is_right_eye() ? buffer_frame.projection_inverted_right      : buffer_frame.projection_inverted; }
+matrix get_view_projection()          { return pass_is_right_eye() ? buffer_frame.view_projection_right          : buffer_frame.view_projection; }
+matrix get_view_projection_inverted() { return pass_is_right_eye() ? buffer_frame.view_projection_inverted_right : buffer_frame.view_projection_inverted; }
+matrix get_view_projection_previous() { return pass_is_right_eye() ? buffer_frame.view_projection_previous_right : buffer_frame.view_projection_previous; }
+float3 get_camera_position()          { return pass_is_right_eye() ? buffer_frame.camera_position_right          : buffer_frame.camera_position; }
 
 // generic pass parameter accessors - read from push constant values[]
 // values[0].xyz = f3_value, values[0].w = f2_value.x
