@@ -24,6 +24,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "../RHI_Implementation.h"
 #include "../RHI_Buffer.h"
 #include "../RHI_Device.h"
+#include "../RHI_CommandList.h"
+#include "../RHI_Queue.h"
 //================================
 
 //= NAMESPACES =====
@@ -34,19 +36,19 @@ namespace spartan
 {
     void RHI_Buffer::RHI_DestroyResource()
     {
-        // unmap if mapped
         if (m_data_gpu && m_rhi_resource)
         {
             static_cast<ID3D12Resource*>(m_rhi_resource)->Unmap(0, nullptr);
             m_data_gpu = nullptr;
         }
 
-        // release the resource
         if (m_rhi_resource)
         {
             static_cast<ID3D12Resource*>(m_rhi_resource)->Release();
             m_rhi_resource = nullptr;
         }
+
+        m_device_address = 0;
     }
 
     void RHI_Buffer::DestroyResourceImmediate()
@@ -58,19 +60,18 @@ namespace spartan
     {
         SP_ASSERT(RHI_Context::device != nullptr);
 
-        // determine heap type based on usage
-        D3D12_HEAP_TYPE heap_type = D3D12_HEAP_TYPE_DEFAULT;
-        D3D12_RESOURCE_STATES initial_state = D3D12_RESOURCE_STATE_COMMON;
-
-        // for buffers that need cpu access (vertex/index buffers with dynamic data), use upload heap
-        bool is_mappable = (m_type == RHI_Buffer_Type::Vertex || m_type == RHI_Buffer_Type::Index);
-        if (is_mappable)
+        // for constant buffers d3d12 requires 256-byte alignment for cbv size
+        uint64_t size = m_object_size;
+        if (m_type == RHI_Buffer_Type::Constant)
         {
-            heap_type = D3D12_HEAP_TYPE_UPLOAD;
-            initial_state = D3D12_RESOURCE_STATE_GENERIC_READ;
+            m_stride = (m_stride_unaligned + 255) & ~255;
+            size     = static_cast<uint64_t>(m_stride) * m_element_count;
+            m_object_size = size;
         }
 
-        // create heap properties
+        D3D12_HEAP_TYPE heap_type = m_mappable ? D3D12_HEAP_TYPE_UPLOAD : D3D12_HEAP_TYPE_DEFAULT;
+        D3D12_RESOURCE_STATES initial_state = m_mappable ? D3D12_RESOURCE_STATE_GENERIC_READ : D3D12_RESOURCE_STATE_COMMON;
+
         D3D12_HEAP_PROPERTIES heap_props = {};
         heap_props.Type                  = heap_type;
         heap_props.CPUPageProperty       = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
@@ -78,11 +79,10 @@ namespace spartan
         heap_props.CreationNodeMask      = 1;
         heap_props.VisibleNodeMask       = 1;
 
-        // create resource desc
         D3D12_RESOURCE_DESC resource_desc = {};
         resource_desc.Dimension          = D3D12_RESOURCE_DIMENSION_BUFFER;
         resource_desc.Alignment          = 0;
-        resource_desc.Width              = m_object_size;
+        resource_desc.Width              = size;
         resource_desc.Height             = 1;
         resource_desc.DepthOrArraySize   = 1;
         resource_desc.MipLevels          = 1;
@@ -92,7 +92,12 @@ namespace spartan
         resource_desc.Layout             = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
         resource_desc.Flags              = D3D12_RESOURCE_FLAG_NONE;
 
-        // create the buffer resource
+        // storage buffers may be written by shaders so allow uav
+        if (m_type == RHI_Buffer_Type::Storage)
+        {
+            resource_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        }
+
         ID3D12Resource* buffer = nullptr;
         HRESULT hr = RHI_Context::device->CreateCommittedResource(
             &heap_props,
@@ -105,40 +110,86 @@ namespace spartan
 
         if (FAILED(hr))
         {
-            SP_LOG_ERROR("Failed to create buffer resource: %s", d3d12_utility::error::dxgi_error_to_string(hr));
+            SP_LOG_ERROR("Failed to create buffer resource '%s' (%llu bytes): %s",
+                m_object_name.c_str(), size, d3d12_utility::error::dxgi_error_to_string(hr));
             return;
         }
 
-        m_rhi_resource = buffer;
+        m_rhi_resource   = buffer;
+        m_device_address = buffer->GetGPUVirtualAddress();
 
-        // set debug name
         if (!m_object_name.empty())
         {
             d3d12_utility::debug::set_name(buffer, m_object_name.c_str());
         }
 
-        // map the buffer for cpu access if it's an upload heap
         if (heap_type == D3D12_HEAP_TYPE_UPLOAD)
         {
-            D3D12_RANGE read_range = { 0, 0 }; // we don't read from this buffer
+            D3D12_RANGE read_range = { 0, 0 };
             hr = buffer->Map(0, &read_range, &m_data_gpu);
             if (FAILED(hr))
             {
-                SP_LOG_ERROR("Failed to map buffer: %s", d3d12_utility::error::dxgi_error_to_string(hr));
+                SP_LOG_ERROR("Failed to map buffer '%s': %s", m_object_name.c_str(), d3d12_utility::error::dxgi_error_to_string(hr));
                 m_data_gpu = nullptr;
             }
         }
 
-        // copy initial data if provided
-        if (data && m_data_gpu)
+        if (data)
         {
-            memcpy(m_data_gpu, data, m_object_size);
-        }
-        else if (data && !m_data_gpu)
-        {
-            // for default heap buffers, we would need to use a staging buffer
-            // todo: implement staging buffer upload for default heap resources
-            SP_LOG_WARNING("Initial data provided but buffer is not mappable - data not copied");
+            if (m_data_gpu)
+            {
+                memcpy(m_data_gpu, data, m_object_size);
+            }
+            else
+            {
+                // default heap - upload via staging buffer using a one-shot command list
+                void* staging_ptr = RHI_Device::StagingBufferAcquire(m_object_size);
+                ID3D12Resource* staging = static_cast<ID3D12Resource*>(staging_ptr);
+                if (staging)
+                {
+                    void* mapped = nullptr;
+                    D3D12_RANGE rr = { 0, 0 };
+                    if (SUCCEEDED(staging->Map(0, &rr, &mapped)) && mapped)
+                    {
+                        memcpy(mapped, data, m_object_size);
+                        staging->Unmap(0, nullptr);
+                    }
+
+                    ID3D12CommandAllocator* alloc = nullptr;
+                    ID3D12GraphicsCommandList* list = nullptr;
+                    if (SUCCEEDED(RHI_Context::device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc))))
+                    {
+                        if (SUCCEEDED(RHI_Context::device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc, nullptr, IID_PPV_ARGS(&list))))
+                        {
+                            // common -> copy_dest
+                            D3D12_RESOURCE_BARRIER b = {};
+                            b.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                            b.Transition.pResource   = buffer;
+                            b.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+                            b.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_DEST;
+                            b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                            list->ResourceBarrier(1, &b);
+
+                            list->CopyBufferRegion(buffer, 0, staging, 0, m_object_size);
+
+                            b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+                            b.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
+                            list->ResourceBarrier(1, &b);
+                            list->Close();
+
+                            ID3D12CommandQueue* q = static_cast<ID3D12CommandQueue*>(RHI_Device::GetQueueRhiResource(RHI_Queue_Type::Graphics));
+                            ID3D12CommandList* lists[] = { list };
+                            q->ExecuteCommandLists(1, lists);
+                            RHI_Device::QueueWaitAll();
+
+                            list->Release();
+                        }
+                        alloc->Release();
+                    }
+
+                    RHI_Device::StagingBufferRelease(staging);
+                }
+            }
         }
     }
 
@@ -153,7 +204,7 @@ namespace spartan
         }
         else
         {
-            SP_LOG_WARNING("UploadSubRegion: buffer is not mapped, cannot upload");
+            SP_LOG_WARNING("UploadSubRegion: buffer '%s' is not mapped", m_object_name.c_str());
         }
     }
 
@@ -162,20 +213,42 @@ namespace spartan
         if (!data_cpu || size == 0)
             return;
 
-        // for mapped buffers, just copy directly
+        SP_ASSERT_MSG(m_mappable, "Can't update unmapped buffer");
+
+        // constant buffers are ring-allocated by advancing m_offset by the aligned stride per update
+        if (m_type == RHI_Buffer_Type::Constant)
+        {
+            if (!first_update)
+            {
+                m_offset += m_stride;
+                if (m_offset + m_stride > m_object_size)
+                {
+                    m_offset = 0;
+                }
+            }
+            first_update = false;
+
+            if (m_data_gpu)
+            {
+                memcpy(static_cast<uint8_t*>(m_data_gpu) + m_offset, data_cpu, min(static_cast<uint64_t>(size), static_cast<uint64_t>(m_stride)));
+            }
+            return;
+        }
+
         if (m_data_gpu)
         {
             memcpy(m_data_gpu, data_cpu, min(static_cast<uint64_t>(size), m_object_size));
-        }
-        else
-        {
-            // todo: implement upload via command list for non-mapped buffers
-            SP_LOG_WARNING("Buffer update not implemented for non-mapped buffers");
         }
     }
 
     void RHI_Buffer::UpdateHandles(RHI_CommandList* cmd_list)
     {
-        // nothing special needed for d3d12
+        // no-op in d3d12; addresses are stable for persistently-mapped upload buffers
+    }
+
+    RHI_StridedDeviceAddressRegion RHI_Buffer::GetRegion(const RHI_Shader_Type group_type, const uint32_t stride_extra) const
+    {
+        RHI_StridedDeviceAddressRegion region = {};
+        return region;
     }
 }

@@ -291,24 +291,6 @@ namespace spartan
             }
         }
 
-        const bool is_d3d12_editor_minimal = RHI_Context::api_type == RHI_Api_Type::D3d12 && Engine::IsFlagSet(EngineMode::EditorVisible);
-        if (is_d3d12_editor_minimal)
-        {
-            m_cmd_list_present = RHI_Device::GetQueue(RHI_Queue_Type::Graphics)->NextCommandList();
-            m_cmd_list_present->Begin();
-            m_cmd_list_compute = nullptr;
-            m_draw_data_count  = 0;
-            m_lines_vertices.clear();
-            m_icons.clear();
-
-            frame_num++;
-            if (frame_num == 1)
-            {
-                SP_FIRE_EVENT(EventType::RendererOnFirstFrameCompleted);
-            }
-
-            return;
-        }
         
         // recreate optional render targets when feature cvars change
         if (m_initialized_resources)

@@ -45,6 +45,8 @@ namespace spartan
             arguments.emplace_back("-E"); arguments.emplace_back(GetEntryPoint());
             arguments.emplace_back("-T"); arguments.emplace_back(GetTargetProfile());
             arguments.emplace_back("-flegacy-macro-expansion"); // expand the operands before performing token-pasting operation (fxc behavior)
+            // api define so shared hlsl can pick d3d12 specific register bindings
+            arguments.emplace_back("-D"); arguments.emplace_back("API_D3D12=1");
             #ifdef DEBUG                                                    
             arguments.emplace_back("-Od");                      // disable optimizations
             arguments.emplace_back("-Zi");                      // enable debug information

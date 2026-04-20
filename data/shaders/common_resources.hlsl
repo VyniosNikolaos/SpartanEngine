@@ -116,8 +116,13 @@ RWStructuredBuffer<uint4> tex_compress_out     : register(u41); // bc3, bc5 (16 
 RWStructuredBuffer<uint2> tex_compress_out_bc1 : register(u42); // bc1 (8 bytes per block)
 
 // buffers
+#ifdef API_D3D12
+// d3d12 path: root 32-bit constants at b1 (vk::push_constant is ignored by dxil)
+cbuffer BufferPass : register(b1) { PassBufferData buffer_pass; };
+#else
 [[vk::push_constant]]
 PassBufferData buffer_pass;
+#endif
 cbuffer BufferFrame : register(b0) { FrameBufferData buffer_frame; };
 
 // easy access to buffer_frame members
