@@ -39,57 +39,13 @@ static const float2 SPATIAL_OFFSETS[16] = {
     float2( 0.0000, -1.0000), float2( 1.0000,  0.0000)
 };
 
-bool check_spatial_visibility(float3 center_pos, float3 center_normal, float3 sample_hit_pos, float3 sample_hit_normal, float3 neighbor_pos)
-{
-    float3 dir  = sample_hit_pos - center_pos;
-    float dist  = length(dir);
-
-    if (dist < RESTIR_VIS_PLANE_MIN)
-        return true;
-
-    dir /= dist;
-
-    float cos_theta = dot(dir, center_normal);
-    if (cos_theta <= RESTIR_VIS_COS_FRONT)
-        return false;
-
-    float cos_back = dot(sample_hit_normal, -dir);
-    if (cos_back <= RESTIR_VIS_COS_BACK)
-        return false;
-
-    float plane_dist = dot(sample_hit_pos - center_pos, center_normal);
-    if (plane_dist < RESTIR_VIS_PLANE_MIN)
-        return false;
-
-    // direction similarity check prevents reusing interior samples on exterior surfaces
-    float3 dir_from_neighbor = normalize(sample_hit_pos - neighbor_pos);
-    float direction_similarity = dot(dir, dir_from_neighbor);
-    float3 neighbor_to_center = center_pos - neighbor_pos;
-    float neighbor_center_dist = length(neighbor_to_center);
-    float relative_shift = neighbor_center_dist / max(dist, 0.01f);
-    float min_similarity = lerp(0.9f, 0.99f, saturate(relative_shift * 2.0f));
-    if (direction_similarity < min_similarity)
-        return false;
-
-    if (dist < RESTIR_VIS_MIN_DIST)
-        return true;
-
-    float offset = max(RESTIR_RAY_T_MIN, compute_ray_offset(center_pos));
-
-    RayDesc ray;
-    ray.Origin    = center_pos + center_normal * offset;
-    ray.Direction = dir;
-    ray.TMin      = offset;
-    ray.TMax      = max(dist - offset, offset);
-
-    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> query;
-    query.TraceRayInline(tlas, RAY_FLAG_NONE, 0xFF, ray);
-    query.Proceed();
-
-    return query.CommittedStatus() == COMMITTED_NOTHING;
-}
-
-bool is_neighbor_valid(int2 neighbor_pixel, float3 center_pos, float3 center_normal, float center_linear_depth, float2 resolution)
+// g-buffer similarity gate used before attempting a shift on a neighbor's reservoir
+bool is_neighbor_gbuffer_compatible(
+    int2 neighbor_pixel,
+    float3 center_pos,
+    float3 center_normal,
+    float center_linear_depth,
+    float2 resolution)
 {
     if (neighbor_pixel.x < 0 || neighbor_pixel.x >= (int)resolution.x ||
         neighbor_pixel.y < 0 || neighbor_pixel.y >= (int)resolution.y)
@@ -103,7 +59,6 @@ bool is_neighbor_valid(int2 neighbor_pixel, float3 center_pos, float3 center_nor
 
     float neighbor_linear_depth = linearize_depth(neighbor_depth);
 
-    // adaptive depth threshold relaxes at distance
     float adaptive_depth_threshold = lerp(RESTIR_DEPTH_THRESHOLD, RESTIR_DEPTH_THRESHOLD * 2.0f,
                                            saturate(center_linear_depth / 200.0f));
 
@@ -114,13 +69,11 @@ bool is_neighbor_valid(int2 neighbor_pixel, float3 center_pos, float3 center_nor
     float3 neighbor_normal = get_normal(neighbor_uv);
     float normal_similarity = dot(center_normal, neighbor_normal);
 
-    // tighter normal threshold at distance for flat surfaces
     float adaptive_normal_threshold = lerp(RESTIR_NORMAL_THRESHOLD, 0.98f,
                                             saturate(center_linear_depth / 150.0f));
     if (normal_similarity < adaptive_normal_threshold)
         return false;
 
-    // world-space distance check for distant surfaces
     if (center_linear_depth > 50.0f)
     {
         float3 neighbor_pos = get_position(neighbor_uv);
@@ -131,37 +84,6 @@ bool is_neighbor_valid(int2 neighbor_pixel, float3 center_pos, float3 center_nor
     }
 
     return true;
-}
-
-float evaluate_jacobian_for_reuse(PathSample sample, float3 center_pos, float3 center_normal, float3 neighbor_pos)
-{
-    float3 dir_to_sample = sample.hit_position - center_pos;
-    float dist_sq = dot(dir_to_sample, dir_to_sample);
-    if (dist_sq < 1e-6f)
-        return 0.0f;
-
-    dir_to_sample = dir_to_sample * rsqrt(dist_sq);
-    float cos_theta = dot(center_normal, dir_to_sample);
-    if (cos_theta <= 0.05f)
-        return 0.0f;
-
-    float jacobian = compute_jacobian(sample.hit_position, neighbor_pos, center_pos, sample.hit_normal, center_normal);
-    return max(jacobian, 0.0f);
-}
-
-float compute_adaptive_radius(float linear_depth, float center_roughness, float edge_factor, float3 normal_ws, float3 view_dir)
-{
-    float depth_factor     = saturate(sqrt(linear_depth * SPATIAL_DEPTH_SCALE / 100.0f));
-    float base_radius      = lerp(SPATIAL_RADIUS_MIN, SPATIAL_RADIUS_MAX, depth_factor);
-    float roughness_factor = lerp(0.7f, 1.0f, center_roughness);
-
-    // reduce radius for grazing angles to prevent world-space distance issues
-    float n_dot_v = abs(dot(normal_ws, view_dir));
-    float grazing_factor = lerp(0.3f, 1.0f, saturate(n_dot_v * 2.0f));
-
-    float distance_reduction = lerp(1.0f, 0.5f, saturate((linear_depth - 50.0f) / 100.0f));
-
-    return base_radius * roughness_factor * edge_factor * grazing_factor * distance_reduction;
 }
 
 float compute_edge_factor(float2 uv, float linear_depth, float2 screen_resolution)
@@ -176,6 +98,20 @@ float compute_edge_factor(float2 uv, float linear_depth, float2 screen_resolutio
     float relative_gradient = gradient / max(linear_depth, 0.01f);
 
     return saturate(1.0f - relative_gradient * 5.0f);
+}
+
+float compute_adaptive_radius(float linear_depth, float center_roughness, float edge_factor, float3 normal_ws, float3 view_dir)
+{
+    float depth_factor     = saturate(sqrt(linear_depth * SPATIAL_DEPTH_SCALE / 100.0f));
+    float base_radius      = lerp(SPATIAL_RADIUS_MIN, SPATIAL_RADIUS_MAX, depth_factor);
+    float roughness_factor = lerp(0.7f, 1.0f, center_roughness);
+
+    float n_dot_v = abs(dot(normal_ws, view_dir));
+    float grazing_factor = lerp(0.3f, 1.0f, saturate(n_dot_v * 2.0f));
+
+    float distance_reduction = lerp(1.0f, 0.5f, saturate((linear_depth - 50.0f) / 100.0f));
+
+    return base_radius * roughness_factor * edge_factor * grazing_factor * distance_reduction;
 }
 
 [numthreads(THREAD_GROUP_COUNT_X, THREAD_GROUP_COUNT_Y, 1)]
@@ -199,11 +135,10 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     float3 pos_ws      = get_position(uv);
     float3 normal_ws   = get_normal(uv);
     float3 view_dir    = normalize(get_camera_position() - pos_ws);
-
-    float4 material = tex_material.SampleLevel(GET_SAMPLER(sampler_point_clamp), uv, 0);
-    float3 albedo   = saturate(tex_albedo.SampleLevel(GET_SAMPLER(sampler_point_clamp), uv, 0).rgb);
-    float roughness = max(material.r, 0.04f);
-    float metallic  = material.g;
+    float4 material    = tex_material.SampleLevel(GET_SAMPLER(sampler_point_clamp), uv, 0);
+    float3 albedo      = saturate(tex_albedo.SampleLevel(GET_SAMPLER(sampler_point_clamp), uv, 0).rgb);
+    float  roughness   = max(material.r, 0.04f);
+    float  metallic    = material.g;
 
     Reservoir center = unpack_reservoir(
         tex_reservoir_prev0[pixel],
@@ -224,7 +159,6 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     float adaptive_radius = compute_adaptive_radius(linear_depth, roughness, edge_factor, normal_ws, view_dir);
     adaptive_radius      *= lerp(0.35f, 1.0f, center_confidence);
 
-    // second pass refines rather than blurs further: tighter radius, fewer samples
     uint spatial_sample_count = RESTIR_SPATIAL_SAMPLES;
     if (spatial_pass_index > 0)
     {
@@ -232,21 +166,23 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
         spatial_sample_count = max(RESTIR_SPATIAL_SAMPLES - 2u, 4u);
     }
 
-    Reservoir combined = create_empty_reservoir();
+    float target_cur = target_pdf_self(center.sample, pos_ws, normal_ws, view_dir, albedo, roughness, metallic);
 
-    float target_pdf_center = calculate_target_pdf_for_sample(center.sample, pos_ws, normal_ws, albedo, metallic);
-    if (target_pdf_center <= 0.0f)
-        target_pdf_center = calculate_target_pdf(center.sample.radiance);
-
-    float weight_center = target_pdf_center * center.W * center.M;
-    combined.weight_sum = weight_center;
-    combined.M          = center.M;
+    // combined reservoir with the center stream as seed sample
+    Reservoir combined  = create_empty_reservoir();
     combined.sample     = center.sample;
-    combined.target_pdf = target_pdf_center;
-    float confidence_weight_sum   = center_confidence * max(weight_center, 0.0f);
-    float confidence_weight_total = max(weight_center, 0.0f);
+    combined.target_pdf = target_cur;
+
+    // generalized balance heuristic with m_i = M_i / sum_j M_j (confidence-weighted approximation)
+    // stream contribution: w_i = p_hat_dst(T_i(X_i)) * W_i * |J_i| * M_i
+    // final W_out = weight_sum / (M_total * p_hat_dst(Y))
+    float M_total = max(center.M, 0.0f);
 
     float base_angle = random_float(seed) * 2.0f * PI;
+
+    // seed the combined with the center stream (self-shift: jacobian = 1)
+    float weight_center = target_cur * center.W * center.M;
+    combined.weight_sum = max(weight_center, 0.0f);
 
     for (uint i = 0; i < spatial_sample_count; i++)
     {
@@ -264,11 +200,8 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
         float sample_radius = adaptive_radius * radius_jitter;
         int2 neighbor_pixel = int2(pixel) + int2(rotated_offset * sample_radius);
 
-        if (!is_neighbor_valid(neighbor_pixel, pos_ws, normal_ws, linear_depth, resolution))
+        if (!is_neighbor_gbuffer_compatible(neighbor_pixel, pos_ws, normal_ws, linear_depth, resolution))
             continue;
-
-        float2 neighbor_uv     = (neighbor_pixel + 0.5f) / resolution;
-        float3 neighbor_pos_ws = get_position(neighbor_uv);
 
         Reservoir neighbor = unpack_reservoir(
             tex_reservoir_prev0[neighbor_pixel],
@@ -278,92 +211,69 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
             tex_reservoir_prev4[neighbor_pixel]
         );
 
-        if (!is_reservoir_valid(neighbor))
-            continue;
-
-        if (neighbor.M <= 0 || neighbor.W <= 0)
+        if (!is_reservoir_valid(neighbor) || neighbor.M <= 0.0f || neighbor.W <= 0.0f)
             continue;
 
         float neighbor_confidence = saturate(neighbor.confidence);
-        if (neighbor_confidence <= 0.1f)
+        if (neighbor_confidence <= 0.05f)
             continue;
 
-        if (all(neighbor.sample.radiance <= 0.0f))
+        float2 neighbor_uv     = (neighbor_pixel + 0.5f) / resolution;
+        float3 neighbor_pos_ws = get_position(neighbor_uv);
+
+        ShiftResult shift = try_reconnection_shift(
+            neighbor.sample,
+            neighbor_pos_ws,
+            pos_ws,
+            normal_ws,
+            view_dir,
+            albedo,
+            roughness,
+            metallic
+        );
+
+        if (!shift.ok)
             continue;
 
-        float target_pdf_at_center = 0.0f;
-        float jacobian = 1.0f;
-
-        if (is_sky_sample(neighbor.sample))
-        {
-            float n_dot_sky = dot(normal_ws, neighbor.sample.direction);
-            if (n_dot_sky <= 0.0f)
-                continue;
-
-            target_pdf_at_center = calculate_target_pdf_diffuse(neighbor.sample.radiance,
-                neighbor.sample.direction, normal_ws, albedo, metallic);
-            jacobian = 1.0f;
-        }
-        else
-        {
-            if (neighbor.sample.path_length == 0)
-                continue;
-
-            float3 dir_to_hit = normalize(neighbor.sample.hit_position - pos_ws);
-            float n_dot_l = dot(normal_ws, dir_to_hit);
-            if (n_dot_l <= 0.0f)
-                continue;
-
-            bool visible = check_spatial_visibility(pos_ws, normal_ws, neighbor.sample.hit_position, neighbor.sample.hit_normal, neighbor_pos_ws);
-            if (!visible)
-                continue;
-
-            jacobian = evaluate_jacobian_for_reuse(neighbor.sample, pos_ws, normal_ws, neighbor_pos_ws);
-            if (jacobian <= 0.0f)
-                continue;
-
-            target_pdf_at_center = calculate_target_pdf_for_sample(neighbor.sample, pos_ws, normal_ws, albedo, metallic);
-        }
-
-        if (target_pdf_at_center <= 0.0f)
+        if (!trace_shift_visibility(neighbor.sample, pos_ws, normal_ws))
             continue;
 
-        float reuse_confidence = (spatial_pass_index > 0) ? min(center_confidence, neighbor_confidence) : neighbor_confidence;
-        if (reuse_confidence <= 0.05f)
+        float target_neighbor = max(dot(shift.f_dst, float3(0.299f, 0.587f, 0.114f)), 0.0f);
+        if (target_neighbor <= 0.0f)
             continue;
 
-        float neighbor_m_cap = max(center.M * lerp(1.25f, 1.75f, center_confidence), 2.0f);
-        float effective_M = min(neighbor.M * reuse_confidence, neighbor_m_cap);
-        float weight = target_pdf_at_center * jacobian * neighbor.W * effective_M;
+        // paper-form confidence weights: m_i = M_i / sum(M_j), stream weight
+        // w_i = m_i * p_hat_dst(T_i(X_i)) * W_i_src * |J_i|, aggregated form
+        // stores M_i * p_hat * W_src * J so the final division by M_total normalizes m_i
+        M_total += neighbor.M;
+        float weight = target_neighbor * shift.jacobian * neighbor.W * neighbor.M;
 
-        combined.weight_sum += weight;
-        combined.M += effective_M;
-        confidence_weight_sum   += neighbor_confidence * max(weight, 0.0f);
-        confidence_weight_total += max(weight, 0.0f);
+        combined.weight_sum += max(weight, 0.0f);
 
-        if (random_float(seed) * combined.weight_sum < weight)
+        if (combined.weight_sum > 0.0f && random_float(seed) * combined.weight_sum < weight)
         {
             combined.sample     = neighbor.sample;
-            combined.target_pdf = target_pdf_at_center;
+            combined.target_pdf = target_neighbor;
         }
     }
 
+    combined.M = M_total;
     clamp_reservoir_M(combined, RESTIR_M_CAP);
 
-    float final_target_pdf = calculate_target_pdf_for_sample(combined.sample, pos_ws, normal_ws, albedo, metallic);
-    if (final_target_pdf <= 0.0f)
-        final_target_pdf = calculate_target_pdf(combined.sample.radiance);
-    combined.target_pdf = final_target_pdf;
+    // finalize W against the destination's target_pdf
+    float final_target = target_pdf_self(combined.sample, pos_ws, normal_ws, view_dir, albedo, roughness, metallic);
+    combined.target_pdf = final_target;
 
-    if (final_target_pdf > 0 && combined.M > 0)
-        combined.W = combined.weight_sum / (final_target_pdf * combined.M);
+    if (final_target > 0.0f && combined.M > 0.0f)
+        combined.W = combined.weight_sum / (final_target * combined.M);
     else
-        combined.W = 0;
+        combined.W = 0.0f;
 
     float w_clamp = get_w_clamp_for_sample(combined.sample);
-    combined.W = min(combined.W, w_clamp);
+    combined.W    = min(combined.W, w_clamp);
 
-    combined.confidence = confidence_weight_total > 0.0f ? saturate(confidence_weight_sum / confidence_weight_total) : 0.0f;
+    combined.confidence = saturate(center_confidence);
+    combined.age        = center.age;
 
     float4 t0, t1, t2, t3, t4;
     pack_reservoir(combined, t0, t1, t2, t3, t4);
@@ -373,8 +283,9 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     tex_reservoir3[pixel] = t3;
     tex_reservoir4[pixel] = t4;
 
-    float3 gi = shade_reservoir_diffuse(combined, pos_ws, normal_ws, albedo, metallic);
-    gi = soft_clamp_gi(gi, combined.sample);
+    float3 gi = shade_reservoir_path(combined, pos_ws, normal_ws, view_dir, albedo, roughness, metallic);
+    if (any(isnan(gi)) || any(isinf(gi)))
+        gi = float3(0, 0, 0);
 
-    tex_uav[pixel] = float4(gi, 1.0f);
+    tex_uav[pixel] = float4(gi, saturate(combined.confidence));
 }

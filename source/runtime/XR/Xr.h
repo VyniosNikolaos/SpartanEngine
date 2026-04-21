@@ -25,6 +25,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <cstdint>
 #include <string>
 #include <array>
+#include <atomic>
 #include "../Math/Matrix.h"
 #include "../Math/Vector3.h"
 #include "../Math/Quaternion.h"
@@ -96,6 +97,7 @@ namespace spartan
         static bool GetStereoMode() { return m_stereo_3d; }
 
     private:
+        static void InitializeWorker();
         static bool CreateSession();
         static void DestroySession();
         static bool CreateSwapchain();
@@ -105,7 +107,7 @@ namespace spartan
         static void UpdateViews();
 
         // state
-        static bool m_initialized;
+        static std::atomic<bool> m_initialized;
         static bool m_hmd_connected;
         static bool m_session_running;
         static bool m_session_focused;

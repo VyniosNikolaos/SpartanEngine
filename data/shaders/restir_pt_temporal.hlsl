@@ -26,60 +26,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 static const float TEMPORAL_MIN_CONFIDENCE = 0.1f;
 
-bool check_temporal_visibility(float3 shading_pos, float3 shading_normal, float3 sample_hit_pos, float3 sample_hit_normal, float3 prev_shading_pos)
-{
-    float3 dir = sample_hit_pos - shading_pos;
-    float dist = length(dir);
-
-    if (dist < RESTIR_VIS_PLANE_MIN)
-        return true;
-
-    dir /= dist;
-
-    // reject samples behind the surface
-    float cos_theta = dot(dir, shading_normal);
-    if (cos_theta <= RESTIR_VIS_COS_FRONT)
-        return false;
-
-    // reject backfacing samples
-    float cos_back = dot(sample_hit_normal, -dir);
-    if (cos_back <= RESTIR_VIS_COS_BACK)
-        return false;
-
-    // reject samples below surface plane
-    float plane_dist = dot(sample_hit_pos - shading_pos, shading_normal);
-    if (plane_dist < RESTIR_VIS_PLANE_MIN)
-        return false;
-
-    // direction similarity check prevents interior/exterior sample bleeding
-    float3 dir_from_prev = normalize(sample_hit_pos - prev_shading_pos);
-    float direction_similarity = dot(dir, dir_from_prev);
-    float3 prev_to_current = shading_pos - prev_shading_pos;
-    float prev_current_dist = length(prev_to_current);
-    float relative_shift = prev_current_dist / max(dist, 0.01f);
-    float min_similarity = lerp(0.9f, 0.99f, saturate(relative_shift * 2.0f));
-    if (direction_similarity < min_similarity)
-        return false;
-
-    if (dist < RESTIR_VIS_MIN_DIST)
-        return true;
-
-    float offset = max(RESTIR_RAY_T_MIN, compute_ray_offset(shading_pos));
-
-    // trace shadow ray to verify visibility
-    RayDesc ray;
-    ray.Origin    = shading_pos + shading_normal * offset;
-    ray.Direction = dir;
-    ray.TMin      = offset;
-    ray.TMax      = max(dist - offset, offset);
-
-    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> query;
-    query.TraceRayInline(tlas, RAY_FLAG_NONE, 0xFF, ray);
-    query.Proceed();
-
-    return query.CommittedStatus() == COMMITTED_NOTHING;
-}
-
 float2 reproject_to_previous_frame(float2 current_uv)
 {
     float2 velocity_ndc = tex_velocity.SampleLevel(GET_SAMPLER(sampler_point_clamp), current_uv, 0).xy;
@@ -87,63 +33,48 @@ float2 reproject_to_previous_frame(float2 current_uv)
     return current_uv - velocity_uv;
 }
 
-bool is_temporal_sample_valid(float2 current_uv, float2 prev_uv, float3 current_pos, float3 current_normal, float current_depth, float2 screen_resolution, out float confidence)
+// validates temporal reprojection via surface similarity + reprojection distance
+bool is_temporal_sample_valid(
+    float2 current_uv,
+    float2 prev_uv,
+    float3 current_pos,
+    float3 current_normal,
+    float current_depth,
+    float2 screen_resolution,
+    out float confidence)
 {
     confidence = 0.0f;
 
     if (!is_valid_uv(prev_uv))
         return false;
 
-    // verify reprojection accuracy against the previous frame transform
+    // reproject the current surface through the previous frame's transform and compare
     float4 prev_clip        = mul(float4(current_pos, 1.0f), get_view_projection_previous());
     float3 prev_ndc         = prev_clip.xyz / prev_clip.w;
     float2 expected_prev_uv = prev_ndc.xy * float2(0.5f, -0.5f) + 0.5f;
-    float2 reproj_diff = abs(prev_uv - expected_prev_uv) * screen_resolution;
-    float reproj_dist  = length(reproj_diff);
+    float2 reproj_diff      = abs(prev_uv - expected_prev_uv) * screen_resolution;
+    float  reproj_dist      = length(reproj_diff);
 
     float2 motion       = (current_uv - prev_uv) * screen_resolution;
-    float motion_length = length(motion);
+    float  motion_len   = length(motion);
+    float  motion_factor = saturate(motion_len / 32.0f);
 
-    float motion_factor = saturate(motion_length / 32.0f);
-    float reproj_tolerance = lerp(1.5f, 0.75f, motion_factor);
-    if (reproj_dist > reproj_tolerance)
+    float reproj_tol = lerp(1.5f, 0.75f, motion_factor);
+    if (reproj_dist > reproj_tol)
         return false;
 
-    float normal_threshold = lerp(0.9f, 0.97f, motion_factor);
-    float3 prev_uv_normal   = get_normal(prev_uv);
-    float normal_similarity = dot(current_normal, prev_uv_normal);
+    float normal_threshold   = lerp(0.9f, 0.97f, motion_factor);
+    float3 prev_normal       = get_normal(prev_uv);
+    float  normal_similarity = dot(current_normal, prev_normal);
     if (normal_similarity < normal_threshold)
         return false;
 
-    // detect depth edges
-    float2 texel_size    = 1.0f / screen_resolution;
-    float depth_left     = linearize_depth(tex_depth.SampleLevel(GET_SAMPLER(sampler_point_clamp), current_uv + float2(-texel_size.x, 0), 0).r);
-    float depth_right    = linearize_depth(tex_depth.SampleLevel(GET_SAMPLER(sampler_point_clamp), current_uv + float2(texel_size.x, 0), 0).r);
-    float depth_up       = linearize_depth(tex_depth.SampleLevel(GET_SAMPLER(sampler_point_clamp), current_uv + float2(0, -texel_size.y), 0).r);
-    float depth_down     = linearize_depth(tex_depth.SampleLevel(GET_SAMPLER(sampler_point_clamp), current_uv + float2(0, texel_size.y), 0).r);
-    float depth_gradient = abs(depth_left - depth_right) + abs(depth_up - depth_down);
-    bool is_depth_edge   = depth_gradient > current_depth * 0.05f;
-    if (is_depth_edge)
-    {
-        reproj_tolerance *= 0.75f;
-        normal_threshold = max(normal_threshold, 0.95f);
-    }
+    float reproj_confidence = saturate(1.0f - reproj_dist / reproj_tol);
+    float normal_confidence = saturate((normal_similarity - normal_threshold) / max(1.0f - normal_threshold, 1e-4f));
+    float motion_confidence = saturate(1.0f - motion_len / 32.0f);
+    confidence = reproj_confidence * normal_confidence * motion_confidence;
 
-    if (reproj_dist > reproj_tolerance || normal_similarity < normal_threshold)
-        return false;
-
-    float edge_penalty = is_depth_edge ? saturate(1.0f - motion_length / 12.0f) : 1.0f;
-
-    // combine confidence factors conservatively so moving pixels shed stale history quickly
-    float reproj_confidence = saturate(1.0f - reproj_dist / reproj_tolerance);
-    float normal_confidence = saturate((normal_similarity - normal_threshold) / (1.0f - normal_threshold));
-    float motion_confidence = saturate(1.0f - motion_length / 32.0f);
-    confidence = reproj_confidence * normal_confidence * motion_confidence * edge_penalty;
-
-    if (confidence < TEMPORAL_MIN_CONFIDENCE)
-        return false;
-
-    return true;
+    return confidence >= TEMPORAL_MIN_CONFIDENCE;
 }
 
 [numthreads(THREAD_GROUP_COUNT_X, THREAD_GROUP_COUNT_Y, 1)]
@@ -163,14 +94,14 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     if (depth <= 0.0f)
         return;
 
-    // gather surface properties
     float3 pos_ws    = get_position(uv);
     float3 normal_ws = get_normal(uv);
-    float4 material = tex_material.SampleLevel(GET_SAMPLER(sampler_point_clamp), uv, 0);
-    float3 albedo   = saturate(tex_albedo.SampleLevel(GET_SAMPLER(sampler_point_clamp), uv, 0).rgb);
-    float metallic  = material.g;
+    float3 view_dir  = normalize(get_camera_position() - pos_ws);
+    float4 material  = tex_material.SampleLevel(GET_SAMPLER(sampler_point_clamp), uv, 0);
+    float3 albedo    = saturate(tex_albedo.SampleLevel(GET_SAMPLER(sampler_point_clamp), uv, 0).rgb);
+    float  roughness = max(material.r, 0.04f);
+    float  metallic  = material.g;
 
-    // load current reservoir
     Reservoir current = unpack_reservoir(
         tex_reservoir0[pixel],
         tex_reservoir1[pixel],
@@ -183,39 +114,41 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
         current = create_empty_reservoir();
 
     uint seed = create_seed_for_pass(pixel, buffer_frame.frame, 1);
-    Reservoir combined = create_empty_reservoir();
-    float confidence_weight_sum   = 0.0f;
-    float confidence_weight_total = 0.0f;
 
-    float target_pdf_current = calculate_target_pdf_for_sample(current.sample, pos_ws, normal_ws, albedo, metallic);
-    if (target_pdf_current <= 0.0f)
-        target_pdf_current = calculate_target_pdf(current.sample.radiance);
+    // target_pdf of the current stream at the shading pixel (self-shift, invalid-rc allowed)
+    float target_cur = target_pdf_self(current.sample, pos_ws, normal_ws, view_dir, albedo, roughness, metallic);
 
-    // initialize combined reservoir with the current stream contribution
-    float weight_current     = target_pdf_current * current.W * current.M;
-    combined.weight_sum      = weight_current;
-    combined.M               = current.M;
-    combined.sample          = current.sample;
-    combined.target_pdf      = target_pdf_current;
-    confidence_weight_sum    = current.confidence * max(weight_current, 0.0f);
-    confidence_weight_total  = max(weight_current, 0.0f);
+    // combined reservoir seeded with the current stream
+    Reservoir combined   = create_empty_reservoir();
+    combined.weight_sum  = 0.0f;
+    combined.M           = 0.0f;
+    combined.sample      = current.sample;
+    combined.target_pdf  = target_cur;
 
-    // temporal reuse
-    float2 prev_uv = reproject_to_previous_frame(uv);
-    float temporal_confidence = 0.0f;
+    // generalized balance heuristic with m_i = M_i / sum_j M_j
+    // stream weight contribution: w_i = p_hat_dst(T(X_i)) * W_i * |J_i| * M_i
+    // final: W_out = weight_sum / (M_total * p_hat_dst(Y))
+    float M_total = max(current.M, 0.0f);
+
     float linear_depth = linearize_depth(depth);
+    float2 prev_uv     = reproject_to_previous_frame(uv);
+    float  temporal_confidence = 0.0f;
+
+    bool have_temporal = false;
+    Reservoir temporal = create_empty_reservoir();
+    float  target_temp          = 0.0f;
+    float  jacobian_temp        = 0.0f;
 
     if (is_temporal_sample_valid(uv, prev_uv, pos_ws, normal_ws, linear_depth, buffer_frame.resolution_render, temporal_confidence))
     {
         float2 prev_pixel_f = prev_uv * resolution;
         bool in_bounds = prev_pixel_f.x >= 0.5f && prev_pixel_f.x < resolution.x - 0.5f &&
                          prev_pixel_f.y >= 0.5f && prev_pixel_f.y < resolution.y - 0.5f;
-
-        if (in_bounds && temporal_confidence > 0.0f)
+        if (in_bounds)
         {
             int2 prev_pixel = int2(prev_pixel_f);
 
-            Reservoir temporal = unpack_reservoir(
+            temporal = unpack_reservoir(
                 tex_reservoir_prev0[prev_pixel],
                 tex_reservoir_prev1[prev_pixel],
                 tex_reservoir_prev2[prev_pixel],
@@ -223,100 +156,83 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
                 tex_reservoir_prev4[prev_pixel]
             );
 
-            if (is_reservoir_valid(temporal) && temporal.M > 0 && temporal.W > 0)
+            if (is_reservoir_valid(temporal) && temporal.M > 0.0f && temporal.W > 0.0f)
             {
-                // decay low-confidence history before it can dominate the new frame
-                float temporal_scale = RESTIR_TEMPORAL_DECAY * temporal_confidence;
-                temporal.M          *= temporal_scale;
-                temporal.weight_sum *= temporal_scale;
-                temporal.age        += 1.0f;
+                // temporal reuse is always sub-pixel on a surface that passed the reprojection
+                // gate, so approximate src_primary == pos_ws which yields jacobian ~ 1 without
+                // requiring a prev-frame depth buffer
+                ShiftResult shift = try_reconnection_shift(
+                    temporal.sample,
+                    pos_ws,
+                    pos_ws,
+                    normal_ws,
+                    view_dir,
+                    albedo,
+                    roughness,
+                    metallic
+                );
 
-                // cap temporal mass based on confidence and staleness
-                float staleness_factor = saturate(1.0f - temporal.age / 64.0f);
-                float effective_M_cap  = max(1.0f, RESTIR_M_CAP * temporal_confidence * staleness_factor);
-                clamp_reservoir_M(temporal, effective_M_cap);
-
-                if (temporal.M > 0.0f && temporal.weight_sum > 0.0f && is_sky_sample(temporal.sample))
+                if (shift.ok)
                 {
-                    float n_dot_sky = dot(normal_ws, temporal.sample.direction);
-                    if (n_dot_sky > 0.0f)
+                    bool visible = trace_shift_visibility(temporal.sample, pos_ws, normal_ws);
+                    if (visible)
                     {
-                        float target_pdf_temporal = calculate_target_pdf_diffuse(temporal.sample.radiance,
-                            temporal.sample.direction, normal_ws, albedo, metallic);
-
-                        if (target_pdf_temporal > 0.0f)
-                        {
-                            float weight_temporal = target_pdf_temporal * temporal.W * temporal.M;
-
-                            combined.weight_sum += weight_temporal;
-                            combined.M += temporal.M;
-                            confidence_weight_sum   += temporal.confidence * max(weight_temporal, 0.0f);
-                            confidence_weight_total += max(weight_temporal, 0.0f);
-
-                            if (random_float(seed) * combined.weight_sum < weight_temporal)
-                            {
-                                combined.sample     = temporal.sample;
-                                combined.target_pdf = target_pdf_temporal;
-                            }
-                        }
-                    }
-                }
-                else if (temporal.M > 0.0f && temporal.weight_sum > 0.0f)
-                {
-                    float3 reference_shading_pos = pos_ws;
-
-                    bool temporal_visible = temporal.sample.path_length == 0 ||
-                                            all(temporal.sample.radiance <= 0.0f) ||
-                                            check_temporal_visibility(pos_ws, normal_ws, temporal.sample.hit_position, temporal.sample.hit_normal, reference_shading_pos);
-
-                    if (temporal_visible)
-                    {
-                        float jacobian = compute_jacobian(temporal.sample.hit_position, reference_shading_pos, pos_ws, temporal.sample.hit_normal, normal_ws);
-
-                        if (jacobian > 0.0f)
-                        {
-                            float target_pdf_temporal = calculate_target_pdf_for_sample(temporal.sample, pos_ws, normal_ws, albedo, metallic);
-
-                            if (target_pdf_temporal > 0.0f)
-                            {
-                                float weight_temporal = target_pdf_temporal * jacobian * temporal.W * temporal.M;
-
-                                combined.weight_sum += weight_temporal;
-                                combined.M += temporal.M;
-                                confidence_weight_sum   += temporal.confidence * max(weight_temporal, 0.0f);
-                                confidence_weight_total += max(weight_temporal, 0.0f);
-
-                                if (random_float(seed) * combined.weight_sum < weight_temporal)
-                                {
-                                    combined.sample     = temporal.sample;
-                                    combined.target_pdf = target_pdf_temporal;
-                                }
-                            }
-                        }
+                        target_temp   = max(dot(shift.f_dst, float3(0.299f, 0.587f, 0.114f)), 0.0f);
+                        jacobian_temp = shift.jacobian;
+                        have_temporal = (target_temp > 0.0f);
                     }
                 }
             }
         }
     }
 
+    // decay temporal M by confidence and staleness to shed stale history faster
+    if (have_temporal)
+    {
+        float staleness = saturate(1.0f - temporal.age / 64.0f);
+        float M_scale   = RESTIR_TEMPORAL_DECAY * temporal_confidence * staleness;
+        temporal.M          = max(temporal.M * M_scale, 0.0f);
+        temporal.weight_sum = temporal.weight_sum * M_scale;
+        float cap = max(1.0f, RESTIR_M_CAP * temporal_confidence * staleness);
+        clamp_reservoir_M(temporal, cap);
+        M_total += temporal.M;
+    }
+
+    // stream merge: current first (self-shift, jacobian = 1)
+    float weight_cur = target_cur * current.W * current.M;
+    combined.weight_sum += max(weight_cur, 0.0f);
+
+    // temporal next (reservoir merge pick)
+    if (have_temporal)
+    {
+        float weight_tmp = target_temp * jacobian_temp * temporal.W * temporal.M;
+        combined.weight_sum += max(weight_tmp, 0.0f);
+
+        if (combined.weight_sum > 0.0f && random_float(seed) * combined.weight_sum < weight_tmp)
+        {
+            combined.sample     = temporal.sample;
+            combined.target_pdf = target_temp;
+        }
+    }
+
+    combined.M = M_total;
     clamp_reservoir_M(combined, RESTIR_M_CAP);
 
-    float final_target_pdf = calculate_target_pdf_for_sample(combined.sample, pos_ws, normal_ws, albedo, metallic);
-    if (final_target_pdf <= 0.0f)
-        final_target_pdf = calculate_target_pdf(combined.sample.radiance);
-    combined.target_pdf = final_target_pdf;
+    // evaluate the selected sample's target_pdf at the shading pixel one more time to finalize W
+    float final_target = target_pdf_self(combined.sample, pos_ws, normal_ws, view_dir, albedo, roughness, metallic);
+    combined.target_pdf = final_target;
 
-    if (final_target_pdf > 0 && combined.M > 0)
-        combined.W = combined.weight_sum / (final_target_pdf * combined.M);
+    if (final_target > 0.0f && combined.M > 0.0f)
+        combined.W = combined.weight_sum / (final_target * combined.M);
     else
-        combined.W = 0;
+        combined.W = 0.0f;
 
     float w_clamp = get_w_clamp_for_sample(combined.sample);
-    combined.W = min(combined.W, w_clamp);
+    combined.W    = min(combined.W, w_clamp);
 
-    combined.confidence = confidence_weight_total > 0.0f ? saturate(confidence_weight_sum / confidence_weight_total) : 0.0f;
+    combined.age        = have_temporal ? (temporal.age + 1.0f) : 0.0f;
+    combined.confidence = saturate(max(current.confidence, have_temporal ? temporal.confidence * temporal_confidence : 0.0f));
 
-    // store reservoir
     float4 t0, t1, t2, t3, t4;
     pack_reservoir(combined, t0, t1, t2, t3, t4);
     tex_reservoir0[pixel] = t0;
@@ -325,8 +241,9 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     tex_reservoir3[pixel] = t3;
     tex_reservoir4[pixel] = t4;
 
-    float3 gi = shade_reservoir_diffuse(combined, pos_ws, normal_ws, albedo, metallic);
-    gi = soft_clamp_gi(gi, combined.sample);
+    float3 gi = shade_reservoir_path(combined, pos_ws, normal_ws, view_dir, albedo, roughness, metallic);
+    if (any(isnan(gi)) || any(isinf(gi)))
+        gi = float3(0, 0, 0);
 
-    tex_uav[pixel] = float4(gi, 1.0f);
+    tex_uav[pixel] = float4(gi, saturate(combined.confidence));
 }

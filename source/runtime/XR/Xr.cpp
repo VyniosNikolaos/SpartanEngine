@@ -28,6 +28,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "../World/World.h"
 #include "../World/Components/Camera.h"
 #include "../World/Entity.h"
+#include <thread>
 #if defined(API_GRAPHICS_VULKAN)
 #define XR_USE_GRAPHICS_API_VULKAN
 #include <openxr/openxr.h>
@@ -42,7 +43,7 @@ using namespace std;
 namespace spartan
 {
     // static member definitions
-    bool Xr::m_initialized                  = false;
+    atomic<bool> Xr::m_initialized          = false;
     bool Xr::m_hmd_connected                = false;
     bool Xr::m_session_running              = false;
     bool Xr::m_session_focused              = false;
@@ -96,6 +97,13 @@ namespace spartan
         PFN_xrGetVulkanInstanceExtensionsKHR xrGetVulkanInstanceExtensionsKHR = nullptr;
         PFN_xrGetVulkanDeviceExtensionsKHR xrGetVulkanDeviceExtensionsKHR = nullptr;
 
+        // background init state
+        // xrCreateInstance with steamvr spawns vrserver.exe and blocks for several seconds
+        // waiting for its pipe, so the whole init runs on a worker to keep engine boot snappy
+        thread xr_init_thread;
+        atomic<bool> xr_init_in_progress   = false;
+        atomic<bool> xr_post_init_pending  = false;
+
         // helper to check xr results
         bool xr_check(XrResult result, const char* operation)
         {
@@ -147,154 +155,164 @@ namespace spartan
 
 #if defined(API_GRAPHICS_VULKAN)
 
-    void Xr::Initialize()
+    void Xr::InitializeWorker()
     {
-        if (m_initialized)
-            return;
+        // runs on xr_init_thread so engine boot isn't stalled by steamvr spin-up or by
+        // the ~7s xrCreateInstance pipe wait when no hmd is present
 
-        // initialize eye views
         for (auto& eye : m_eye_views)
         {
-            eye.view       = math::Matrix::Identity;
-            eye.projection = math::Matrix::Identity;
-            eye.position   = math::Vector3::Zero;
+            eye.view        = math::Matrix::Identity;
+            eye.projection  = math::Matrix::Identity;
+            eye.position    = math::Vector3::Zero;
             eye.orientation = math::Quaternion::Identity;
         }
 
-        // create openxr instance with vulkan extension
+        uint32_t extension_count = 0;
+        xrEnumerateInstanceExtensionProperties(nullptr, 0, &extension_count, nullptr);
+        vector<XrExtensionProperties> extensions(extension_count, { XR_TYPE_EXTENSION_PROPERTIES });
+        xrEnumerateInstanceExtensionProperties(nullptr, extension_count, &extension_count, extensions.data());
+
+        bool vulkan_supported = false;
+        for (const auto& ext : extensions)
         {
-            // check for extension support
-            uint32_t extension_count = 0;
-            xrEnumerateInstanceExtensionProperties(nullptr, 0, &extension_count, nullptr);
-            vector<XrExtensionProperties> extensions(extension_count, { XR_TYPE_EXTENSION_PROPERTIES });
-            xrEnumerateInstanceExtensionProperties(nullptr, extension_count, &extension_count, extensions.data());
-
-            bool vulkan_supported = false;
-            for (const auto& ext : extensions)
+            if (strcmp(ext.extensionName, XR_KHR_VULKAN_ENABLE_EXTENSION_NAME) == 0)
             {
-                if (strcmp(ext.extensionName, XR_KHR_VULKAN_ENABLE_EXTENSION_NAME) == 0)
-                {
-                    vulkan_supported = true;
-                    break;
-                }
-            }
-
-            if (!vulkan_supported)
-            {
-                SP_LOG_WARNING("openxr: vulkan extension not supported by runtime");
-                m_initialized = true;
-                return;
-            }
-
-            // create instance
-            const char* enabled_extensions[] = { XR_KHR_VULKAN_ENABLE_EXTENSION_NAME };
-
-            XrApplicationInfo app_info  = {};
-            app_info.apiVersion         = XR_API_VERSION_1_0;
-            strcpy_s(app_info.applicationName, XR_MAX_APPLICATION_NAME_SIZE, "Spartan Engine");
-            strcpy_s(app_info.engineName, XR_MAX_ENGINE_NAME_SIZE, "Spartan");
-            app_info.applicationVersion = 1;
-            app_info.engineVersion      = 1;
-
-            XrInstanceCreateInfo create_info    = { XR_TYPE_INSTANCE_CREATE_INFO };
-            create_info.applicationInfo         = app_info;
-            create_info.enabledExtensionCount   = 1;
-            create_info.enabledExtensionNames   = enabled_extensions;
-
-            XrResult result = xrCreateInstance(&create_info, &xr_instance);
-            if (XR_FAILED(result))
-            {
-                SP_LOG_WARNING("openxr: no runtime found or failed to create instance");
-                m_initialized = true;
-                return;
+                vulkan_supported = true;
+                break;
             }
         }
 
-        // get runtime info
+        if (!vulkan_supported)
         {
-            XrInstanceProperties instance_props = { XR_TYPE_INSTANCE_PROPERTIES };
-            if (XR_SUCCEEDED(xrGetInstanceProperties(xr_instance, &instance_props)))
-            {
-                m_runtime_name = instance_props.runtimeName;
-                SP_LOG_INFO("openxr runtime: %s", m_runtime_name.c_str());
-            }
+            SP_LOG_INFO("openxr: no runtime with vulkan support detected");
+            return;
         }
 
-        // get function pointers
+        const char* enabled_extensions[] = { XR_KHR_VULKAN_ENABLE_EXTENSION_NAME };
+
+        XrApplicationInfo app_info  = {};
+        app_info.apiVersion         = XR_API_VERSION_1_0;
+        strcpy_s(app_info.applicationName, XR_MAX_APPLICATION_NAME_SIZE, "Spartan Engine");
+        strcpy_s(app_info.engineName, XR_MAX_ENGINE_NAME_SIZE, "Spartan");
+        app_info.applicationVersion = 1;
+        app_info.engineVersion      = 1;
+
+        XrInstanceCreateInfo create_info  = { XR_TYPE_INSTANCE_CREATE_INFO };
+        create_info.applicationInfo       = app_info;
+        create_info.enabledExtensionCount = 1;
+        create_info.enabledExtensionNames = enabled_extensions;
+
+        if (XR_FAILED(xrCreateInstance(&create_info, &xr_instance)))
         {
-            xrGetInstanceProcAddr(xr_instance, "xrGetVulkanGraphicsRequirementsKHR",
-                reinterpret_cast<PFN_xrVoidFunction*>(&xrGetVulkanGraphicsRequirementsKHR));
-            xrGetInstanceProcAddr(xr_instance, "xrGetVulkanGraphicsDeviceKHR",
-                reinterpret_cast<PFN_xrVoidFunction*>(&xrGetVulkanGraphicsDeviceKHR));
-            xrGetInstanceProcAddr(xr_instance, "xrGetVulkanInstanceExtensionsKHR",
-                reinterpret_cast<PFN_xrVoidFunction*>(&xrGetVulkanInstanceExtensionsKHR));
-            xrGetInstanceProcAddr(xr_instance, "xrGetVulkanDeviceExtensionsKHR",
-                reinterpret_cast<PFN_xrVoidFunction*>(&xrGetVulkanDeviceExtensionsKHR));
+            SP_LOG_INFO("openxr: no runtime available");
+            xr_instance = XR_NULL_HANDLE;
+            return;
         }
 
-        // get hmd system
+        XrInstanceProperties instance_props = { XR_TYPE_INSTANCE_PROPERTIES };
+        if (XR_SUCCEEDED(xrGetInstanceProperties(xr_instance, &instance_props)))
         {
-            XrSystemGetInfo system_info = { XR_TYPE_SYSTEM_GET_INFO };
-            system_info.formFactor      = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
-
-            XrResult result = xrGetSystem(xr_instance, &system_info, &xr_system_id);
-            m_hmd_connected = XR_SUCCEEDED(result);
+            m_runtime_name = instance_props.runtimeName;
+            SP_LOG_INFO("openxr runtime: %s", instance_props.runtimeName);
         }
 
-        // get hmd properties and view configuration
-        if (m_hmd_connected)
+        xrGetInstanceProcAddr(xr_instance, "xrGetVulkanGraphicsRequirementsKHR", reinterpret_cast<PFN_xrVoidFunction*>(&xrGetVulkanGraphicsRequirementsKHR));
+        xrGetInstanceProcAddr(xr_instance, "xrGetVulkanGraphicsDeviceKHR",       reinterpret_cast<PFN_xrVoidFunction*>(&xrGetVulkanGraphicsDeviceKHR));
+        xrGetInstanceProcAddr(xr_instance, "xrGetVulkanInstanceExtensionsKHR",   reinterpret_cast<PFN_xrVoidFunction*>(&xrGetVulkanInstanceExtensionsKHR));
+        xrGetInstanceProcAddr(xr_instance, "xrGetVulkanDeviceExtensionsKHR",     reinterpret_cast<PFN_xrVoidFunction*>(&xrGetVulkanDeviceExtensionsKHR));
+
+        // this is the call that actually tells steamvr to look for a headset and can
+        // return HmdNotFound if none is plugged in
+        XrSystemGetInfo system_info = { XR_TYPE_SYSTEM_GET_INFO };
+        system_info.formFactor      = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+        const bool hmd_found = XR_SUCCEEDED(xrGetSystem(xr_instance, &system_info, &xr_system_id));
+
+        if (!hmd_found)
         {
-            // system properties
-            XrSystemProperties system_props = { XR_TYPE_SYSTEM_PROPERTIES };
-            if (XR_SUCCEEDED(xrGetSystemProperties(xr_instance, xr_system_id, &system_props)))
-            {
-                m_device_name = system_props.systemName;
-            }
-
-            // view configuration (resolution per eye)
-            uint32_t view_count = 0;
-            xrEnumerateViewConfigurationViews(xr_instance, xr_system_id, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &view_count, nullptr);
-            if (view_count > 0)
-            {
-                xr_view_configs.resize(view_count, { XR_TYPE_VIEW_CONFIGURATION_VIEW });
-                xrEnumerateViewConfigurationViews(xr_instance, xr_system_id, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, view_count, &view_count, xr_view_configs.data());
-
-                m_recommended_width  = xr_view_configs[0].recommendedImageRectWidth;
-                m_recommended_height = xr_view_configs[0].recommendedImageRectHeight;
-
-                // prepare views array
-                xr_views.resize(view_count, { XR_TYPE_VIEW });
-            }
-
-            // check vulkan graphics requirements (required before session creation)
-            if (xrGetVulkanGraphicsRequirementsKHR)
-            {
-                XrGraphicsRequirementsVulkanKHR requirements = { XR_TYPE_GRAPHICS_REQUIREMENTS_VULKAN_KHR };
-                xrGetVulkanGraphicsRequirementsKHR(xr_instance, xr_system_id, &requirements);
-            }
-
-            SP_LOG_INFO("openxr hmd: %s (%ux%u per eye)", m_device_name.c_str(), m_recommended_width, m_recommended_height);
-
-            // create session now that rhi is initialized
-            if (!CreateSession())
-            {
-                SP_LOG_ERROR("openxr: failed to create session");
-            }
-
-            // enable stereo rendering when multiview is supported
-            if (IsMultiviewSupported())
-            {
-                SetStereoMode(true);
-                SP_LOG_INFO("openxr: multiview stereo rendering enabled");
-            }
+            // release the runtime so we don't hold onto vrserver while idling
+            SP_LOG_INFO("openxr: no hmd detected, releasing runtime");
+            xrDestroyInstance(xr_instance);
+            xr_instance  = XR_NULL_HANDLE;
+            xr_system_id = XR_NULL_SYSTEM_ID;
+            return;
         }
 
-        m_initialized = true;
+        m_hmd_connected = true;
+
+        XrSystemProperties system_props = { XR_TYPE_SYSTEM_PROPERTIES };
+        if (XR_SUCCEEDED(xrGetSystemProperties(xr_instance, xr_system_id, &system_props)))
+        {
+            m_device_name = system_props.systemName;
+        }
+
+        uint32_t view_count = 0;
+        xrEnumerateViewConfigurationViews(xr_instance, xr_system_id, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &view_count, nullptr);
+        if (view_count > 0)
+        {
+            xr_view_configs.resize(view_count, { XR_TYPE_VIEW_CONFIGURATION_VIEW });
+            xrEnumerateViewConfigurationViews(xr_instance, xr_system_id, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, view_count, &view_count, xr_view_configs.data());
+
+            m_recommended_width  = xr_view_configs[0].recommendedImageRectWidth;
+            m_recommended_height = xr_view_configs[0].recommendedImageRectHeight;
+
+            xr_views.resize(view_count, { XR_TYPE_VIEW });
+        }
+
+        if (xrGetVulkanGraphicsRequirementsKHR)
+        {
+            XrGraphicsRequirementsVulkanKHR requirements = { XR_TYPE_GRAPHICS_REQUIREMENTS_VULKAN_KHR };
+            xrGetVulkanGraphicsRequirementsKHR(xr_instance, xr_system_id, &requirements);
+        }
+
+        SP_LOG_INFO("openxr hmd: %s (%ux%u per eye)", m_device_name.c_str(), m_recommended_width, m_recommended_height);
+
+        if (!CreateSession())
+        {
+            SP_LOG_ERROR("openxr: failed to create session");
+            return;
+        }
+
+        // stereo mode flip is deferred to the main thread because it rebuilds render
+        // targets via Renderer::RecreateRenderTargets which is not thread-safe
+        if (IsMultiviewSupported())
+        {
+            xr_post_init_pending = true;
+        }
+    }
+
+    void Xr::Initialize()
+    {
+        // already up or a previous init is still running
+        if (IsAvailable() || xr_init_in_progress.load())
+            return;
+
+        // reap any previous attempt so we can spawn a fresh one (e.g. ctrl+0 retry)
+        if (xr_init_thread.joinable())
+            xr_init_thread.join();
+
+        xr_init_in_progress = true;
+        SP_LOG_INFO("openxr: initializing on background thread");
+
+        xr_init_thread = thread([]()
+        {
+            InitializeWorker();
+            // release-store: everything written by the worker becomes visible to any
+            // thread that observes m_initialized == true via acquire semantics
+            m_initialized.store(xr_instance != XR_NULL_HANDLE);
+            xr_init_in_progress = false;
+        });
     }
 
     void Xr::Shutdown()
     {
-        if (!m_initialized)
+        // wait for any in-flight init so we don't race on the xr/vulkan handles
+        if (xr_init_thread.joinable())
+            xr_init_thread.join();
+
+        xr_post_init_pending = false;
+
+        if (!m_initialized.load())
             return;
 
         SetStereoMode(false);
@@ -316,12 +334,22 @@ namespace spartan
         m_device_name        = "N/A";
         m_recommended_width  = 0;
         m_recommended_height = 0;
-        m_initialized        = false;
+        m_initialized.store(false);
     }
 
     void Xr::Tick()
     {
-        if (!m_initialized || !m_hmd_connected)
+        if (!m_initialized.load())
+            return;
+
+        // apply deferred post-init actions that must run on the main thread
+        if (xr_post_init_pending.exchange(false))
+        {
+            SetStereoMode(true);
+            SP_LOG_INFO("openxr: multiview stereo rendering enabled");
+        }
+
+        if (!m_hmd_connected)
             return;
 
         ProcessEvents();
@@ -902,7 +930,8 @@ namespace spartan
 
     bool Xr::IsAvailable()
     {
-        return m_initialized && xr_instance != XR_NULL_HANDLE;
+        // acquire-load pairs with the release-store in Initialize's worker thread
+        return m_initialized.load() && xr_instance != XR_NULL_HANDLE;
     }
 
     void* Xr::GetSwapchainImage()
@@ -940,15 +969,20 @@ namespace spartan
     void Xr::Initialize()
     {
         // xr not implemented for this graphics api
-        m_initialized = true;
+        m_initialized.store(true);
     }
 
     void Xr::Shutdown()
     {
-        m_initialized = false;
+        m_initialized.store(false);
     }
 
     void Xr::Tick()
+    {
+        // no-op
+    }
+
+    void Xr::InitializeWorker()
     {
         // no-op
     }
