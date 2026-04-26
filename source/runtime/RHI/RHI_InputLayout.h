@@ -108,12 +108,13 @@ namespace spartan
             }
             else if (vertex_type == RHI_Vertex_Type::PosUvNorTan)
             {
+                // packed 24-byte vertex, uv/nor/tan are R32_Uint and decoded in-shader
                 m_vertex_attributes =
                 {
                     { "POSITION", 0, binding, RHI_Format::R32G32B32_Float, offsetof(RHI_Vertex_PosTexNorTan, pos) },
-                    { "TEXCOORD", 1, binding, RHI_Format::R32G32_Float,    offsetof(RHI_Vertex_PosTexNorTan, tex) },
-                    { "NORMAL",   2, binding, RHI_Format::R32G32B32_Float, offsetof(RHI_Vertex_PosTexNorTan, nor) },
-                    { "TANGENT",  3, binding, RHI_Format::R32G32B32_Float, offsetof(RHI_Vertex_PosTexNorTan, tan) }
+                    { "TEXCOORD", 1, binding, RHI_Format::R32_Uint,        offsetof(RHI_Vertex_PosTexNorTan, uv)  },
+                    { "NORMAL",   2, binding, RHI_Format::R32_Uint,        offsetof(RHI_Vertex_PosTexNorTan, nor) },
+                    { "TANGENT",  3, binding, RHI_Format::R32_Uint,        offsetof(RHI_Vertex_PosTexNorTan, tan) }
                 };
 
                 m_vertex_size = sizeof(RHI_Vertex_PosTexNorTan);

@@ -155,13 +155,23 @@ void closest_hit(inout Payload payload : SV_RayPayload, in BuiltInTriangleInters
     PulledVertex v0 = geometry_vertices[geo.vertex_offset + i0];
     PulledVertex v1 = geometry_vertices[geo.vertex_offset + i1];
     PulledVertex v2 = geometry_vertices[geo.vertex_offset + i2];
+
+    float3 v0_normal  = unpack_vertex_oct(v0.normal);
+    float3 v1_normal  = unpack_vertex_oct(v1.normal);
+    float3 v2_normal  = unpack_vertex_oct(v2.normal);
+    float3 v0_tangent = unpack_vertex_oct(v0.tangent);
+    float3 v1_tangent = unpack_vertex_oct(v1.tangent);
+    float3 v2_tangent = unpack_vertex_oct(v2.tangent);
+    float2 v0_uv      = unpack_vertex_uv(v0.uv);
+    float2 v1_uv      = unpack_vertex_uv(v1.uv);
+    float2 v2_uv      = unpack_vertex_uv(v2.uv);
     
     // barycentric interpolation
     float3 bary = float3(1.0f - attribs.barycentrics.x - attribs.barycentrics.y, attribs.barycentrics.x, attribs.barycentrics.y);
     
-    float2 texcoord       = v0.uv * bary.x + v1.uv * bary.y + v2.uv * bary.z;
-    float3 normal_object  = normalize(v0.normal * bary.x + v1.normal * bary.y + v2.normal * bary.z);
-    float3 tangent_object = normalize(v0.tangent * bary.x + v1.tangent * bary.y + v2.tangent * bary.z);
+    float2 texcoord       = v0_uv * bary.x + v1_uv * bary.y + v2_uv * bary.z;
+    float3 normal_object  = normalize(v0_normal * bary.x + v1_normal * bary.y + v2_normal * bary.z);
+    float3 tangent_object = normalize(v0_tangent * bary.x + v1_tangent * bary.y + v2_tangent * bary.z);
     
     // world space transform
     float3x3 obj_to_world = (float3x3)ObjectToWorld4x3();

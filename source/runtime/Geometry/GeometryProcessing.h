@@ -102,8 +102,9 @@ namespace spartan::geometry_processing
             attr_buffer.resize(vertex_count * 2);
             for (size_t i = 0; i < vertex_count; ++i)
             {
-                attr_buffer[i * 2 + 0] = vertices[i].tex[0];
-                attr_buffer[i * 2 + 1] = vertices[i].tex[1];
+                math::Vector2 uv      = vertices[i].get_uv();
+                attr_buffer[i * 2 + 0] = uv.x;
+                attr_buffer[i * 2 + 1] = uv.y;
             }
             vertex_attributes = attr_buffer.data();
             attr_stride       = sizeof(float) * 2;

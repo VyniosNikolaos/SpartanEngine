@@ -460,36 +460,27 @@ namespace spartan
                     {
                         RHI_Vertex_PosTexNorTan& vertex = vertices[i];
 
-                        // position
                         const aiVector3D& pos = assimp_mesh->mVertices[i];
                         vertex.pos[0] = pos.x;
                         vertex.pos[1] = pos.y;
                         vertex.pos[2] = pos.z;
 
-                        // normal
                         if (assimp_mesh->mNormals)
                         {
-                            const aiVector3D& normal = assimp_mesh->mNormals[i];
-                            vertex.nor[0] = normal.x;
-                            vertex.nor[1] = normal.y;
-                            vertex.nor[2] = normal.z;
+                            const aiVector3D& n = assimp_mesh->mNormals[i];
+                            vertex.set_normal(math::Vector3(n.x, n.y, n.z));
                         }
 
-                        // tangent
                         if (assimp_mesh->mTangents)
                         {
-                            const aiVector3D& tangent = assimp_mesh->mTangents[i];
-                            vertex.tan[0] = tangent.x;
-                            vertex.tan[1] = tangent.y;
-                            vertex.tan[2] = tangent.z;
+                            const aiVector3D& t = assimp_mesh->mTangents[i];
+                            vertex.set_tangent(math::Vector3(t.x, t.y, t.z));
                         }
 
-                        // texture coordinates
                         if (assimp_mesh->HasTextureCoords(0))
                         {
-                            const auto& tex_coords = assimp_mesh->mTextureCoords[0][i];
-                            vertex.tex[0] = tex_coords.x;
-                            vertex.tex[1] = tex_coords.y;
+                            const auto& tc = assimp_mesh->mTextureCoords[0][i];
+                            vertex.set_uv(tc.x, tc.y);
                         }
                     }
                 }, vertex_count);
@@ -508,25 +499,20 @@ namespace spartan
 
                     if (assimp_mesh->mNormals)
                     {
-                        const aiVector3D& normal = assimp_mesh->mNormals[i];
-                        vertex.nor[0] = normal.x;
-                        vertex.nor[1] = normal.y;
-                        vertex.nor[2] = normal.z;
+                        const aiVector3D& n = assimp_mesh->mNormals[i];
+                        vertex.set_normal(math::Vector3(n.x, n.y, n.z));
                     }
 
                     if (assimp_mesh->mTangents)
                     {
-                        const aiVector3D& tangent = assimp_mesh->mTangents[i];
-                        vertex.tan[0] = tangent.x;
-                        vertex.tan[1] = tangent.y;
-                        vertex.tan[2] = tangent.z;
+                        const aiVector3D& t = assimp_mesh->mTangents[i];
+                        vertex.set_tangent(math::Vector3(t.x, t.y, t.z));
                     }
 
                     if (assimp_mesh->HasTextureCoords(0))
                     {
-                        const auto& tex_coords = assimp_mesh->mTextureCoords[0][i];
-                        vertex.tex[0] = tex_coords.x;
-                        vertex.tex[1] = tex_coords.y;
+                        const auto& tc = assimp_mesh->mTextureCoords[0][i];
+                        vertex.set_uv(tc.x, tc.y);
                     }
                 }
             }

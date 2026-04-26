@@ -22,9 +22,18 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //====================
 
 // per-triangle cull, dispatched indirectly with one workgroup per surviving meshlet
-// each thread handles one triangle, survivors are appended into visible_triangles and the final draw's vertex_count is bumped by 3
-// flags bit 0 also opts out of backface cull (skinned / hw-instanced fallback, normals are unreliable)
-// flags bit 3 is the explicit two-sided flag for materials that disable backface culling
+// each thread handles one triangle, survivors are wave-aggregated into visible_triangles and the final draw's vertex_count is bumped by 3 * wave_survivor_count
+// the per-meshlet header (mi, draw, mb, world transform) is loaded into groupshared once and reused by every thread, this is the largest scalar load saving in the kernel
+// flags bit 0 skinned skip backface (deformation invalidates static normals)
+// flags bit 3 two-sided material skip backface
+
+groupshared MeshletInstance gs_mi;
+groupshared DrawData        gs_draw;
+groupshared MeshletBounds   gs_mb;
+groupshared float4x4        gs_world_xform;
+groupshared bool            gs_skip_backface;
+groupshared uint            gs_triangle_count;
+groupshared uint            gs_base_index_pos;
 
 [numthreads(MESHLET_MAX_TRIANGLES, 1, 1)]
 void main_cs(uint3 gid : SV_GroupID, uint3 lid : SV_GroupThreadID)
@@ -32,91 +41,128 @@ void main_cs(uint3 gid : SV_GroupID, uint3 lid : SV_GroupThreadID)
     uint mi_idx       = gid.x;
     uint triangle_idx = lid.x;
 
-    // f4_value.x = max_meshlet_instances cap (matches the meshlet cull cap so we do not read garbage)
-    // f4_value.y = max_visible_triangles cap, the cull shader stops appending past this
     uint max_meshlet_instances = (uint)pass_get_f4_value().x;
     uint max_visible_triangles = (uint)pass_get_f4_value().y;
-    if (mi_idx >= max_meshlet_instances)
-        return;
 
-    MeshletInstance mi = meshlet_instances[mi_idx];
-    DrawData draw      = indirect_draw_data[mi.draw_index];
-    MeshletBounds mb   = meshlet_bounds[mi.meshlet_index];
-
-    uint triangle_count = mb.index_count / 3u;
-    if (triangle_idx >= triangle_count)
-        return;
-
-    // load the three vertex indices for this triangle from the global index buffer
-    uint base_index_pos = draw.lod_first_index + mb.first_index + triangle_idx * 3u;
-    uint i0 = geometry_indices[base_index_pos + 0u] + draw.lod_vertex_offset;
-    uint i1 = geometry_indices[base_index_pos + 1u] + draw.lod_vertex_offset;
-    uint i2 = geometry_indices[base_index_pos + 2u] + draw.lod_vertex_offset;
-
-    PulledVertex v0 = geometry_vertices[i0];
-    PulledVertex v1 = geometry_vertices[i1];
-    PulledVertex v2 = geometry_vertices[i2];
-
-    // transform to world space, engine convention places the vector on the left of mul
-    float3 p0_world = mul(float4(v0.position, 1.0f), draw.transform).xyz;
-    float3 p1_world = mul(float4(v1.position, 1.0f), draw.transform).xyz;
-    float3 p2_world = mul(float4(v2.position, 1.0f), draw.transform).xyz;
-
-    // backface cull, world-space normal vs view direction, skipped for two-sided / skinned / hw-instanced draws
-    bool skip_backface = (draw.flags & 1u) != 0u || (draw.flags & 8u) != 0u;
-    if (!skip_backface)
+    // header load is wave-uniform across the workgroup, one thread reads, all threads consume after the barrier
+    if (lid.x == 0)
     {
-        // ccw front, the cross of two edges points along the front-face normal
-        float3 face_normal = cross(p1_world - p0_world, p2_world - p0_world);
-        float3 view_dir    = p0_world - buffer_frame.camera_position;
-        if (dot(face_normal, view_dir) > 0.0f)
-            return;
+        if (mi_idx < max_meshlet_instances)
+        {
+            gs_mi             = meshlet_instances[mi_idx];
+            gs_draw           = indirect_draw_data[gs_mi.draw_index];
+            gs_mb             = meshlet_bounds[gs_mi.meshlet_index];
+            gs_world_xform    = mul(pull_instance_transform(gs_draw.instance_offset, gs_mi.instance_index), gs_draw.transform);
+            gs_skip_backface  = ((gs_draw.flags & 1u) | (gs_draw.flags & 8u)) != 0u;
+            gs_triangle_count = gs_mb.index_count / 3u;
+            gs_base_index_pos = gs_draw.lod_first_index + gs_mb.first_index;
+        }
+        else
+        {
+            gs_triangle_count = 0u;
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    bool survives = false;
+    uint packed   = 0u;
+
+    if (triangle_idx < gs_triangle_count)
+    {
+        // load the three vertex indices for this triangle from the global index buffer
+        uint base_index_pos = gs_base_index_pos + triangle_idx * 3u;
+        uint i0 = geometry_indices[base_index_pos + 0u] + gs_draw.lod_vertex_offset;
+        uint i1 = geometry_indices[base_index_pos + 1u] + gs_draw.lod_vertex_offset;
+        uint i2 = geometry_indices[base_index_pos + 2u] + gs_draw.lod_vertex_offset;
+
+        PulledVertex v0 = geometry_vertices[i0];
+        PulledVertex v1 = geometry_vertices[i1];
+        PulledVertex v2 = geometry_vertices[i2];
+
+        // transform to world space using the cached world transform, engine convention places the vector on the left of mul
+        float3 p0_world = mul(float4(v0.position, 1.0f), gs_world_xform).xyz;
+        float3 p1_world = mul(float4(v1.position, 1.0f), gs_world_xform).xyz;
+        float3 p2_world = mul(float4(v2.position, 1.0f), gs_world_xform).xyz;
+
+        bool keep = true;
+
+        if (!gs_skip_backface)
+        {
+            // ccw front, the cross of two edges points along the front-face normal
+            float3 face_normal = cross(p1_world - p0_world, p2_world - p0_world);
+            float3 view_dir    = p0_world - buffer_frame.camera_position;
+            keep               = dot(face_normal, view_dir) <= 0.0f;
+        }
+
+        if (keep)
+        {
+            // transform to clip space for frustum + sub-pixel tests
+            float4 p0_clip = mul(float4(p0_world, 1.0f), buffer_frame.view_projection);
+            float4 p1_clip = mul(float4(p1_world, 1.0f), buffer_frame.view_projection);
+            float4 p2_clip = mul(float4(p2_world, 1.0f), buffer_frame.view_projection);
+
+            // drop triangles fully behind the camera
+            if (p0_clip.w <= 0.0f && p1_clip.w <= 0.0f && p2_clip.w <= 0.0f)
+            {
+                keep = false;
+            }
+            else if (p0_clip.w > 0.0f && p1_clip.w > 0.0f && p2_clip.w > 0.0f)
+            {
+                // half-space form keeps the test stable across reverse-z and avoids the inverted compare when w flips sign
+                bool out_left   = (p0_clip.x + p0_clip.w < 0.0f) && (p1_clip.x + p1_clip.w < 0.0f) && (p2_clip.x + p2_clip.w < 0.0f);
+                bool out_right  = (p0_clip.w - p0_clip.x < 0.0f) && (p1_clip.w - p1_clip.x < 0.0f) && (p2_clip.w - p2_clip.x < 0.0f);
+                bool out_bottom = (p0_clip.y + p0_clip.w < 0.0f) && (p1_clip.y + p1_clip.w < 0.0f) && (p2_clip.y + p2_clip.w < 0.0f);
+                bool out_top    = (p0_clip.w - p0_clip.y < 0.0f) && (p1_clip.w - p1_clip.y < 0.0f) && (p2_clip.w - p2_clip.y < 0.0f);
+                bool out_near   = (p0_clip.w - p0_clip.z < 0.0f) && (p1_clip.w - p1_clip.z < 0.0f) && (p2_clip.w - p2_clip.z < 0.0f);
+                bool out_far    = (p0_clip.z          < 0.0f)    && (p1_clip.z          < 0.0f)    && (p2_clip.z          < 0.0f);
+                if (out_left || out_right || out_bottom || out_top || out_near || out_far)
+                {
+                    keep = false;
+                }
+                else
+                {
+                    // sub-pixel reject only on the fully-in-front path, behind-camera vertices break the perspective divide
+                    float2 s0 = p0_clip.xy / p0_clip.w;
+                    float2 s1 = p1_clip.xy / p1_clip.w;
+                    float2 s2 = p2_clip.xy / p2_clip.w;
+                    float2 min_ndc = min(s0, min(s1, s2));
+                    float2 max_ndc = max(s0, max(s1, s2));
+                    float2 px      = buffer_frame.resolution_render * buffer_frame.resolution_scale * 0.5f;
+                    int2   min_px  = int2(floor(min_ndc * px));
+                    int2   max_px  = int2(floor(max_ndc * px));
+                    if (all(min_px == max_px))
+                        keep = false;
+                }
+            }
+        }
+
+        survives = keep;
+        packed   = VISIBLE_TRI_PACK(mi_idx, triangle_idx);
     }
 
-    // transform to clip space for frustum + sub-pixel tests
-    float4 p0_clip = mul(float4(p0_world, 1.0f), buffer_frame.view_projection);
-    float4 p1_clip = mul(float4(p1_world, 1.0f), buffer_frame.view_projection);
-    float4 p2_clip = mul(float4(p2_world, 1.0f), buffer_frame.view_projection);
-
-    // drop triangles fully behind the camera, they would produce garbage post-projection
-    if (p0_clip.w <= 0.0f && p1_clip.w <= 0.0f && p2_clip.w <= 0.0f)
-        return;
-
-    // frustum cull only when all three vertices are in front of the camera, the half-space tests fail with negative w
-    // half-space form keeps the test stable across reverse-z and avoids the inverted compare when w flips sign
-    if (p0_clip.w > 0.0f && p1_clip.w > 0.0f && p2_clip.w > 0.0f)
+    // wave-aggregated atomic, one InterlockedAdd per wave instead of per surviving triangle, this is the single biggest perf win in the dense-foliage path
+    uint wave_count = WaveActiveCountBits(survives);
+    uint lane_off   = WavePrefixCountBits(survives);
+    uint wave_base  = 0u;
+    uint overflow_u = 0u;
+    if (WaveIsFirstLane() && wave_count > 0u)
     {
-        bool out_left   = (p0_clip.x + p0_clip.w < 0.0f) && (p1_clip.x + p1_clip.w < 0.0f) && (p2_clip.x + p2_clip.w < 0.0f);
-        bool out_right  = (p0_clip.w - p0_clip.x < 0.0f) && (p1_clip.w - p1_clip.x < 0.0f) && (p2_clip.w - p2_clip.x < 0.0f);
-        bool out_bottom = (p0_clip.y + p0_clip.w < 0.0f) && (p1_clip.y + p1_clip.w < 0.0f) && (p2_clip.y + p2_clip.w < 0.0f);
-        bool out_top    = (p0_clip.w - p0_clip.y < 0.0f) && (p1_clip.w - p1_clip.y < 0.0f) && (p2_clip.w - p2_clip.y < 0.0f);
-        bool out_near   = (p0_clip.w - p0_clip.z < 0.0f) && (p1_clip.w - p1_clip.z < 0.0f) && (p2_clip.w - p2_clip.z < 0.0f);
-        bool out_far    = (p0_clip.z          < 0.0f)    && (p1_clip.z          < 0.0f)    && (p2_clip.z          < 0.0f);
-        if (out_left || out_right || out_bottom || out_top || out_near || out_far)
-            return;
+        uint old;
+        InterlockedAdd(indirect_draw_args[0].index_count, wave_count * 3u, old);
+        wave_base  = old / 3u;
+        overflow_u = (wave_base + wave_count) > max_visible_triangles ? 1u : 0u;
+    }
+    wave_base  = WaveReadLaneFirst(wave_base);
+    overflow_u = WaveReadLaneFirst(overflow_u);
 
-        // sub-pixel cull only on the fully-in-front path, behind-camera vertices break the perspective divide
-        float2 s0 = p0_clip.xy / p0_clip.w;
-        float2 s1 = p1_clip.xy / p1_clip.w;
-        float2 s2 = p2_clip.xy / p2_clip.w;
-        float2 min_ndc = min(s0, min(s1, s2));
-        float2 max_ndc = max(s0, max(s1, s2));
-        float2 px      = buffer_frame.resolution_render * buffer_frame.resolution_scale * 0.5f;
-        int2   min_px  = int2(floor(min_ndc * px));
-        int2   max_px  = int2(floor(max_ndc * px));
-        if (all(min_px == max_px))
-            return;
+    if (survives)
+    {
+        uint triangle_slot = wave_base + lane_off;
+        if (triangle_slot < max_visible_triangles)
+            visible_triangles[triangle_slot] = packed;
     }
 
-    // append survivor, bounds-check first then commit, dropping past the cap is preferable to writing oob
-    // also clamp the draw's vertex_count via interlocked min so the indirect draw does not read past the buffer
-    uint slot;
-    InterlockedAdd(indirect_draw_args[0].index_count, 3u, slot);
-    uint triangle_slot = slot / 3u;
-    if (triangle_slot >= max_visible_triangles)
-    {
+    // clamp on overflow, only the wave that crossed the cap pays the second atomic, uint avoids the bool-broadcast portability pitfall on some drivers
+    if (overflow_u != 0u && WaveIsFirstLane())
         InterlockedMin(indirect_draw_args[0].index_count, max_visible_triangles * 3u);
-        return;
-    }
-    visible_triangles[triangle_slot] = VISIBLE_TRI_PACK(mi_idx, triangle_idx);
 }

@@ -256,8 +256,10 @@ struct IndirectDispatchArgs
 };
 
 // per-draw data for gpu-driven rendering (one entry per renderable lod, looked up from MeshletInstance.draw_index)
-// flags bit 0: skip per-meshlet culling entirely (skinned, local sphere is not representative after deformation)
-// flags bit 1: per-instance culling (instanced, the cull shader translates the sphere by the per-instance position before testing)
+// flags bit 0: skinned (cull falls back to per-renderable aabb, triangle pass skips backface)
+// flags bit 1: per-instance (cull rebuilds per-instance world transform from task.instance_index for per-instance cone+sphere)
+// flags bit 2: hw-instancing fallback (one task fans into N MeshletInstances, cull falls back to per-renderable aabb)
+// flags bit 3: two-sided material (triangle pass skips backface)
 // lod_first_index/lod_vertex_offset hold the global geometry offsets for the lod (replaces what indirect_draw_args used to carry)
 struct DrawData
 {
@@ -321,13 +323,14 @@ struct MeshletBounds
     SHARED_UINT   padding0         SHARED_DEFAULT(0);
 };
 
-// vertex pulling - global geometry buffer exposed as a structured buffer
+// vertex pulling - global geometry buffer exposed as a structured buffer (24 bytes)
+// uv is half2, normal/tangent are octahedral snorm 16:16, decoded in shader via unpack_vertex_*
 struct PulledVertex
 {
     SHARED_FLOAT3 position;
-    SHARED_FLOAT2 uv;
-    SHARED_FLOAT3 normal;
-    SHARED_FLOAT3 tangent;
+    SHARED_UINT   uv;      // f16 x | f16 y
+    SHARED_UINT   normal;  // s16 oct.x | s16 oct.y
+    SHARED_UINT   tangent; // s16 oct.x | s16 oct.y
 };
 
 // vertex pulling - instance buffer exposed as packed uint data (10 bytes per instance)

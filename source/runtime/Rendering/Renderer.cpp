@@ -1485,13 +1485,12 @@ namespace spartan
                 Entity* entity = renderable->GetEntity();
                 Mesh* mesh     = renderable->GetMesh();
 
-                // flags bit 0 skip meshlet cone cull (passthrough), bit 1 per-instance, bit 2 hw instancing, bit 3 skip triangle backface cull (two-sided)
-                bool skinned_skip_cull = mesh->IsSkinned() && cvar_meshlet_cull_skinned.GetValueAs<bool>() == false;
+                // flags bit 0 skinned (cull falls back to per-renderable aabb, triangle pass skips backface), bit 1 per-instance (cone+sphere fan out via task.instance_index), bit 2 hw instancing (single task fans into N writes, cull falls back to per-renderable aabb), bit 3 two-sided material (triangle pass skips backface)
+                bool is_skinned        = mesh->IsSkinned() && cvar_meshlet_cull_skinned.GetValueAs<bool>() == false;
                 bool use_per_instance  = is_instanced && !use_hw_instancing;
-                bool skip_cull         = skinned_skip_cull || use_hw_instancing;
                 bool is_two_sided      = static_cast<RHI_CullMode>(material->GetProperty(MaterialProperty::CullMode)) != RHI_CullMode::Back;
                 uint32_t base_flags    = 0u;
-                if (skip_cull)         base_flags |= 1u;
+                if (is_skinned)        base_flags |= 1u;
                 if (use_per_instance)  base_flags |= 2u;
                 if (use_hw_instancing) base_flags |= 4u;
                 if (is_two_sided)      base_flags |= 8u;

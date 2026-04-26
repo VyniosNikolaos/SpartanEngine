@@ -3191,13 +3191,9 @@ namespace spartan
             updated_vertices[i].pos[2] = local_pos.z;
         }
 
-        // recalculate normals from triangle faces
-        for (auto& v : updated_vertices)
-        {
-            v.nor[0] = 0.0f;
-            v.nor[1] = 0.0f;
-            v.nor[2] = 0.0f;
-        }
+        // recalculate normals from triangle faces, accumulated in float buffers and packed at the end
+        vector<Vector3> tmp_normals(updated_vertices.size(), Vector3::Zero);
+        vector<Vector3> tmp_tangents(updated_vertices.size(), Vector3::Zero);
 
         for (size_t i = 0; i + 2 < m_cloth_indices.size(); i += 3)
         {
@@ -3216,37 +3212,12 @@ namespace spartan
             Vector3 edge2  = v2 - v0;
             Vector3 normal = Vector3::Cross(edge1, edge2);
 
-            // accumulate (area-weighted, no normalization yet)
-            for (uint32_t idx : { i0, i1, i2 })
-            {
-                updated_vertices[idx].nor[0] += normal.x;
-                updated_vertices[idx].nor[1] += normal.y;
-                updated_vertices[idx].nor[2] += normal.z;
-            }
-        }
-
-        // normalize accumulated normals
-        for (uint32_t i = 0; i < m_cloth_vertex_count; i++)
-        {
-            Vector3 n(updated_vertices[i].nor[0], updated_vertices[i].nor[1], updated_vertices[i].nor[2]);
-            float len = n.Length();
-            if (len > 1e-7f)
-            {
-                n /= len;
-                updated_vertices[i].nor[0] = n.x;
-                updated_vertices[i].nor[1] = n.y;
-                updated_vertices[i].nor[2] = n.z;
-            }
+            tmp_normals[i0] += normal;
+            tmp_normals[i1] += normal;
+            tmp_normals[i2] += normal;
         }
 
         // recalculate tangents from triangle uvs and deformed positions
-        for (uint32_t i = 0; i < m_cloth_vertex_count; i++)
-        {
-            updated_vertices[i].tan[0] = 0.0f;
-            updated_vertices[i].tan[1] = 0.0f;
-            updated_vertices[i].tan[2] = 0.0f;
-        }
-
         for (size_t i = 0; i + 2 < m_cloth_indices.size(); i += 3)
         {
             uint32_t i0 = m_cloth_indices[i];
@@ -3263,10 +3234,13 @@ namespace spartan
             Vector3 edge1 = p1 - p0;
             Vector3 edge2 = p2 - p0;
 
-            float du1 = updated_vertices[i1].tex[0] - updated_vertices[i0].tex[0];
-            float dv1 = updated_vertices[i1].tex[1] - updated_vertices[i0].tex[1];
-            float du2 = updated_vertices[i2].tex[0] - updated_vertices[i0].tex[0];
-            float dv2 = updated_vertices[i2].tex[1] - updated_vertices[i0].tex[1];
+            Vector2 uv0 = updated_vertices[i0].get_uv();
+            Vector2 uv1 = updated_vertices[i1].get_uv();
+            Vector2 uv2 = updated_vertices[i2].get_uv();
+            float du1 = uv1.x - uv0.x;
+            float dv1 = uv1.y - uv0.y;
+            float du2 = uv2.x - uv0.x;
+            float dv2 = uv2.y - uv0.y;
 
             float denom = du1 * dv2 - du2 * dv1;
             if (fabsf(denom) < 1e-7f)
@@ -3275,28 +3249,33 @@ namespace spartan
             float inv_denom = 1.0f / denom;
             Vector3 tangent = (edge1 * dv2 - edge2 * dv1) * inv_denom;
 
-            for (uint32_t idx : { i0, i1, i2 })
-            {
-                updated_vertices[idx].tan[0] += tangent.x;
-                updated_vertices[idx].tan[1] += tangent.y;
-                updated_vertices[idx].tan[2] += tangent.z;
-            }
+            tmp_tangents[i0] += tangent;
+            tmp_tangents[i1] += tangent;
+            tmp_tangents[i2] += tangent;
         }
 
-        // orthogonalize and normalize tangents (gram-schmidt against the updated normal)
+        // normalize and orthogonalize, pack into the vertex
         for (uint32_t i = 0; i < m_cloth_vertex_count; i++)
         {
-            Vector3 n(updated_vertices[i].nor[0], updated_vertices[i].nor[1], updated_vertices[i].nor[2]);
-            Vector3 t(updated_vertices[i].tan[0], updated_vertices[i].tan[1], updated_vertices[i].tan[2]);
-
-            t = t - n * Vector3::Dot(n, t);
-            float len = t.Length();
-            if (len > 1e-7f)
+            Vector3 n = tmp_normals[i];
+            float n_len = n.Length();
+            if (n_len > 1e-7f)
             {
-                t /= len;
-                updated_vertices[i].tan[0] = t.x;
-                updated_vertices[i].tan[1] = t.y;
-                updated_vertices[i].tan[2] = t.z;
+                n /= n_len;
+                updated_vertices[i].set_normal(n);
+            }
+            else
+            {
+                n = updated_vertices[i].get_normal();
+            }
+
+            Vector3 t = tmp_tangents[i];
+            t = t - n * Vector3::Dot(n, t);
+            float t_len = t.Length();
+            if (t_len > 1e-7f)
+            {
+                t /= t_len;
+                updated_vertices[i].set_tangent(t);
             }
         }
 

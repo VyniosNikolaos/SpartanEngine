@@ -27,12 +27,13 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 // - this is because the calculations have to be exactly the same and therefore produce identical values over time (motion vectors) and space (depth pre-pass vs g-buffer)
 
 // vertex buffer input (used by cpu-driven draw path via input assembly)
+// uv/normal/tangent come in packed (matches the 24-byte cpu vertex), decoded inside transform_to_world_space
 struct Vertex_PosUvNorTan
 {
-    float4 position                : POSITION;
-    float2 uv                      : TEXCOORD;
-    float3 normal                  : NORMAL;
-    float3 tangent                 : TANGENT;
+    float3 position                : POSITION;
+    uint   uv_packed               : TEXCOORD; // half2
+    uint   normal_packed           : NORMAL;   // oct snorm 16:16
+    uint   tangent_packed          : TANGENT;  // oct snorm 16:16
     min16float instance_position_x : INSTANCE_POSITION_X;
     min16float instance_position_y : INSTANCE_POSITION_Y;
     min16float instance_position_z : INSTANCE_POSITION_Z;
@@ -55,10 +56,10 @@ Vertex_PosUvNorTan pull_vertex(uint vertex_id, uint instance_id, uint instance_o
     uint scale_p      = (pi.yaw_scale >> 8) & 0xFF;
 
     Vertex_PosUvNorTan v;
-    v.position            = float4(pulled.position, 1.0f);
-    v.uv                  = pulled.uv;
-    v.normal              = pulled.normal;
-    v.tangent             = pulled.tangent;
+    v.position            = pulled.position;
+    v.uv_packed           = pulled.uv;
+    v.normal_packed       = pulled.normal;
+    v.tangent_packed      = pulled.tangent;
     v.instance_position_x = (min16float)f16tof32(pos_x_h);
     v.instance_position_y = (min16float)f16tof32(pos_y_h);
     v.instance_position_z = (min16float)f16tof32(pos_z_h);
@@ -172,6 +173,82 @@ float4x4 compose_instance_transform(min16float instance_position_x, min16float i
         float4(2.0 * (xy - zw) * scale, (1.0 - 2.0 * (xx + zz)) * scale, 2.0 * (yz + xw) * scale, 0.0),
         float4(2.0 * (xz + yw) * scale, 2.0 * (yz - xw) * scale, (1.0 - 2.0 * (xx + yy)) * scale, 0.0),
         float4(instance_position, 1.0)
+    );
+}
+
+// helper for non-vs paths (compute culling, etc.) that need the same per-instance world transform the vs builds
+// the early-out on instance_offset == 0 keeps non-instanced draws out of the geometry_instances read entirely
+// the body avoids the min16float param chain compose_instance_transform uses, that path is vs-specific
+float4x4 pull_instance_transform(uint instance_offset, uint instance_id)
+{
+    if (instance_offset == 0u)
+        return float4x4(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+
+    PackedInstance pi = geometry_instances[instance_offset + instance_id];
+    uint pos_x_h      = pi.pos_xy & 0xFFFF;
+    uint pos_y_h      = (pi.pos_xy >> 16) & 0xFFFF;
+    uint pos_z_h      = pi.pos_z_norm & 0xFFFF;
+    uint nrm_oct      = (pi.pos_z_norm >> 16) & 0xFFFF;
+    uint yaw_p        = pi.yaw_scale & 0xFF;
+    uint scale_p      = (pi.yaw_scale >> 8) & 0xFF;
+
+    float3 instance_position = float3(f16tof32(pos_x_h), f16tof32(pos_y_h), f16tof32(pos_z_h));
+
+    if (dot(instance_position, instance_position) < 1e-10f && nrm_oct == 0u && yaw_p == 0u && scale_p == 0u)
+        return float4x4(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+
+    static const float rcp_255 = 1.0f / 255.0f;
+    float x            = (float(nrm_oct >> 8) * rcp_255) * 2.0f - 1.0f;
+    float y            = (float(nrm_oct & 0xFFu) * rcp_255) * 2.0f - 1.0f;
+    float3 n           = float3(x, y, 1.0f - abs(x) - abs(y));
+    float mask         = step(0.0f, n.z);
+    float2 adjusted_xy = (float2(1.0f, 1.0f) - abs(n.yx)) * sign(n.xy);
+    n.xy               = mask * n.xy + (1.0f - mask) * adjusted_xy;
+    float3 normal      = normalize(n);
+
+    static const float pi_2           = 6.28318530718f;
+    static const float scale_min_log2 = -6.643856f; // log2(0.01)
+    static const float scale_max_log2 =  6.643856f; // log2(100)
+    float yaw   = float(yaw_p) * rcp_255 * pi_2;
+    float scale = exp2(lerp(scale_min_log2, scale_max_log2, float(scale_p) * rcp_255));
+
+    static const float3 up = float3(0, 1, 0);
+    float up_dot_normal    = dot(up, normal);
+    float4 quat;
+    if (abs(up_dot_normal) >= 0.999999f)
+    {
+        quat = up_dot_normal > 0.0f ? float4(0, 0, 0, 1) : float4(1, 0, 0, 0);
+    }
+    else
+    {
+        float s = sqrt(2.0f + 2.0f * up_dot_normal);
+        quat    = float4(cross(up, normal) / s, s * 0.5f);
+    }
+    float yaw_half  = -yaw * 0.5f;
+    float cy        = cos(yaw_half);
+    float sy        = sin(yaw_half);
+    float4 quat_yaw = float4(0.0f, sy, 0.0f, cy);
+
+    float qx = quat.w * quat_yaw.x + quat.x * quat_yaw.w + quat.y * quat_yaw.z - quat.z * quat_yaw.y;
+    float qy = quat.w * quat_yaw.y - quat.x * quat_yaw.z + quat.y * quat_yaw.w + quat.z * quat_yaw.x;
+    float qz = quat.w * quat_yaw.z + quat.x * quat_yaw.y - quat.y * quat_yaw.x + quat.z * quat_yaw.w;
+    float qw = quat.w * quat_yaw.w - quat.x * quat_yaw.x - quat.y * quat_yaw.y - quat.z * quat_yaw.z;
+
+    float xx = qx * qx;
+    float xy = qx * qy;
+    float xz = qx * qz;
+    float xw = qx * qw;
+    float yy = qy * qy;
+    float yz = qy * qz;
+    float yw = qy * qw;
+    float zz = qz * qz;
+    float zw = qz * qw;
+
+    return float4x4(
+        float4((1.0f - 2.0f * (yy + zz)) * scale, 2.0f * (xy + zw) * scale, 2.0f * (xz - yw) * scale, 0.0f),
+        float4(2.0f * (xy - zw) * scale, (1.0f - 2.0f * (xx + zz)) * scale, 2.0f * (yz + xw) * scale, 0.0f),
+        float4(2.0f * (xz + yw) * scale, 2.0f * (yz - xw) * scale, (1.0f - 2.0f * (xx + yy)) * scale, 0.0f),
+        float4(instance_position, 1.0f)
     );
 }
 
@@ -379,9 +456,14 @@ gbuffer_vertex transform_to_world_space(Vertex_PosUvNorTan input, uint instance_
 
     gbuffer_vertex vertex;
     vertex.uv_misc.w = instance_id;
-    
+
+    // decode packed vertex attributes
+    float2 input_uv      = unpack_vertex_uv(input.uv_packed);
+    float3 input_normal  = unpack_vertex_oct(input.normal_packed);
+    float3 input_tangent = unpack_vertex_oct(input.tangent_packed);
+
     // compute UV with tiling and offset
-    float2 uv = input.uv * material.tiling + material.offset;
+    float2 uv = input_uv * material.tiling + material.offset;
     
     // apply UV inversion: mirror along axis if enabled
     float2 invert_mask = step(0.5f, material.invert_uv);
@@ -405,24 +487,25 @@ gbuffer_vertex transform_to_world_space(Vertex_PosUvNorTan input, uint instance_
     matrix transform_previous = mul(instance, pass_get_transform_previous());
     
     // transform position to world space
-    float3 position          = mul(input.position, transform).xyz;
-    float3 position_previous = mul(input.position, transform_previous).xyz;
+    float4 position_local    = float4(input.position, 1.0f);
+    float3 position          = mul(position_local, transform).xyz;
+    float3 position_previous = mul(position_local, transform_previous).xyz;
     
     // transform normal and tangent to world space (extract 3x3 rotation/scale matrix)
-    vertex.normal  = normalize(mul(input.normal, (float3x3)transform));
-    vertex.tangent = normalize(mul(input.tangent, (float3x3)transform));
+    vertex.normal  = normalize(mul(input_normal,  (float3x3)transform));
+    vertex.tangent = normalize(mul(input_tangent, (float3x3)transform));
 
     // apply wind animation and other world-space effects
     // note: we need to save and restore vertex.normal/tangent because process_world_space modifies them
     // the second call is only for computing position_previous, we don't want to double-transform normals
-    vertex_processing::process_world_space(surface, position, vertex, input.position.xyz, transform, instance_id, 0.0f);
+    vertex_processing::process_world_space(surface, position, vertex, input.position, transform, instance_id, 0.0f);
     
     // save the correctly transformed normals before computing previous position
     float3 saved_normal  = vertex.normal;
     float3 saved_tangent = vertex.tangent;
     
     // compute previous position (this will incorrectly modify vertex.normal/tangent, but we'll restore them)
-    vertex_processing::process_world_space(surface, position_previous, vertex, input.position.xyz, transform_previous, instance_id, -buffer_frame.delta_time);
+    vertex_processing::process_world_space(surface, position_previous, vertex, input.position, transform_previous, instance_id, -buffer_frame.delta_time);
     
     // restore the correct normals from the current frame
     vertex.normal  = saved_normal;

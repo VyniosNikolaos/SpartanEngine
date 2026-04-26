@@ -355,9 +355,7 @@ namespace spartan::geometry_generation
         {
             RHI_Vertex_PosTexNorTan v{};
             v.pos[0] = pos.x; v.pos[1] = pos.y; v.pos[2] = pos.z;
-            v.tex[0] = tex.x; v.tex[1] = tex.y;
-            v.nor[0] = 0.0f; v.nor[1] = 0.0f; v.nor[2] = 0.0f;
-            v.tan[0] = 0.0f; v.tan[1] = 0.0f; v.tan[2] = 0.0f;
+            v.set_uv(tex);
             vertices->push_back(v);
         };
 
@@ -390,7 +388,7 @@ namespace spartan::geometry_generation
         const float bend_amount = 0.25f;
         for (RHI_Vertex_PosTexNorTan& v : *vertices)
         {
-            float uv_misc_z     = v.tex[1];
+            float uv_misc_z     = v.get_uv().y;
             float gravity_angle = bend_amount * uv_misc_z;
             float c             = std::cos(gravity_angle);
             float s             = std::sin(gravity_angle);
@@ -445,7 +443,9 @@ namespace spartan::geometry_generation
             }
         }
 
-        // compute normals and tangents
+        // compute normals and tangents in float buffers, then pack at the end
+        std::vector<Vector3> tmp_normals(vertices->size(), Vector3::Zero);
+        std::vector<Vector3> tmp_tangents(vertices->size(), Vector3::Zero);
         for (size_t i = 0; i < indices->size(); i += 3)
         {
             uint32_t i0 = (*indices)[i];
@@ -458,39 +458,21 @@ namespace spartan::geometry_generation
             Vector3 edge2 = p2 - p0;
             Vector3 face_normal = Vector3::Normalize(Vector3::Cross(edge1, edge2));
 
-            // add face normal to vertices
-            (*vertices)[i0].nor[0] += face_normal.x;
-            (*vertices)[i0].nor[1] += face_normal.y;
-            (*vertices)[i0].nor[2] += face_normal.z;
-            (*vertices)[i1].nor[0] += face_normal.x;
-            (*vertices)[i1].nor[1] += face_normal.y;
-            (*vertices)[i1].nor[2] += face_normal.z;
-            (*vertices)[i2].nor[0] += face_normal.x;
-            (*vertices)[i2].nor[1] += face_normal.y;
-            (*vertices)[i2].nor[2] += face_normal.z;
+            tmp_normals[i0] += face_normal;
+            tmp_normals[i1] += face_normal;
+            tmp_normals[i2] += face_normal;
 
             // approximate tangent as direction along width (x axis), assuming grass blade vertical along y
             Vector3 tangent = Vector3::Normalize(Vector3(edge1.x, 0.0f, edge1.z));
-            (*vertices)[i0].tan[0] += tangent.x;
-            (*vertices)[i0].tan[1] += tangent.y;
-            (*vertices)[i0].tan[2] += tangent.z;
-            (*vertices)[i1].tan[0] += tangent.x;
-            (*vertices)[i1].tan[1] += tangent.y;
-            (*vertices)[i1].tan[2] += tangent.z;
-            (*vertices)[i2].tan[0] += tangent.x;
-            (*vertices)[i2].tan[1] += tangent.y;
-            (*vertices)[i2].tan[2] += tangent.z;
+            tmp_tangents[i0] += tangent;
+            tmp_tangents[i1] += tangent;
+            tmp_tangents[i2] += tangent;
         }
 
-        // normalize normals and tangents per vertex
-        for (auto& v : *vertices)
+        for (size_t i = 0; i < vertices->size(); ++i)
         {
-            Vector3 n(v.nor[0], v.nor[1], v.nor[2]);
-            n = Vector3::Normalize(n);
-            v.nor[0] = n.x; v.nor[1] = n.y; v.nor[2] = n.z;
-            Vector3 t(v.tan[0], v.tan[1], v.tan[2]);
-            t = Vector3::Normalize(t);
-            v.tan[0] = t.x; v.tan[1] = t.y; v.tan[2] = t.z;
+            (*vertices)[i].set_normal(Vector3::Normalize(tmp_normals[i]));
+            (*vertices)[i].set_tangent(Vector3::Normalize(tmp_tangents[i]));
         }
     }
 
@@ -529,9 +511,7 @@ namespace spartan::geometry_generation
         {
             RHI_Vertex_PosTexNorTan v{};
             v.pos[0] = pos.x; v.pos[1] = pos.y; v.pos[2] = pos.z;
-            v.tex[0] = tex.x; v.tex[1] = tex.y;
-            v.nor[0] = 0.0f; v.nor[1] = 0.0f; v.nor[2] = 0.0f;
-            v.tan[0] = 0.0f; v.tan[1] = 0.0f; v.tan[2] = 0.0f;
+            v.set_uv(tex);
             vertices->push_back(v);
         };
 
@@ -678,7 +658,9 @@ namespace spartan::geometry_generation
             current_offset += petal_segment_count * row_size + 1;
         }
 
-        // compute normals and tangents
+        // compute normals and tangents in float buffers, then pack at the end
+        std::vector<Vector3> tmp_normals(vertices->size(), Vector3::Zero);
+        std::vector<Vector3> tmp_tangents(vertices->size(), Vector3::Zero);
         for (size_t i = 0; i < indices->size(); i += 3)
         {
             uint32_t i0 = (*indices)[i];
@@ -690,22 +672,14 @@ namespace spartan::geometry_generation
             Vector3 edge1 = p1 - p0;
             Vector3 edge2 = p2 - p0;
             Vector3 face_normal = Vector3::Normalize(Vector3::Cross(edge1, edge2));
-            (*vertices)[i0].nor[0] += face_normal.x; (*vertices)[i0].nor[1] += face_normal.y; (*vertices)[i0].nor[2] += face_normal.z;
-            (*vertices)[i1].nor[0] += face_normal.x; (*vertices)[i1].nor[1] += face_normal.y; (*vertices)[i1].nor[2] += face_normal.z;
-            (*vertices)[i2].nor[0] += face_normal.x; (*vertices)[i2].nor[1] += face_normal.y; (*vertices)[i2].nor[2] += face_normal.z;
+            tmp_normals[i0] += face_normal; tmp_normals[i1] += face_normal; tmp_normals[i2] += face_normal;
             Vector3 tangent = Vector3::Normalize(Vector3(edge1.x, 0.0f, edge1.z));
-            (*vertices)[i0].tan[0] += tangent.x; (*vertices)[i0].tan[1] += tangent.y; (*vertices)[i0].tan[2] += tangent.z;
-            (*vertices)[i1].tan[0] += tangent.x; (*vertices)[i1].tan[1] += tangent.y; (*vertices)[i1].tan[2] += tangent.z;
-            (*vertices)[i2].tan[0] += tangent.x; (*vertices)[i2].tan[1] += tangent.y; (*vertices)[i2].tan[2] += tangent.z;
+            tmp_tangents[i0] += tangent; tmp_tangents[i1] += tangent; tmp_tangents[i2] += tangent;
         }
-        for (auto& v : *vertices)
+        for (size_t i = 0; i < vertices->size(); ++i)
         {
-            Vector3 n(v.nor[0], v.nor[1], v.nor[2]);
-            n = Vector3::Normalize(n);
-            v.nor[0] = n.x; v.nor[1] = n.y; v.nor[2] = n.z;
-            Vector3 t(v.tan[0], v.tan[1], v.tan[2]);
-            t = Vector3::Normalize(t);
-            v.tan[0] = t.x; v.tan[1] = t.y; v.tan[2] = t.z;
+            (*vertices)[i].set_normal(Vector3::Normalize(tmp_normals[i]));
+            (*vertices)[i].set_tangent(Vector3::Normalize(tmp_tangents[i]));
         }
     }
 }

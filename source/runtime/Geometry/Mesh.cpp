@@ -83,7 +83,7 @@ namespace spartan
             return;
         }
 
-        uint32_t version = 3; // bumped when per-lod meshlet offset/count and the trailing meshlet array were added to the schema
+        uint32_t version = 4; // vertex shrunk to 24 bytes (uv/normal/tangent now packed)
         outfile.write(reinterpret_cast<const char*>(&version), sizeof(uint32_t));
 
         uint32_t type = static_cast<uint32_t>(m_type);
@@ -162,9 +162,9 @@ namespace spartan
 
             uint32_t version;
             infile.read(reinterpret_cast<char*>(&version), sizeof(uint32_t));
-            if (version != 3)
+            if (version != 4)
             {
-                SP_LOG_ERROR("Version mismatch for file: %s (expected 3, got %u, please re-import the source asset)", file_path.c_str(), version);
+                SP_LOG_ERROR("Version mismatch for file: %s (expected 4, got %u, please re-import the source asset)", file_path.c_str(), version);
                 return;
             }
 

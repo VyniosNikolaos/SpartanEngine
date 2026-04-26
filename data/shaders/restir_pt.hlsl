@@ -614,9 +614,19 @@ void closest_hit(inout PathPayload payload : SV_RayPayload, in BuiltInTriangleIn
     float3 bary = float3(1.0f - attribs.barycentrics.x - attribs.barycentrics.y,
                          attribs.barycentrics.x, attribs.barycentrics.y);
 
-    float3 normal_object  = normalize(pv0.normal * bary.x + pv1.normal * bary.y + pv2.normal * bary.z);
-    float3 tangent_object = normalize(pv0.tangent * bary.x + pv1.tangent * bary.y + pv2.tangent * bary.z);
-    float2 texcoord       = pv0.uv * bary.x + pv1.uv * bary.y + pv2.uv * bary.z;
+    float3 n0 = unpack_vertex_oct(pv0.normal);
+    float3 n1 = unpack_vertex_oct(pv1.normal);
+    float3 n2 = unpack_vertex_oct(pv2.normal);
+    float3 t0 = unpack_vertex_oct(pv0.tangent);
+    float3 t1 = unpack_vertex_oct(pv1.tangent);
+    float3 t2 = unpack_vertex_oct(pv2.tangent);
+    float2 uv0 = unpack_vertex_uv(pv0.uv);
+    float2 uv1 = unpack_vertex_uv(pv1.uv);
+    float2 uv2 = unpack_vertex_uv(pv2.uv);
+
+    float3 normal_object  = normalize(n0 * bary.x + n1 * bary.y + n2 * bary.z);
+    float3 tangent_object = normalize(t0 * bary.x + t1 * bary.y + t2 * bary.z);
+    float2 texcoord       = uv0 * bary.x + uv1 * bary.y + uv2 * bary.z;
 
     float3x3 obj_to_world = (float3x3)ObjectToWorld4x3();
     float3x3 world_to_obj = (float3x3)WorldToObject4x3();

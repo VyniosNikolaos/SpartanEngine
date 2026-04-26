@@ -23,19 +23,28 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "common.hlsl"
 //====================
 
+struct vertex_in
+{
+    float3 position      : POSITION;
+    uint   uv_packed     : TEXCOORD;
+    uint   normal_packed : NORMAL;
+    uint   tangent_packed: TANGENT;
+};
+
 struct vertex
 {
     float4 position : SV_POSITION;
     float2 uv       : TEXCOORD0;
 };
 
-vertex main_vs(vertex input)
+vertex main_vs(vertex_in input)
 {
-    input.position.w = 1.0f;
-    input.position   = mul(input.position, draw_data[buffer_pass.draw_index].transform);
-    input.position   = mul(input.position, buffer_frame.view_projection_unjittered);
-
-    return input;
+    vertex output;
+    float4 p        = float4(input.position, 1.0f);
+    p               = mul(p, draw_data[buffer_pass.draw_index].transform);
+    output.position = mul(p, buffer_frame.view_projection_unjittered);
+    output.uv       = 0.0f;
+    return output;
 }
  
 float4 main_ps(vertex input) : SV_Target

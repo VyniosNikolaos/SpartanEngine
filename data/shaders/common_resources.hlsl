@@ -97,6 +97,28 @@ StructuredBuffer<PulledVertex> geometry_vertices    : register(t20, space8);
 StructuredBuffer<uint> geometry_indices             : register(t22, space9);
 StructuredBuffer<PackedInstance> geometry_instances : register(t23, space10);
 
+// vertex attribute unpackers, must match the cpu-side encoders in rhi_vertex.h
+float2 unpack_vertex_uv(uint packed)
+{
+    return f16tof32(uint2(packed & 0xFFFFu, packed >> 16));
+}
+
+float3 unpack_vertex_oct(uint packed)
+{
+    int sx  = (int)(packed << 16) >> 16;       // sign-extend low 16 bits
+    int sy  = (int)packed >> 16;               // sign-extend high 16 bits
+    float x = max(-1.0f, (float)sx / 32767.0f);
+    float y = max(-1.0f, (float)sy / 32767.0f);
+    float z = 1.0f - abs(x) - abs(y);
+    if (z < 0.0f)
+    {
+        float tx = x;
+        x = (1.0f - abs(y))  * (x  >= 0.0f ? 1.0f : -1.0f);
+        y = (1.0f - abs(tx)) * (y  >= 0.0f ? 1.0f : -1.0f);
+    }
+    return normalize(float3(x, y, z));
+}
+
 // gpu-driven indirect drawing uav bindings
 // indirect_draw_args is a single-slot buffer used as the args for the final non-indexed indirect draw
 //   slot 0 layout matches VkDrawIndirectCommand for the first 16 bytes: vertex_count, instance_count, first_vertex, first_instance
