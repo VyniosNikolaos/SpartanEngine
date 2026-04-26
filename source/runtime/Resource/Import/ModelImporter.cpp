@@ -53,6 +53,12 @@ using namespace Assimp;
 
 namespace spartan
 {
+    struct MeshJob
+    {
+        aiMesh* assimp_mesh = nullptr;
+        Entity* entity      = nullptr;
+    };
+
     struct ImportContext
     {
         string file_path;
@@ -61,11 +67,15 @@ namespace spartan
         Mesh* mesh           = nullptr;
         const aiScene* scene = nullptr;
         unordered_map<string, uint32_t> bone_name_to_index;
+        unordered_map<string, string> directory_files;
+        std::vector<MeshJob> mesh_jobs;
+        std::mutex mesh_jobs_mutex;
     };
 
     namespace
     {
-        mutex mutex_import;
+        // each ModelImporter::Load builds its own Assimp::Importer so concurrent imports are safe
+        // and we don't need a global import lock anymore
 
         Matrix to_matrix(const aiMatrix4x4& transform)
         {
@@ -151,37 +161,78 @@ namespace spartan
             string m_file_name;
         };
 
-        string resolve_texture_path(const string& original_path, const string& model_directory)
+        string normalize_for_lookup(string path)
         {
+            for (char& c : path)
+            {
+                if (c == '\\') c = '/';
+                else if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+            }
+            return path;
+        }
+
+        void build_directory_file_cache(const string& root, unordered_map<string, string>& out)
+        {
+            try
+            {
+                for (auto& entry : std::filesystem::recursive_directory_iterator(root))
+                {
+                    if (entry.is_regular_file())
+                    {
+                        string p = entry.path().string();
+                        out.emplace(normalize_for_lookup(p), std::move(p));
+                    }
+                }
+            }
+            catch (...)
+            {
+                // directory missing or unreadable, fall back to FileSystem::Exists probes
+            }
+        }
+
+        string resolve_texture_path(const string& original_path, const string& model_directory, const unordered_map<string, string>& directory_files)
+        {
+            auto probe = [&](const string& candidate) -> string
+            {
+                // try the directory cache first for o(1) hits on textures that live under model_directory
+                if (!directory_files.empty())
+                {
+                    auto it = directory_files.find(normalize_for_lookup(candidate));
+                    if (it != directory_files.end())
+                        return it->second;
+                }
+
+                // fall back to a real filesystem check so we still resolve absolute paths and ../ traversals
+                // that escape the cached subtree (some assets bake absolute paths or reference shared texture folders)
+                return FileSystem::Exists(candidate) ? candidate : "";
+            };
+
             // try the original path first (relative to model)
             string full_path = model_directory + original_path;
-            if (FileSystem::Exists(full_path))
-                return full_path;
+            if (string hit = probe(full_path); !hit.empty())
+                return hit;
 
             // get base path without extension
             const string base_path = FileSystem::GetFilePathWithoutExtension(full_path);
-            const string file_name = FileSystem::GetFileNameFromFilePath(original_path);
             const string file_name_no_ext = FileSystem::GetFileNameWithoutExtensionFromFilePath(original_path);
 
-            // common texture formats ordered by likelihood
-            static const array<const char*, 8> extensions = {
-                ".png", ".jpg", ".jpeg", ".tga", ".bmp", ".dds", ".PNG", ".JPG"
+            // common texture formats ordered by likelihood (case insensitive lookup handles .PNG/.JPG etc)
+            static const array<const char*, 6> extensions = {
+                ".png", ".jpg", ".jpeg", ".tga", ".bmp", ".dds"
             };
 
             // try with different extensions
             for (const char* ext : extensions)
             {
-                string test_path = base_path + ext;
-                if (FileSystem::Exists(test_path))
-                    return test_path;
+                if (string hit = probe(base_path + ext); !hit.empty())
+                    return hit;
             }
 
             // try in model directory (common for absolute paths baked by artists)
             for (const char* ext : extensions)
             {
-                string test_path = model_directory + file_name_no_ext + ext;
-                if (FileSystem::Exists(test_path))
-                    return test_path;
+                if (string hit = probe(model_directory + file_name_no_ext + ext); !hit.empty())
+                    return hit;
             }
 
             return "";
@@ -190,6 +241,7 @@ namespace spartan
         // load texture synchronously (original working behavior)
         bool load_material_texture(
             const string& model_directory,
+            const unordered_map<string, string>& directory_files,
             shared_ptr<Material> material,
             const aiMaterial* material_assimp,
             const MaterialTextureType texture_type,
@@ -212,7 +264,7 @@ namespace spartan
                 return false;
 
             // resolve actual file path
-            const string resolved_path = resolve_texture_path(texture_path.data, model_directory);
+            const string resolved_path = resolve_texture_path(texture_path.data, model_directory, directory_files);
             if (!FileSystem::IsSupportedImageFile(resolved_path))
                 return false;
 
@@ -265,16 +317,33 @@ namespace spartan
             SP_ASSERT(material_assimp != nullptr);
             shared_ptr<Material> material = make_shared<Material>();
 
-            // synchronous texture loading (async was causing race conditions with texture packing)
+            // each texture type writes to its own m_textures slot in the material so concurrent loads are safe
+            // packing (Material::PrepareForGpu) only runs after the material is fully populated, no race here
             // note: gltf uses aiTextureType_GLTF_METALLIC_ROUGHNESS for combined metallic-roughness texture
-            load_material_texture(ctx.model_directory, material, material_assimp, MaterialTextureType::Color,     aiTextureType_BASE_COLOR,              aiTextureType_DIFFUSE);
-            load_material_texture(ctx.model_directory, material, material_assimp, MaterialTextureType::Roughness, aiTextureType_GLTF_METALLIC_ROUGHNESS, aiTextureType_DIFFUSE_ROUGHNESS);
-            load_material_texture(ctx.model_directory, material, material_assimp, MaterialTextureType::Metalness, aiTextureType_GLTF_METALLIC_ROUGHNESS, aiTextureType_METALNESS);
-            load_material_texture(ctx.model_directory, material, material_assimp, MaterialTextureType::Normal,    aiTextureType_NORMAL_CAMERA,           aiTextureType_NORMALS);
-            load_material_texture(ctx.model_directory, material, material_assimp, MaterialTextureType::Occlusion, aiTextureType_AMBIENT_OCCLUSION,       aiTextureType_LIGHTMAP);
-            load_material_texture(ctx.model_directory, material, material_assimp, MaterialTextureType::Emission,  aiTextureType_EMISSION_COLOR,          aiTextureType_EMISSIVE);
-            load_material_texture(ctx.model_directory, material, material_assimp, MaterialTextureType::Height,    aiTextureType_HEIGHT,                  aiTextureType_NONE);
-            load_material_texture(ctx.model_directory, material, material_assimp, MaterialTextureType::AlphaMask, aiTextureType_OPACITY,                 aiTextureType_NONE);
+            struct TextureBinding
+            {
+                MaterialTextureType type;
+                aiTextureType pbr;
+                aiTextureType legacy;
+            };
+            static constexpr array<TextureBinding, 8> texture_bindings = {{
+                { MaterialTextureType::Color,     aiTextureType_BASE_COLOR,              aiTextureType_DIFFUSE             },
+                { MaterialTextureType::Roughness, aiTextureType_GLTF_METALLIC_ROUGHNESS, aiTextureType_DIFFUSE_ROUGHNESS   },
+                { MaterialTextureType::Metalness, aiTextureType_GLTF_METALLIC_ROUGHNESS, aiTextureType_METALNESS           },
+                { MaterialTextureType::Normal,    aiTextureType_NORMAL_CAMERA,           aiTextureType_NORMALS             },
+                { MaterialTextureType::Occlusion, aiTextureType_AMBIENT_OCCLUSION,       aiTextureType_LIGHTMAP            },
+                { MaterialTextureType::Emission,  aiTextureType_EMISSION_COLOR,          aiTextureType_EMISSIVE            },
+                { MaterialTextureType::Height,    aiTextureType_HEIGHT,                  aiTextureType_NONE                },
+                { MaterialTextureType::AlphaMask, aiTextureType_OPACITY,                 aiTextureType_NONE                },
+            }};
+            ThreadPool::ParallelLoop([&](uint32_t start, uint32_t end)
+            {
+                for (uint32_t i = start; i < end; i++)
+                {
+                    const TextureBinding& binding = texture_bindings[i];
+                    load_material_texture(ctx.model_directory, ctx.directory_files, material, material_assimp, binding.type, binding.pbr, binding.legacy);
+                }
+            }, static_cast<uint32_t>(texture_bindings.size()));
 
             // gltf detection (including .glb binary format)
             const string extension = FileSystem::GetExtensionFromFilePath(ctx.file_path);
@@ -842,8 +911,6 @@ namespace spartan
             return;
         }
 
-        lock_guard<mutex> guard(mutex_import);
-
         // initialize import context
         ImportContext ctx;
         ctx.file_path       = file_path;
@@ -851,6 +918,9 @@ namespace spartan
         ctx.model_directory = FileSystem::GetDirectoryFromFilePath(file_path);
         ctx.mesh            = mesh_in;
         ctx.mesh->SetObjectName(ctx.model_name);
+
+        // walk the model directory once so resolve_texture_path does O(1) lookups instead of O(n) stat probes per material slot
+        build_directory_file_cache(ctx.model_directory, ctx.directory_files);
 
         // set up the importer
         Importer importer;
@@ -884,7 +954,10 @@ namespace spartan
 
             // keep assimp smooth normal generation behind an explicit import flag so
             // callers can disable it for meshes that rely on authored hard edges.
-            if (ctx.mesh->GetFlags() & static_cast<uint32_t>(MeshFlags::ImportGenerateSmoothNormals))
+            // gltf/glb authoring is required to ship normals so skip the cpu-heavy regeneration step
+            const string extension      = FileSystem::GetExtensionFromFilePath(file_path);
+            const bool source_has_normals = (extension == ".gltf") || (extension == ".glb");
+            if (!source_has_normals && (ctx.mesh->GetFlags() & static_cast<uint32_t>(MeshFlags::ImportGenerateSmoothNormals)))
             {
                 import_flags |= aiProcess_GenSmoothNormals;
             }
@@ -923,22 +996,30 @@ namespace spartan
             const uint32_t job_count = compute_node_count(ctx.scene->mRootNode);
             ProgressTracker::GetProgress(ProgressType::ModelImporter).Start(job_count, "Parsing model...");
 
-            // recursively parse nodes
+            // recursively parse nodes (sequential, just creates entities and collects mesh jobs)
             ParseNode(ctx, ctx.scene->mRootNode);
+
+            // process all collected mesh jobs in parallel, this runs the heavy per-submesh work
+            // (vertex/index extraction, optimize, lod simplify, meshlet build, material+texture load)
+            // concurrently across all submeshes of this model
+            if (!ctx.mesh_jobs.empty())
+            {
+                const uint32_t mesh_job_count = static_cast<uint32_t>(ctx.mesh_jobs.size());
+                ThreadPool::ParallelLoop([&ctx](uint32_t start, uint32_t end)
+                {
+                    for (uint32_t i = start; i < end; i++)
+                    {
+                        const MeshJob& job = ctx.mesh_jobs[i];
+                        ParseMesh(ctx, job.assimp_mesh, job.entity);
+                    }
+                }, mesh_job_count);
+            }
 
             // extract animation clips
             ParseAnimations(ctx);
 
             // update model geometry
-            {
-                while (ProgressTracker::GetProgress(ProgressType::ModelImporter).GetFraction() != 1.0f)
-                {
-                    SP_LOG_INFO("Waiting for node processing threads to finish before creating GPU buffers...");
-                    this_thread::sleep_for(chrono::milliseconds(16));
-                }
-
-                ctx.mesh->CreateGpuBuffers();
-            }
+            ctx.mesh->CreateGpuBuffers();
 
             // make the root entity active since it's now thread-safe
             ctx.mesh->GetRootEntity()->SetActive(true);
@@ -1019,7 +1100,9 @@ namespace spartan
             }
 
             entity->SetObjectName(node_name);
-            ParseMesh(ctx, node_mesh, entity);
+
+            // collect the job, ParseMesh runs later in parallel after the tree walk completes
+            ctx.mesh_jobs.push_back({ node_mesh, entity });
         }
     }
 
@@ -1085,9 +1168,11 @@ namespace spartan
         // set the geometry
         entity_parent->AddComponent<Render>()->SetMesh(ctx.mesh, sub_mesh_index);
 
-        // extract bone weights if the mesh has bones
+        // extract bone weights if the mesh has bones, serialized because SkeletalMeshBinding is shared per-mesh
         if (assimp_mesh->mNumBones > 0 && !ctx.bone_name_to_index.empty())
         {
+            static mutex skeletal_binding_mutex;
+            lock_guard<mutex> binding_lock(skeletal_binding_mutex);
             if (!ctx.mesh->GetSkeletalMeshBinding())
                 ctx.mesh->SetSkeletalMeshBinding(make_unique<SkeletalMeshBinding>());
 

@@ -30,6 +30,14 @@ using namespace std;
 
 namespace spartan
 {
+    void* RHI_AccelerationStructure::s_blas_scratch_buffer         = nullptr;
+    uint64_t RHI_AccelerationStructure::s_blas_scratch_buffer_size = 0;
+
+    void RHI_AccelerationStructure::FreeSharedBlasScratch()
+    {
+
+    }
+
     RHI_AccelerationStructure::RHI_AccelerationStructure(const RHI_AccelerationStructureType type, const char* name)
     {
         m_type        = type;

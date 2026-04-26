@@ -33,6 +33,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "../World/Components/AudioSource.h"
 #include "../World/Components/Terrain.h"
 #include "../Core/ProgressTracker.h"
+#include "../Core/ThreadPool.h"
+#include "../Core/Stopwatch.h"
 #include "../Rendering/Renderer.h"
 #include "../Resource/ResourceCache.h"
 #include "../Geometry/GeometryGeneration.h"
@@ -379,11 +381,26 @@ namespace spartan
                 const Vector3 position = Vector3(0.0f, 1.5f, 0.0f);
                 const float scale      = 1.5f;
 
-                // main building
-                uint32_t mesh_flags = Mesh::GetDefaultFlags();
-                if (shared_ptr<Mesh> mesh = ResourceCache::Load<Mesh>("project/models/sponza/main/NewSponza_Main_Blender_glTF.gltf", mesh_flags))
+                // load the three glTFs in parallel
+                shared_ptr<Mesh> mesh_main;
+                shared_ptr<Mesh> mesh_curtains;
+                shared_ptr<Mesh> mesh_ivy;
                 {
-                    Entity* entity = mesh->GetRootEntity();
+                    Stopwatch sw_total;
+                    uint32_t mesh_flags     = Mesh::GetDefaultFlags();
+                    future<void> f_main     = ThreadPool::AddTask([&mesh_main, mesh_flags]()     { mesh_main     = ResourceCache::Load<Mesh>("project/models/sponza/main/NewSponza_Main_Blender_glTF.gltf", mesh_flags); });
+                    future<void> f_curtains = ThreadPool::AddTask([&mesh_curtains]()             { mesh_curtains = ResourceCache::Load<Mesh>("project/models/sponza/curtains/NewSponza_Curtains_glTF.gltf"); });
+                    future<void> f_ivy      = ThreadPool::AddTask([&mesh_ivy]()                  { mesh_ivy      = ResourceCache::Load<Mesh>("project/models/sponza/ivy/NewSponza_IvyGrowth_glTF.gltf"); });
+                    f_main.wait();
+                    f_curtains.wait();
+                    f_ivy.wait();
+                    SP_LOG_INFO("sponza parallel mesh load took %d ms", static_cast<int>(sw_total.GetElapsedTimeMs()));
+                }
+
+                // main building
+                if (mesh_main)
+                {
+                    Entity* entity = mesh_main->GetRootEntity();
                     entity->SetObjectName("sponza");
                     entity->SetPosition(position);
                     entity->SetScale(scale);
@@ -407,9 +424,9 @@ namespace spartan
                 }
 
                 // curtains
-                if (shared_ptr<Mesh> mesh = ResourceCache::Load<Mesh>("project/models/sponza/curtains/NewSponza_Curtains_glTF.gltf"))
+                if (mesh_curtains)
                 {
-                    Entity* entity = mesh->GetRootEntity();
+                    Entity* entity = mesh_curtains->GetRootEntity();
                     entity->SetObjectName("sponza_curtains");
                     entity->SetPosition(position);
                     entity->SetScale(scale);
@@ -426,9 +443,9 @@ namespace spartan
                 }
 
                 // ivy
-                if (shared_ptr<Mesh> mesh = ResourceCache::Load<Mesh>("project/models/sponza/ivy/NewSponza_IvyGrowth_glTF.gltf"))
+                if (mesh_ivy)
                 {
-                    Entity* entity = mesh->GetRootEntity();
+                    Entity* entity = mesh_ivy->GetRootEntity();
                     entity->SetObjectName("sponza_ivy");
                     entity->SetPosition(position);
                     entity->SetScale(scale);
@@ -596,10 +613,18 @@ namespace spartan
 
                 // props: trees, rocks, grass
                 {
-                    // load meshes
-                    uint32_t flags             = Mesh::GetDefaultFlags() | static_cast<uint32_t>(MeshFlags::ImportCombineMeshes);
-                    shared_ptr<Mesh> mesh_tree = ResourceCache::Load<Mesh>("project/models/tree/tree.fbx", flags);
-                    shared_ptr<Mesh> mesh_rock = ResourceCache::Load<Mesh>("project/models/rock_2/model.obj");
+                    // load meshes in parallel
+                    uint32_t flags = Mesh::GetDefaultFlags() | static_cast<uint32_t>(MeshFlags::ImportCombineMeshes);
+                    shared_ptr<Mesh> mesh_tree;
+                    shared_ptr<Mesh> mesh_rock;
+                    {
+                        Stopwatch sw_total;
+                        future<void> f_tree = ThreadPool::AddTask([&mesh_tree, flags]() { mesh_tree = ResourceCache::Load<Mesh>("project/models/tree/tree.fbx", flags); });
+                        future<void> f_rock = ThreadPool::AddTask([&mesh_rock]()        { mesh_rock = ResourceCache::Load<Mesh>("project/models/rock_2/model.obj"); });
+                        f_tree.wait();
+                        f_rock.wait();
+                        SP_LOG_INFO("forest parallel mesh load took %d ms", static_cast<int>(sw_total.GetElapsedTimeMs()));
+                    }
 
                     // procedural grass mesh with lods
                     shared_ptr<Mesh> mesh_grass_blade = meshes.emplace_back(make_shared<Mesh>());

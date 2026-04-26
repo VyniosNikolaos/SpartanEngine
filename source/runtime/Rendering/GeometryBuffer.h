@@ -63,6 +63,10 @@ namespace spartan
         //  - if capacity is exceeded, recreate with headroom
         static void BuildIfDirty();
 
+        // bump capacity floors so the next BuildIfDirty allocates large enough buffers up-front
+        // can be called before world load with a budget so we avoid mid-load rebuilds
+        static void Reserve(uint32_t vertex_count, uint32_t index_count, uint32_t meshlet_bounds_count, uint32_t instance_count);
+
         // destroy gpu buffers and clear cpu data
         static void Shutdown();
 

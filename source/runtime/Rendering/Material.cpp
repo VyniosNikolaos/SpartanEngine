@@ -666,6 +666,14 @@ namespace spartan
     
     void Material::SaveToFile(const string& file_path)
     {
+        // skip when called without a resolved path (e.g. mid-import via SetTexture's auto-save)
+        // and serialize concurrent saves of the same material so parallel SetTexture calls cannot race on the file
+        if (file_path.empty())
+            return;
+
+        static mutex save_mutex;
+        lock_guard<mutex> lock(save_mutex);
+
         SetResourceFilePath(file_path);
         pugi::xml_document doc;
         pugi::xml_node material_node = doc.append_child("Material");

@@ -554,8 +554,8 @@ namespace spartan
 
                 cmd_list->SetBufferIndex(GeometryBuffer::GetIndexBuffer());
                 cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_data_out, GetBuffer(Renderer_Buffer::IndirectDrawDataOut));
-                // hw backface culling, cone culling only removes whole back-facing meshlets, per-triangle culling is still needed
-                cmd_list->SetCullMode(RHI_CullMode::Back);
+                // single pso for the whole indirect bucket cannot honor per material cull, none keeps two sided assets visible
+                cmd_list->SetCullMode(RHI_CullMode::None);
 
                 cmd_list->DrawIndexedIndirectCount(
                     GetBuffer(Renderer_Buffer::IndirectDrawArgsOut),
@@ -672,8 +672,8 @@ namespace spartan
 
                 cmd_list->SetBufferIndex(GeometryBuffer::GetIndexBuffer());
                 cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_data_out, GetBuffer(Renderer_Buffer::IndirectDrawDataOut));
-                // hw backface culling, cone culling only removes whole back-facing meshlets, per-triangle culling is still needed
-                cmd_list->SetCullMode(RHI_CullMode::Back);
+                // single pso for the whole indirect bucket cannot honor per material cull, none keeps two sided assets visible
+                cmd_list->SetCullMode(RHI_CullMode::None);
 
                 cmd_list->DrawIndexedIndirectCount(
                     GetBuffer(Renderer_Buffer::IndirectDrawArgsOut),

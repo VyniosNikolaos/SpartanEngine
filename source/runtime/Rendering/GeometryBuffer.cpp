@@ -154,22 +154,14 @@ namespace spartan
 
         if (needs_full_rebuild)
         {
-            // these buffers can be multiple gb so transiently holding both old and new can oom the gpu
-            // wait for gpu to finish using them then free immediately, bypassing the deletion queue
-            // the deletion queue defers by renderer_draw_data_buffer_count + 1 frames which would keep
-            // both old and new resident at the same time
-            if (m_vertex_buffer || m_index_buffer || m_meshlet_bounds_buffer || m_instance_buffer)
-            {
-                RHI_Device::QueueWaitAll();
-            }
-            if (m_vertex_buffer)         m_vertex_buffer->DestroyResourceImmediate();
-            if (m_index_buffer)          m_index_buffer->DestroyResourceImmediate();
-            if (m_meshlet_bounds_buffer) m_meshlet_bounds_buffer->DestroyResourceImmediate();
-            if (m_instance_buffer)       m_instance_buffer->DestroyResourceImmediate();
-            m_vertex_buffer         = nullptr;
-            m_index_buffer          = nullptr;
-            m_meshlet_bounds_buffer = nullptr;
-            m_instance_buffer       = nullptr;
+            // route old buffers through the deletion queue so frames in flight finish using them
+            // and we don't stall the renderer thread with QueueWaitAll
+            // the deletion queue retires after renderer_draw_data_buffer_count + 2 frames so the
+            // overlap window is bounded, callers should pre-size via Reserve() to avoid this path
+            m_vertex_buffer.reset();
+            m_index_buffer.reset();
+            m_meshlet_bounds_buffer.reset();
+            m_instance_buffer.reset();
 
             // allocate with headroom so late-arriving meshes don't trigger another rebuild
             // a flat 25% headroom on a multi-gb instance buffer wastes hundreds of mb, clamp to 64mb of slack
@@ -186,10 +178,10 @@ namespace spartan
             };
 
             constexpr uint64_t max_slack_bytes = 64ull * 1024ull * 1024ull;
-            m_vertex_capacity         = add_headroom(vertex_count,         sizeof(RHI_Vertex_PosTexNorTan), max_slack_bytes);
-            m_index_capacity          = add_headroom(index_count,          sizeof(uint32_t),                max_slack_bytes);
-            m_meshlet_bounds_capacity = max(add_headroom(meshlet_bounds_count, sizeof(Sb_MeshletBounds),    max_slack_bytes), 1u);
-            m_instance_capacity       = max(add_headroom(instance_count,       sizeof(Instance),            max_slack_bytes), 1u);
+            m_vertex_capacity         = max(add_headroom(vertex_count,         sizeof(RHI_Vertex_PosTexNorTan), max_slack_bytes), m_vertex_capacity);
+            m_index_capacity          = max(add_headroom(index_count,          sizeof(uint32_t),                max_slack_bytes), m_index_capacity);
+            m_meshlet_bounds_capacity = max(add_headroom(meshlet_bounds_count, sizeof(Sb_MeshletBounds),        max_slack_bytes), max(m_meshlet_bounds_capacity, 1u));
+            m_instance_capacity       = max(add_headroom(instance_count,       sizeof(Instance),                max_slack_bytes), max(m_instance_capacity, 1u));
 
             // create vertex buffer with capacity (no initial data - we upload via sub-region)
             m_vertex_buffer = make_unique<RHI_Buffer>(
@@ -315,6 +307,16 @@ namespace spartan
         bool result  = m_was_rebuilt;
         m_was_rebuilt = false;
         return result;
+    }
+
+    void GeometryBuffer::Reserve(uint32_t vertex_count, uint32_t index_count, uint32_t meshlet_bounds_count, uint32_t instance_count)
+    {
+        lock_guard<mutex> lock(m_mutex);
+
+        m_vertex_capacity         = max(m_vertex_capacity,         vertex_count);
+        m_index_capacity          = max(m_index_capacity,          index_count);
+        m_meshlet_bounds_capacity = max(m_meshlet_bounds_capacity, meshlet_bounds_count);
+        m_instance_capacity       = max(m_instance_capacity,       instance_count);
     }
 
     void GeometryBuffer::Shutdown()

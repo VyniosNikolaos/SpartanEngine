@@ -83,7 +83,7 @@ namespace spartan
             return;
         }
 
-        uint32_t version = 2; // meshlet bounds struct size unchanged when cone data was added (replaced an existing padding slot)
+        uint32_t version = 3; // bumped when per-lod meshlet offset/count and the trailing meshlet array were added to the schema
         outfile.write(reinterpret_cast<const char*>(&version), sizeof(uint32_t));
 
         uint32_t type = static_cast<uint32_t>(m_type);
@@ -162,9 +162,9 @@ namespace spartan
 
             uint32_t version;
             infile.read(reinterpret_cast<char*>(&version), sizeof(uint32_t));
-            if (version != 2)
+            if (version != 3)
             {
-                SP_LOG_ERROR("Version mismatch for file: %s (expected 2, got %u, please re-import the source asset)", file_path.c_str(), version);
+                SP_LOG_ERROR("Version mismatch for file: %s (expected 3, got %u, please re-import the source asset)", file_path.c_str(), version);
                 return;
             }
 
@@ -296,39 +296,41 @@ namespace spartan
     void Mesh::AddLod(vector<RHI_Vertex_PosTexNorTan>& vertices, vector<uint32_t>& indices, const uint32_t sub_mesh_index)
     {
         // build per-lod meshlets, this also repacks indices into meshlet-contiguous order
+        // heavy work, kept outside the mesh mutex so concurrent AddLod calls run in parallel
         vector<Sb_MeshletBounds> lod_meshlets;
         geometry_processing::build_meshlets(vertices, indices, lod_meshlets);
 
-        // build lod
         MeshLod lod;
-        lod.vertex_offset  = static_cast<uint32_t>(m_vertices.size());
-        lod.vertex_count   = static_cast<uint32_t>(vertices.size());
-        lod.index_offset   = static_cast<uint32_t>(m_indices.size());
-        lod.index_count    = static_cast<uint32_t>(indices.size());
-        lod.aabb           = BoundingBox(vertices.data(), static_cast<uint32_t>(vertices.size()));
-        lod.meshlet_offset = static_cast<uint32_t>(m_meshlets.size());
-        lod.meshlet_count  = static_cast<uint32_t>(lod_meshlets.size());
+        lod.vertex_count  = static_cast<uint32_t>(vertices.size());
+        lod.index_count   = static_cast<uint32_t>(indices.size());
+        lod.aabb          = BoundingBox(vertices.data(), static_cast<uint32_t>(vertices.size()));
+        lod.meshlet_count = static_cast<uint32_t>(lod_meshlets.size());
 
-        // append geometry
+        // append geometry, offsets are computed inside the lock so concurrent appends produce correct values
         {
             lock_guard lock(m_mutex);
 
-            // append geometry to mesh buffers
+            lod.vertex_offset  = static_cast<uint32_t>(m_vertices.size());
+            lod.index_offset   = static_cast<uint32_t>(m_indices.size());
+            lod.meshlet_offset = static_cast<uint32_t>(m_meshlets.size());
+
             m_vertices.insert(m_vertices.end(), vertices.begin(), vertices.end());
             m_indices.insert(m_indices.end(), indices.begin(), indices.end());
             m_meshlets.insert(m_meshlets.end(), lod_meshlets.begin(), lod_meshlets.end());
 
-            // add lod to the specified sub-mesh
             m_sub_meshes[sub_mesh_index].lods.push_back(lod);
         }
     }
 
     void Mesh::AddGeometry(vector<RHI_Vertex_PosTexNorTan>& vertices, vector<uint32_t>& indices, const bool generate_lods, uint32_t* sub_mesh_index)
     {
-        // create a sub-mesh
-        SubMesh sub_mesh;
-        uint32_t current_sub_mesh_index = static_cast<uint32_t>(m_sub_meshes.size());
-        m_sub_meshes.push_back(sub_mesh); // add it to the list so AddLod() can access it
+        // create a sub-mesh slot, locked because concurrent AddGeometry calls share m_sub_meshes
+        uint32_t current_sub_mesh_index;
+        {
+            lock_guard lock(m_mutex);
+            current_sub_mesh_index = static_cast<uint32_t>(m_sub_meshes.size());
+            m_sub_meshes.emplace_back();
+        }
 
         // lod 0: original geometry
         {

@@ -46,6 +46,8 @@ namespace spartan
         recursive_mutex m_mutex;
         bool use_root_shader_directory = false;
         unordered_map<IconType, shared_ptr<RHI_Texture>> m_default_icons;
+        unordered_map<string, unique_ptr<mutex>> m_in_flight_mutexes;
+        mutex m_in_flight_map_mutex;
     }
 
     void ResourceCache::Initialize()
@@ -239,6 +241,15 @@ namespace spartan
     recursive_mutex& ResourceCache::GetMutex()
     {
         return m_mutex;
+    }
+
+    mutex& ResourceCache::GetInFlightMutex(const string& path)
+    {
+        lock_guard<mutex> lock(m_in_flight_map_mutex);
+        auto it = m_in_flight_mutexes.find(path);
+        if (it == m_in_flight_mutexes.end())
+            it = m_in_flight_mutexes.emplace(path, make_unique<mutex>()).first;
+        return *it->second;
     }
 
     bool ResourceCache::GetUseRootShaderDirectory()

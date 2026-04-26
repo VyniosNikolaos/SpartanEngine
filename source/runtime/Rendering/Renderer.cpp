@@ -219,6 +219,15 @@ namespace spartan
             CreateBlendStates();
             CreateRenderTargets(true, true, true);
             CreateSamplers();
+
+            // pre-size the global geometry buffer so first build allocates large enough capacity
+            // to fit typical large worlds (sponza/forest) without triggering a mid-load rebuild
+            GeometryBuffer::Reserve(
+                4u * 1024u * 1024u,  // ~4M vertices  (~128 MB at 32B/vertex)
+                12u * 1024u * 1024u, // ~12M indices  (~48 MB)
+                64u * 1024u,         // ~64K meshlet bounds
+                16u * 1024u          // ~16K instances
+            );
         }
 
         if (RHI_Device::GetPrimaryPhysicalDevice()->IsBelowMinimumRequirements())
@@ -364,10 +373,9 @@ namespace spartan
             }
 
             // rebuild geometry buffer if new meshes arrived
-            if (!is_loading)
-            {
-                GeometryBuffer::BuildIfDirty();
-            }
+            // safe to run during loading because growth routes the old buffers through the deletion queue
+            // so meshes appear progressively as they finish importing
+            GeometryBuffer::BuildIfDirty();
 
             // geometry buffer rebuild invalidates blas device addresses
             if (GeometryBuffer::WasRebuilt())
@@ -375,7 +383,6 @@ namespace spartan
                 DestroyAccelerationStructures();
 
                 // free released blas/tlas gpu memory before rebuilding to avoid a peak
-                // geometrybuffer rebuild already waited the queues so this is just a free
                 RHI_Device::DeletionQueueParse();
             }
 

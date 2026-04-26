@@ -518,49 +518,57 @@ namespace spartan
             if (new_width < 1) new_width = 1;
             if (new_height < 1) new_height = 1;
             
-             // perform bilinear downsampling
-            for (uint32_t y = 0; y < new_height; y++)
+            // bilinear downsample, rows are independent so parallelize across rows
+            // small mips are too cheap to parallelize, fall back to sequential
+            auto process_rows = [&](uint32_t y_start, uint32_t y_end)
             {
-                for (uint32_t x = 0; x < new_width; x++)
+                for (uint32_t y = y_start; y < y_end; y++)
                 {
-                    // calculate base indices for this 2x2 block
-                    uint32_t src_idx              = (y * 2 * width + x * 2) * channels;
-                    uint32_t src_idx_right        = src_idx + channels;                      // right pixel
-                    uint32_t src_idx_bottom       = src_idx + (width * channels);            // bottom pixel
-                    uint32_t src_idx_bottom_right = src_idx + (width * channels) + channels; // bottom-right pixel
-                    uint32_t dst_idx              = (y * new_width + x) * channels;
-
-                    // process all 4 channels (RGBA)
-                    for (uint32_t c = 0; c < channels; c++)
+                    for (uint32_t x = 0; x < new_width; x++)
                     {
-                        uint32_t sum = to_integer<uint32_t>(input[src_idx + c]);
-                        uint32_t count = 1;
-            
-                        // right pixel
-                        if (x * 2 + 1 < width)
+                        uint32_t src_idx              = (y * 2 * width + x * 2) * channels;
+                        uint32_t src_idx_right        = src_idx + channels;
+                        uint32_t src_idx_bottom       = src_idx + (width * channels);
+                        uint32_t src_idx_bottom_right = src_idx + (width * channels) + channels;
+                        uint32_t dst_idx              = (y * new_width + x) * channels;
+
+                        for (uint32_t c = 0; c < channels; c++)
                         {
-                            sum += to_integer<uint32_t>(input[src_idx_right + c]);
-                            count++;
+                            uint32_t sum   = to_integer<uint32_t>(input[src_idx + c]);
+                            uint32_t count = 1;
+
+                            if (x * 2 + 1 < width)
+                            {
+                                sum += to_integer<uint32_t>(input[src_idx_right + c]);
+                                count++;
+                            }
+
+                            if (y * 2 + 1 < height)
+                            {
+                                sum += to_integer<uint32_t>(input[src_idx_bottom + c]);
+                                count++;
+                            }
+
+                            if ((x * 2 + 1 < width) && (y * 2 + 1 < height))
+                            {
+                                sum += to_integer<uint32_t>(input[src_idx_bottom_right + c]);
+                                count++;
+                            }
+
+                            output[dst_idx + c] = std::byte(sum / count);
                         }
-            
-                        // bottom pixel
-                        if (y * 2 + 1 < height)
-                        {
-                            sum += to_integer<uint32_t>(input[src_idx_bottom + c]);
-                            count++;
-                        }
-            
-                        // bottom-right pixel
-                        if ((x * 2 + 1 < width) && (y * 2 + 1 < height))
-                        {
-                            sum += to_integer<uint32_t>(input[src_idx_bottom_right + c]);
-                            count++;
-                        }
-            
-                        // assign the averaged result to the output
-                        output[dst_idx + c] = std::byte(sum / count);
                     }
                 }
+            };
+
+            constexpr uint32_t parallel_threshold_rows = 64;
+            if (new_height >= parallel_threshold_rows)
+            {
+                ThreadPool::ParallelLoop([&](uint32_t start, uint32_t end) { process_rows(start, end); }, new_height);
+            }
+            else
+            {
+                process_rows(0, new_height);
             }
         }
 

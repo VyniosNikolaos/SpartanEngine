@@ -40,9 +40,17 @@ namespace spartan
 
     void Progress::Start(const uint32_t job_count, const string& text)
     {
-        SP_ASSERT_MSG(GetFraction() == 1.0f, "The previous progress tracking hasn't finished");
-
         lock_guard lock(mutex_jobs);
+
+        // accumulate when a previous run is still in progress so concurrent producers (eg parallel model imports)
+        // can share a single tracker without resetting each other's progress
+        const bool already_running = !m_continuous_mode && (m_jobs_done < m_job_count);
+        if (already_running)
+        {
+            m_job_count += job_count;
+            m_text       = text;
+            return;
+        }
 
         m_job_count       = job_count;
         m_jobs_done       = 0;
