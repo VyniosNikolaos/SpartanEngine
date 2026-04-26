@@ -172,6 +172,7 @@ void FileDialog::SetCurrentPath(const string& path)
     if (FileSystem::IsFile(path))
     {
         m_current_path = FileSystem::GetDirectoryFromFilePath(path);
+        m_input_box    = FileSystem::GetFileNameFromFilePath(path);
     }
     else if (FileSystem::IsDirectory(path))
     {
@@ -218,37 +219,39 @@ bool FileDialog::Show(bool* is_visible, Editor* editor, string* directory /*= nu
     EmptyAreaContextMenu();
     HandleKeyboardNavigation();
 
-    if (m_selection_made)
+    if (m_selection_made && file_path && m_input_box.empty())
     {
-        if (file_path)
+        m_selection_made = false;
+    }
+
+    if (m_selection_made && file_path)
+    {
+        string dir = m_current_path;
+        if (FileSystem::IsFile(dir))
         {
-            string dir = m_current_path;
-            if (FileSystem::IsFile(m_current_path))
-            {
-                dir = FileSystem::GetDirectoryFromFilePath(m_current_path);
-            }
+            dir = FileSystem::GetDirectoryFromFilePath(dir);
+        }
 
-            // ensure there's a separator between directory and filename
-            if (!dir.empty() && dir.back() != '/' && dir.back() != '\\')
-            {
-                dir += "/";
-            }
+        // ensure trailing separator between directory and filename
+        if (!dir.empty() && dir.back() != '/' && dir.back() != '\\')
+        {
+            dir += "/";
+        }
 
-            const string selected_file_path = dir + m_input_box;
-            if (m_operation == FileDialog_Op_Save && FileSystem::IsFile(selected_file_path))
+        const string selected_file_path = dir + m_input_box;
+        if (m_operation == FileDialog_Op_Save && FileSystem::IsFile(selected_file_path))
+        {
+            m_file_path_pending_overwrite = selected_file_path;
+            ImGui::OpenPopup("##overwrite_dialog");
+            m_selection_made = false;
+        }
+        else
+        {
+            if (directory)
             {
-                m_file_path_pending_overwrite = selected_file_path;
-                ImGui::OpenPopup("##overwrite_dialog");
-                m_selection_made = false;
+                (*directory) = dir;
             }
-            else
-            {
-                if (directory)
-                {
-                    (*directory) = m_current_path;
-                }
-                (*file_path) = selected_file_path;
-            }
+            (*file_path) = selected_file_path;
         }
     }
 
@@ -277,6 +280,9 @@ bool FileDialog::Show(bool* is_visible, Editor* editor, string* directory /*= nu
 
 void FileDialog::ShowOverwriteDialog(string* directory, string* file_path)
 {
+    // center the popup on the main viewport so it doesn't appear at the top left of the monitor
+    ImVec2 viewport_center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(viewport_center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Appearing);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16, 16));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
@@ -339,7 +345,6 @@ void FileDialog::ShowTop(bool* is_visible, Editor* editor)
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
         ImGui::Begin(m_title.c_str(), is_visible, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoDocking);
         ImGui::PopStyleVar();
-        ImGui::SetWindowFocus();
     }
 
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
@@ -832,7 +837,10 @@ void FileDialog::RenderGridView()
             const bool is_single_click = item.GetTimeSinceLastClickMs() > 400;
 
             m_selected_item_id = item.GetId();
-            m_input_box        = item.GetLabel();
+            if (!item.IsDirectory())
+            {
+                m_input_box = item.GetLabel();
+            }
 
             if (is_single_click)
             {
@@ -841,20 +849,27 @@ void FileDialog::RenderGridView()
             }
             else
             {
-                // double click
-                m_current_path = item.GetPath();
-                m_history.push_back(m_current_path);
-                m_history_index  = m_history.size() - 1;
-                m_is_dirty       = true;
-                m_selection_made = !item.IsDirectory();
-
-                if (m_type == FileDialog_Type_Browser && !item.IsDirectory())
+                // double click navigates into directories, selects files
+                if (item.IsDirectory())
                 {
-                    FileSystem::OpenUrl(item.GetPath());
+                    m_current_path = item.GetPath();
+                    m_history.push_back(m_current_path);
+                    m_history_index = m_history.size() - 1;
+                    m_is_dirty      = true;
                 }
+                else
+                {
+                    m_selection_made = true;
+
+                    if (m_type == FileDialog_Type_Browser)
+                    {
+                        FileSystem::OpenUrl(item.GetPath());
+                    }
+                }
+
                 if (m_callback_on_item_double_clicked)
                 {
-                    m_callback_on_item_double_clicked(m_current_path);
+                    m_callback_on_item_double_clicked(item.GetPath());
                 }
             }
         }
@@ -930,7 +945,10 @@ void FileDialog::RenderListView()
                 const bool is_single_click = item.GetTimeSinceLastClickMs() > 400;
 
                 m_selected_item_id = item.GetId();
-                m_input_box        = item.GetLabel();
+                if (!item.IsDirectory())
+                {
+                    m_input_box = item.GetLabel();
+                }
 
                 if (is_single_click)
                 {
@@ -939,19 +957,27 @@ void FileDialog::RenderListView()
                 }
                 else
                 {
-                    m_current_path = item.GetPath();
-                    m_history.push_back(m_current_path);
-                    m_history_index  = m_history.size() - 1;
-                    m_is_dirty       = true;
-                    m_selection_made = !item.IsDirectory();
-
-                    if (m_type == FileDialog_Type_Browser && !item.IsDirectory())
+                    // double click navigates into directories, selects files
+                    if (item.IsDirectory())
                     {
-                        FileSystem::OpenUrl(item.GetPath());
+                        m_current_path = item.GetPath();
+                        m_history.push_back(m_current_path);
+                        m_history_index = m_history.size() - 1;
+                        m_is_dirty      = true;
                     }
+                    else
+                    {
+                        m_selection_made = true;
+
+                        if (m_type == FileDialog_Type_Browser)
+                        {
+                            FileSystem::OpenUrl(item.GetPath());
+                        }
+                    }
+
                     if (m_callback_on_item_double_clicked)
                     {
-                        m_callback_on_item_double_clicked(m_current_path);
+                        m_callback_on_item_double_clicked(item.GetPath());
                     }
                 }
             }

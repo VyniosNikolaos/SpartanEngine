@@ -132,10 +132,13 @@ namespace
 
         void DrawFileDialog()
         {
-            if (show_file_dialog)
+            // focus only on the frame the dialog opens, otherwise focus is stolen from the overwrite popup every frame
+            static bool show_file_dialog_prev = false;
+            if (show_file_dialog && !show_file_dialog_prev)
             {
                 ImGui::SetNextWindowFocus();
             }
+            show_file_dialog_prev = show_file_dialog;
 
             if (file_dialog->Show(&show_file_dialog, editor, nullptr, &file_dialog_selection_path))
             {

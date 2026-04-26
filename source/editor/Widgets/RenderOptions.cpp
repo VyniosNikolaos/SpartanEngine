@@ -80,8 +80,11 @@ namespace
         option_second_column();
         ImGui::PushID(static_cast<int>(ImGui::GetCursorPosY()));
         bool value = ConsoleRegistry::Get().GetAs<float>(render_option) != 0.0f;
-        ImGuiSp::toggle_switch("", &value);
-        ConsoleRegistry::Get().SetValueFromString(render_option, value ? "1" : "0");
+        // only write on user interaction, otherwise an async cvar update (eg world load) can be reverted
+        if (ImGuiSp::toggle_switch("", &value))
+        {
+            ConsoleRegistry::Get().SetValueFromString(render_option, value ? "1" : "0");
+        }
         ImGui::PopID();
     }
 
@@ -137,11 +140,11 @@ namespace
             changed = ImGui::InputFloat("", &value, step, 0.0f, format);
             ImGui::PopItemWidth();
             ImGui::PopID();
-            value = clamp(value, min, max);
 
-            // only update if changed
-            if (ConsoleRegistry::Get().GetAs<float>(render_option) != value)
+            // only write on user interaction, otherwise an async cvar update (eg world load) can be reverted
+            if (changed)
             {
+                value = clamp(value, min, max);
                 ConsoleRegistry::Get().SetValueFromString(render_option, to_string(value));
             }
         }
