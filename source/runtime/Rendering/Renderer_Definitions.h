@@ -31,8 +31,10 @@ namespace spartan
     const uint32_t renderer_max_draw_calls            = 20000;
     const uint32_t renderer_max_instance_count        = 1024;
     const uint32_t renderer_draw_data_buffer_count    = 4; // matches the command list pool size to avoid cpu-gpu memcpy races
-    const uint32_t renderer_max_indirect_draws        = 131072; // capacity for per-(renderable,meshlet) indirect draw inputs and cull shader outputs, the cull shader clamps writes to this
-    const uint32_t renderer_max_cull_tasks            = 524288; // capacity for per-instance cull tasks, drives the cull dispatch size
+    const uint32_t renderer_max_indirect_draws        = 131072;  // capacity for per-renderable lod draw data, the cull shader clamps writes to this
+    const uint32_t renderer_max_cull_tasks            = 524288;  // capacity for per-(renderable, meshlet) cull tasks, drives the meshlet cull dispatch size
+    const uint32_t renderer_max_meshlet_instances     = 1048576; // capacity for the meshlet cull survivor list, hw-instancing fans out into this so it can exceed renderer_max_cull_tasks
+    const uint32_t renderer_max_visible_triangles     = 8388608; // capacity for the triangle cull survivor list, sized as a worst-case practical cap not as max_meshlet_instances * 124
 
     enum class Renderer_Tonemapping : uint32_t
     {
@@ -122,11 +124,15 @@ namespace spartan
         // integer format textures (vrs, etc)
         tex_uint               = 30,
         // gpu-driven indirect drawing
+        // indirect_draw_args is a single-slot args buffer for the final non-indexed indirect draw, vertex_count is bumped by triangle cull
+        // meshlet_instances holds the meshlet-cull survivors, the triangle cull dispatches one workgroup per entry
+        // visible_triangles holds packed (meshlet_instance, triangle_in_meshlet) tuples emitted by triangle cull
+        // triangle_dispatch_args is the indirect dispatch args buffer for the triangle cull pass
         indirect_draw_args     = 31,
         indirect_draw_data     = 32,
-        indirect_draw_args_out = 33,
-        indirect_draw_data_out = 34,
-        indirect_draw_count    = 35,
+        meshlet_instances      = 33,
+        visible_triangles      = 34,
+        triangle_dispatch_args = 35,
         // gpu-driven particles
         particle_buffer_a      = 36,
         particle_buffer_b      = 37,
@@ -218,6 +224,7 @@ namespace spartan
         light_reflections_c,
         // gpu-driven indirect rendering
         indirect_cull_c,
+        indirect_cull_triangle_c,
         gbuffer_indirect_v,
         gbuffer_indirect_p,
         depth_prepass_indirect_v,
@@ -328,12 +335,12 @@ namespace spartan
         DummyInstance,
         AABBs,
         GeometryInfo,
-        IndirectDrawArgs,
-        IndirectDrawData,
-        IndirectDrawDataOut,
-        IndirectDrawArgsOut,
-        IndirectDrawCount,
-        CullTasks,                 // per-instance cull tasks consumed by the indirect cull compute shader
+        IndirectDrawArgs,          // single-slot args buffer for the final non-indexed indirect draw
+        IndirectDrawData,          // per-renderable lod draw data
+        MeshletInstances,          // meshlet-cull survivor list, the triangle cull pass dispatches one workgroup per entry
+        VisibleTriangles,          // triangle-cull survivor list, one packed (meshlet_instance, triangle_in_meshlet) per entry
+        TriangleDispatchArgs,      // single-slot indirect dispatch args buffer driving the triangle cull pass
+        CullTasks,                 // per (renderable, meshlet) cull tasks consumed by the meshlet cull compute shader
         DrawData,                  // bindless per-draw data (transforms, material index, etc.)
         // gpu-driven particles
         ParticleBufferA,

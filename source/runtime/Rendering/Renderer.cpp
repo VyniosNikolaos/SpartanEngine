@@ -510,22 +510,39 @@ namespace spartan
                 }
 
                 // indirect draw buffers
-                if (m_indirect_draw_count > 0)
+                // slot 0 of indirect_draw_args is the consolidated draw args, layout matches VkDrawIndirectCommand for the first 16 bytes
+                // index_count aliases vertex_count and is bumped in 3-vertex steps by the triangle cull shader
+                // instance_count is fixed at 1, the indirect draw is non-instanced and the vertex shader keys directly off sv_vertexid
                 {
+                    Sb_IndirectDrawArgs single_args = {};
+                    single_args.index_count         = 0;
+                    single_args.instance_count      = 1;
+                    single_args.first_index         = 0;
+                    single_args.vertex_offset       = 0;
+                    single_args.first_instance      = 0;
+
                     RHI_Buffer* args_buffer = GetBuffer(Renderer_Buffer::IndirectDrawArgs);
                     args_buffer->ResetOffset();
-                    args_buffer->Update(m_cmd_list_present, &m_indirect_draw_args[0], args_buffer->GetStride() * m_indirect_draw_count);
+                    args_buffer->Update(m_cmd_list_present, &single_args, sizeof(Sb_IndirectDrawArgs));
+                }
 
+                // single-slot indirect dispatch args for the triangle cull, group_count_x is bumped by the meshlet cull
+                {
+                    Sb_IndirectDispatchArgs dispatch_args = {};
+                    dispatch_args.group_count_x           = 0;
+                    dispatch_args.group_count_y           = 1;
+                    dispatch_args.group_count_z           = 1;
+
+                    RHI_Buffer* dispatch_args_buffer = GetBuffer(Renderer_Buffer::TriangleDispatchArgs);
+                    dispatch_args_buffer->ResetOffset();
+                    dispatch_args_buffer->Update(m_cmd_list_present, &dispatch_args, sizeof(Sb_IndirectDispatchArgs));
+                }
+
+                if (m_indirect_draw_count > 0)
+                {
                     RHI_Buffer* data_buffer = GetBuffer(Renderer_Buffer::IndirectDrawData);
                     data_buffer->ResetOffset();
                     data_buffer->Update(m_cmd_list_present, &m_indirect_draw_data[0], data_buffer->GetStride() * m_indirect_draw_count);
-
-                    // prime count to cull_task_count, the cull shader writes deterministically at slot=task_index
-                    // culled tasks are emitted as zero-instance draws so the slot is harmless
-                    uint32_t cull_count = m_cull_task_count;
-                    RHI_Buffer* count_buffer = GetBuffer(Renderer_Buffer::IndirectDrawCount);
-                    count_buffer->ResetOffset();
-                    count_buffer->Update(m_cmd_list_present, &cull_count, sizeof(uint32_t));
                 }
 
                 if (m_cull_task_count > 0)
@@ -1017,11 +1034,11 @@ namespace spartan
         entry.material_index     = material_index;
         entry.is_transparent     = is_transparent;
         entry.aabb_index         = 0;
-        entry.meshlet_index      = 0;
+        entry.lod_first_index    = 0;
         entry.flags              = 0;
         entry.instance_offset    = 0;
         entry.instance_index     = 0;
-        entry.padding0           = 0;
+        entry.lod_vertex_offset  = 0;
 
         // the draw data buffer is a single large allocation partitioned into per-frame regions;
         // each frame writes to its own region so there is no write-after-read race with the gpu
@@ -1416,8 +1433,8 @@ namespace spartan
         }
 
         // indirect draw buffers (gpu-driven path)
-        // one input draw entry per renderable lod covering the full lod range, one cull task per instance
-        // meshlet-level split is disabled while debugging mangled geometry, the cull shader uses the renderable aabb
+        // one input draw entry per renderable lod, one cull task per (renderable, meshlet) tuple
+        // surviving meshlets are atomically compacted by the cull shader into meshlet_instances and rendered with a single indirect draw
         {
             m_indirect_draw_count       = 0;
             m_indirect_renderable_count = 0;
@@ -1441,12 +1458,19 @@ namespace spartan
                 if (lod_index_count == 0)
                     continue;
 
+                uint32_t lod_meshlet_count = renderable->GetMeshletCount(dc.lod_index);
+                if (lod_meshlet_count == 0)
+                    continue;
+
                 bool is_instanced  = dc.instance_count > 1;
                 uint32_t inst_n    = is_instanced ? dc.instance_count : 1;
 
-                // hw-instancing fallback when per-instance tasks would overflow the cull-task budget
-                bool use_hw_instancing    = is_instanced && (m_cull_task_count + inst_n > renderer_max_cull_tasks);
-                uint32_t actual_tasks_add = use_hw_instancing ? 1u : inst_n;
+                // hw-instancing fallback when per-instance fanout would overflow the cull-task budget
+                // the cull task carries instance_count and the cull shader emits N MeshletInstances on survival
+                uint32_t per_instance_tasks_add = lod_meshlet_count * inst_n;
+                uint32_t hw_instanced_tasks_add = lod_meshlet_count;
+                bool use_hw_instancing          = is_instanced && (m_cull_task_count + per_instance_tasks_add > renderer_max_cull_tasks);
+                uint32_t actual_tasks_add       = use_hw_instancing ? hw_instanced_tasks_add : per_instance_tasks_add;
 
                 if (m_indirect_draw_count + 1 > renderer_max_indirect_draws)
                     continue;
@@ -1455,47 +1479,51 @@ namespace spartan
 
                 uint32_t renderable_aabb_slot = aabb_frame_offset + m_draw_calls_prepass_count + m_indirect_renderable_count;
                 uint32_t base_first_index     = renderable->GetIndexOffset(dc.lod_index);
-                int32_t  vertex_offset        = static_cast<int32_t>(renderable->GetVertexOffset(dc.lod_index));
+                uint32_t vertex_offset        = renderable->GetVertexOffset(dc.lod_index);
+                uint32_t base_meshlet_index   = renderable->GetGlobalMeshletOffset() + renderable->GetMeshletOffset(dc.lod_index);
 
                 Entity* entity = renderable->GetEntity();
                 Mesh* mesh     = renderable->GetMesh();
 
-                // flags bit 0 skip meshlet cull (passthrough), bit 1 per-instance cull, bit 2 hw instancing
+                // flags bit 0 skip meshlet cone cull (passthrough), bit 1 per-instance, bit 2 hw instancing, bit 3 skip triangle backface cull (two-sided)
                 bool skinned_skip_cull = mesh->IsSkinned() && cvar_meshlet_cull_skinned.GetValueAs<bool>() == false;
                 bool use_per_instance  = is_instanced && !use_hw_instancing;
                 bool skip_cull         = skinned_skip_cull || use_hw_instancing;
+                bool is_two_sided      = static_cast<RHI_CullMode>(material->GetProperty(MaterialProperty::CullMode)) != RHI_CullMode::Back;
                 uint32_t base_flags    = 0u;
                 if (skip_cull)         base_flags |= 1u;
                 if (use_per_instance)  base_flags |= 2u;
                 if (use_hw_instancing) base_flags |= 4u;
+                if (is_two_sided)      base_flags |= 8u;
 
-                uint32_t draw_instance_count = use_hw_instancing ? inst_n : 1u;
-                uint32_t tasks_for_draw      = use_per_instance ? inst_n : 1u;
-
-                uint32_t draw_idx         = m_indirect_draw_count++;
-                Sb_IndirectDrawArgs& args = m_indirect_draw_args[draw_idx];
-                args.index_count          = lod_index_count;
-                args.instance_count       = draw_instance_count;
-                args.first_index          = base_first_index;
-                args.vertex_offset        = vertex_offset;
-                args.first_instance       = 0;
-
+                uint32_t draw_idx       = m_indirect_draw_count++;
                 Sb_DrawData& data       = m_indirect_draw_data[draw_idx];
                 data.transform          = entity->GetMatrix();
                 data.transform_previous = entity->GetMatrixPrevious();
                 data.material_index     = material->GetIndex();
                 data.is_transparent     = 0;
                 data.aabb_index         = renderable_aabb_slot;
-                data.meshlet_index      = 0;
+                data.lod_first_index    = base_first_index;
                 data.flags              = base_flags;
                 data.instance_offset    = renderable->GetGlobalInstanceOffset();
                 data.instance_index     = 0;
+                data.lod_vertex_offset  = vertex_offset;
 
-                for (uint32_t inst = 0; inst < tasks_for_draw; inst++)
+                // emit one cull task per meshlet, fanning out per-instance tasks unless we fell back to hw-instancing
+                uint32_t instances_per_task = use_hw_instancing ? inst_n : 1u;
+                uint32_t task_instance_iter = use_hw_instancing ? 1u    : inst_n;
+
+                for (uint32_t m = 0; m < lod_meshlet_count; m++)
                 {
-                    Sb_CullTask& task   = m_cull_tasks[m_cull_task_count++];
-                    task.draw_index     = draw_idx;
-                    task.instance_index = inst;
+                    uint32_t global_meshlet = base_meshlet_index + m;
+                    for (uint32_t inst = 0; inst < task_instance_iter; inst++)
+                    {
+                        Sb_CullTask& task   = m_cull_tasks[m_cull_task_count++];
+                        task.draw_index     = draw_idx;
+                        task.meshlet_index  = global_meshlet;
+                        task.instance_index = inst;
+                        task.instance_count = instances_per_task;
+                    }
                 }
 
                 m_indirect_renderable_count++;

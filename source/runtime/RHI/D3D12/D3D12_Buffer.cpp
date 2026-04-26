@@ -198,6 +198,10 @@ namespace spartan
         SP_ASSERT(data != nullptr);
         SP_ASSERT(offset_bytes + size_bytes <= m_object_size);
 
+        // skip if backing allocation failed (out of device memory)
+        if (!m_rhi_resource)
+            return;
+
         if (m_data_gpu)
         {
             memcpy(static_cast<uint8_t*>(m_data_gpu) + offset_bytes, data, size_bytes);

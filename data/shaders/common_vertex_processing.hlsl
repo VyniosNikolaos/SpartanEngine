@@ -69,6 +69,28 @@ Vertex_PosUvNorTan pull_vertex(uint vertex_id, uint instance_id, uint instance_o
     return v;
 }
 
+// gpu-driven path entry, populates _draw and the meshlet handle from the visible triangle list
+// vertex_id is sv_vertexid for a non-instanced indirect draw, vertex_count = visible_triangle_count * 3
+Vertex_PosUvNorTan pull_visible_triangle_vertex(uint vertex_id, out MeshletInstance mi_out)
+{
+    uint triangle_slot = vertex_id / 3u;
+    uint corner        = vertex_id - triangle_slot * 3u;
+
+    uint packed       = visible_triangles[triangle_slot];
+    uint mi_idx       = VISIBLE_TRI_MI(packed);
+    uint triangle_idx = VISIBLE_TRI_IDX(packed);
+
+    mi_out = meshlet_instances[mi_idx];
+    _draw  = indirect_draw_data[mi_out.draw_index];
+
+    MeshletBounds mb      = meshlet_bounds[mi_out.meshlet_index];
+    uint global_index_pos = _draw.lod_first_index + mb.first_index + triangle_idx * 3u + corner;
+    uint local_vertex_id  = geometry_indices[global_index_pos];
+    uint global_vertex_id = local_vertex_id + _draw.lod_vertex_offset;
+
+    return pull_vertex(global_vertex_id, mi_out.instance_index, _draw.instance_offset);
+}
+
 // vertex buffer output
 struct gbuffer_vertex
 {

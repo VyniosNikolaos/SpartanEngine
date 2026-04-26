@@ -93,10 +93,12 @@ namespace spartan
         void Draw(const uint32_t vertex_count, const uint32_t vertex_start_index = 0);
         void DrawIndexed(const uint32_t index_count, const uint32_t index_offset = 0, const uint32_t vertex_offset = 0, const uint32_t instance_index = 0, const uint32_t instance_count = 1);
         void DrawIndexedIndirectCount(RHI_Buffer* args_buffer, const uint32_t args_offset, RHI_Buffer* count_buffer, const uint32_t count_offset, const uint32_t max_draw_count);
+        void DrawIndirect(RHI_Buffer* args_buffer, const uint32_t args_offset);
 
         // dispatch
         void Dispatch(uint32_t x, uint32_t y, uint32_t z = 1);
         void Dispatch(RHI_Texture* texture, float resolution_scale = 1.0f);
+        void DispatchIndirect(RHI_Buffer* args_buffer, const uint32_t args_offset = 0);
 
         // trace rays
         void TraceRays(const uint32_t width, const uint32_t height);

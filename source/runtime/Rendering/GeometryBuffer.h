@@ -108,6 +108,10 @@ namespace spartan
         static bool m_was_rebuilt;
         static std::mutex m_mutex;
 
+        // hard-cap learned from previous oom failures, prevents retrying ever-larger allocations every frame
+        // once set, AppendInstances drops new instances and BuildIfDirty stops attempting to grow past it
+        static uint32_t m_instance_capacity_failed_at;
+
         // growth factor applied when allocating gpu buffers
         static constexpr float growth_factor = 1.25f;
     };

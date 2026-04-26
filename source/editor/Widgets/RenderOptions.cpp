@@ -475,7 +475,9 @@ void RenderOptions::OnTickVisible()
                     {
                         "Off",
                         "Color by meshlet id",
-                        "Color by post-cull draw id"
+                        "Wireframe (meshlet id)",
+                        "Color by post-cull draw id",
+                        "Wireframe (draw id)"
                     };
                     uint32_t meshlet_mode = cvar_meshlet_visualize.GetValueAs<uint32_t>();
                     if (option_combo_box("Meshlet visualization", meshlet_visualize_modes, meshlet_mode, "Writes hashed meshlet colors to debug_output, view it in Texture Viewer"))

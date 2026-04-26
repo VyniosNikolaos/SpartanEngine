@@ -54,12 +54,11 @@ float3 meshlet_color(uint id)
     return lerp(0.15f, 1.0f, c);
 }
 
-vis_vertex main_vs(uint vertex_id : SV_VertexID, uint sv_instance_id : SV_InstanceID, [[vk::builtin("DrawIndex")]] uint draw_id : DRAW_INDEX, uint view_id : SV_ViewID)
+vis_vertex main_vs(uint vertex_id : SV_VertexID, uint view_id : SV_ViewID)
 {
-    _draw                    = indirect_draw_data_out[draw_id];
-    // per-instance culled draws have instance_count=1 and instance_index set, hw-instanced have instance_count=N and instance_index=0
-    uint instance_id         = _draw.instance_index + sv_instance_id;
-    Vertex_PosUvNorTan input = pull_vertex(vertex_id, instance_id, _draw.instance_offset);
+    MeshletInstance mi;
+    Vertex_PosUvNorTan input = pull_visible_triangle_vertex(vertex_id, mi);
+    uint instance_id         = mi.instance_index;
 
     float3 position_world          = 0.0f;
     float3 position_world_previous = 0.0f;
@@ -68,8 +67,9 @@ vis_vertex main_vs(uint vertex_id : SV_VertexID, uint sv_instance_id : SV_Instan
 
     vis_vertex o;
     o.position      = base.position;
-    o.meshlet_index = _draw.meshlet_index;
-    o.draw_id       = draw_id;
+    o.meshlet_index = mi.meshlet_index;
+    // post-cull triangle id, monotonic across the visible-triangle list
+    o.draw_id       = vertex_id / 3u;
     return o;
 }
 

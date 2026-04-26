@@ -236,6 +236,8 @@ struct GeometryInfo
 };
 
 // gpu-driven indirect draw arguments (matches VkDrawIndexedIndirectCommand layout)
+// when used as the args for vkCmdDrawIndirect (non-indexed) the first 16 bytes alias to VkDrawIndirectCommand:
+// index_count -> vertex_count, instance_count -> instance_count, first_index -> first_vertex, vertex_offset -> first_instance
 struct IndirectDrawArgs
 {
     SHARED_UINT index_count    SHARED_DEFAULT(0);
@@ -245,31 +247,64 @@ struct IndirectDrawArgs
     SHARED_UINT first_instance SHARED_DEFAULT(0);
 };
 
-// per-draw data for gpu-driven rendering (indexed by draw_id in shaders)
+// gpu-driven indirect dispatch arguments (matches VkDispatchIndirectCommand layout)
+struct IndirectDispatchArgs
+{
+    SHARED_UINT group_count_x SHARED_DEFAULT(0);
+    SHARED_UINT group_count_y SHARED_DEFAULT(1);
+    SHARED_UINT group_count_z SHARED_DEFAULT(1);
+};
+
+// per-draw data for gpu-driven rendering (one entry per renderable lod, looked up from MeshletInstance.draw_index)
 // flags bit 0: skip per-meshlet culling entirely (skinned, local sphere is not representative after deformation)
 // flags bit 1: per-instance culling (instanced, the cull shader translates the sphere by the per-instance position before testing)
+// lod_first_index/lod_vertex_offset hold the global geometry offsets for the lod (replaces what indirect_draw_args used to carry)
 struct DrawData
 {
     SHARED_MATRIX transform;
     SHARED_MATRIX transform_previous;
-    SHARED_UINT   material_index  SHARED_DEFAULT(0);
-    SHARED_UINT   is_transparent  SHARED_DEFAULT(0);
-    SHARED_UINT   aabb_index      SHARED_DEFAULT(0);
-    SHARED_UINT   meshlet_index   SHARED_DEFAULT(0); // index into the global meshlet bounds buffer
-    SHARED_UINT   flags           SHARED_DEFAULT(0);
-    SHARED_UINT   instance_offset SHARED_DEFAULT(0); // offset into the global instance buffer
-    SHARED_UINT   instance_index  SHARED_DEFAULT(0); // per-draw instance to fetch, vs uses this in place of sv_instanceid
-    SHARED_UINT   padding0        SHARED_DEFAULT(0);
+    SHARED_UINT   material_index    SHARED_DEFAULT(0);
+    SHARED_UINT   is_transparent    SHARED_DEFAULT(0);
+    SHARED_UINT   aabb_index        SHARED_DEFAULT(0);
+    SHARED_UINT   lod_first_index   SHARED_DEFAULT(0); // global first index into the geometry index buffer for this lod
+    SHARED_UINT   flags             SHARED_DEFAULT(0);
+    SHARED_UINT   instance_offset   SHARED_DEFAULT(0); // offset into the global instance buffer
+    SHARED_UINT   instance_index    SHARED_DEFAULT(0); // per-draw instance to fetch, vs uses this in place of sv_instanceid
+    SHARED_UINT   lod_vertex_offset SHARED_DEFAULT(0); // global vertex offset for this lod (added to lod-local indices)
 };
 
-// one cull task per (input draw, instance) pair, the cull pass dispatches over these instead of input draws
-// for non-instanced renderables one task is emitted per meshlet with instance_index 0
-// for instanced renderables one task is emitted per (meshlet, instance) pair
+// one cull task per (renderable lod, meshlet) tuple, the cull pass dispatches over these
+// meshlet_index is a global index into the meshlet_bounds buffer
+// instance_index is the base hw instance, instance_count is normally 1 but can be N for the hw-instancing fallback,
+// in which case the cull shader emits N consecutive MeshletInstance entries on survival
 struct CullTask
 {
     SHARED_UINT draw_index     SHARED_DEFAULT(0);
+    SHARED_UINT meshlet_index  SHARED_DEFAULT(0);
     SHARED_UINT instance_index SHARED_DEFAULT(0);
+    SHARED_UINT instance_count SHARED_DEFAULT(1);
 };
+
+// emitted by the meshlet cull pass for every surviving (renderable lod, meshlet, instance) tuple
+// indexed by the triangle cull pass (one workgroup per surviving meshlet)
+struct MeshletInstance
+{
+    SHARED_UINT draw_index     SHARED_DEFAULT(0);
+    SHARED_UINT meshlet_index  SHARED_DEFAULT(0);
+    SHARED_UINT instance_index SHARED_DEFAULT(0);
+    SHARED_UINT padding0       SHARED_DEFAULT(0);
+};
+
+// must mirror meshlet_max_triangles in GeometryProcessing.h, 124 triangles -> 372 indices
+#define MESHLET_MAX_TRIANGLES 124
+#define MESHLET_MAX_INDICES   (MESHLET_MAX_TRIANGLES * 3)
+
+// visible triangle, packed into a single uint
+// high 24 bits: meshlet instance index (16M cap), low 8 bits: triangle index within the meshlet (124 cap)
+// emitted by the triangle cull pass, consumed by the vertex shader via sv_vertexid / 3
+#define VISIBLE_TRI_PACK(mi, tri) (((mi) << 8u) | ((tri) & 0xffu))
+#define VISIBLE_TRI_MI(packed)    ((packed) >> 8u)
+#define VISIBLE_TRI_IDX(packed)   ((packed) & 0xffu)
 
 // per-meshlet bounding sphere and local index range (32 bytes)
 // center/radius are in mesh-local space, transformed to world by drawdata.transform at cull time
@@ -346,10 +381,12 @@ namespace spartan
     using Sb_Light            = LightParameters;
     using Sb_Aabb             = Aabb;
     using Sb_GeometryInfo     = GeometryInfo;
-    using Sb_IndirectDrawArgs = IndirectDrawArgs;
+    using Sb_IndirectDrawArgs     = IndirectDrawArgs;
+    using Sb_IndirectDispatchArgs = IndirectDispatchArgs;
     using Sb_DrawData         = DrawData;
     using Sb_MeshletBounds    = MeshletBounds;
     using Sb_CullTask         = CullTask;
+    using Sb_MeshletInstance  = MeshletInstance;
     using Sb_Particle         = Particle;
     using Sb_EmitterParams    = EmitterParams;
 }

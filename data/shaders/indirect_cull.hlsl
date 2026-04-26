@@ -21,10 +21,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "common.hlsl"
 //====================
 
-// gpu-driven per-renderable hi-z occlusion culling, deterministic 1:1 task to draw mapping
-// each thread writes its draw at output_index = task_index, culled draws are written with instance_count = 0
-// the cpu primes indirect_draw_count[0] to the cull task count so vkcmddrawindexedindirectcount sees every slot
-// this removes a former interlockedadd-based compaction that was racing args and data across draws
+// gpu-driven meshlet cull, per-meshlet backface cone + per-renderable hi-z occlusion
+// dispatches over the cpu-built cull task array, each task is one (renderable, meshlet, instance) tuple
+// survivors are atomically compacted into meshlet_instances, triangle_dispatch_args.group_count_x is bumped
+// the triangle cull pass then dispatches one workgroup per surviving meshlet to perform per-triangle culling
 
 [numthreads(256, 1, 1)]
 void main_cs(uint3 dispatch_thread_id : SV_DispatchThreadID)
@@ -38,24 +38,46 @@ void main_cs(uint3 dispatch_thread_id : SV_DispatchThreadID)
     DrawData draw = indirect_draw_data[task.draw_index];
 
     bool skip_cull       = (draw.flags & 1u) != 0u;
-    bool is_hw_instanced = (draw.flags & 4u) != 0u;
-
-    // every task owns slot task_index in the output buffers, no compaction
-    IndirectDrawArgs out_args = indirect_draw_args[task.draw_index];
-    if (!is_hw_instanced)
-    {
-        out_args.instance_count = 1;
-        out_args.first_instance = 0;
-    }
-
-    DrawData out_draw       = draw;
-    out_draw.instance_index = task.instance_index;
+    bool is_per_instance = (draw.flags & 2u) != 0u;
 
     bool is_visible = true;
 
-    if (!skip_cull)
+    // per-meshlet backface cone culling, skipped for per-instance draws since instances may carry independent rotations
+    if (!skip_cull && !is_per_instance)
     {
-        // read the world-space aabb for this renderable
+        MeshletBounds mb = meshlet_bounds[task.meshlet_index];
+
+        uint packed   = mb.cone_axis_cutoff;
+        int axis_x_s8 = (int)((packed      ) & 0xffu); axis_x_s8 = (axis_x_s8 << 24) >> 24;
+        int axis_y_s8 = (int)((packed >> 8 ) & 0xffu); axis_y_s8 = (axis_y_s8 << 24) >> 24;
+        int axis_z_s8 = (int)((packed >> 16) & 0xffu); axis_z_s8 = (axis_z_s8 << 24) >> 24;
+        int cutoff_s8 = (int)((packed >> 24) & 0xffu); cutoff_s8 = (cutoff_s8 << 24) >> 24;
+
+        // cutoff_s8 == 127 marks a degenerate cone, do not cull
+        if (cutoff_s8 < 127)
+        {
+            float3 cone_axis_local = float3(axis_x_s8, axis_y_s8, axis_z_s8) / 127.0f;
+            float  cone_cutoff     = (float)cutoff_s8 / 127.0f;
+
+            // engine convention places the vector on the left of mul
+            float3 cone_axis_world = normalize(mul(cone_axis_local, (float3x3)draw.transform));
+            float3 center_world    = mul(float4(mb.center, 1.0f), draw.transform).xyz;
+            float3 to_meshlet      = center_world - buffer_frame.camera_position;
+            float  to_meshlet_len  = length(to_meshlet);
+
+            // perspective formula from meshoptimizer, the radius term keeps near meshlets visible when the bounding sphere overlaps the camera
+            float lhs = dot(to_meshlet, cone_axis_world);
+            float rhs = cone_cutoff * to_meshlet_len + mb.radius;
+            if (to_meshlet_len > 0.0f && lhs >= rhs)
+            {
+                is_visible = false;
+            }
+        }
+    }
+
+    // per-renderable frustum + hi-z occlusion against the world-space aabb
+    if (is_visible && !skip_cull)
+    {
         Aabb current_aabb = aabbs[draw.aabb_index];
 
         float3 corners_world[8] =
@@ -147,12 +169,28 @@ void main_cs(uint3 dispatch_thread_id : SV_DispatchThreadID)
         }
     }
 
-    // culled draws survive in the array as zero-instance draws so the slot is harmless
     if (!is_visible)
-    {
-        out_args.instance_count = 0;
-    }
+        return;
 
-    indirect_draw_args_out[task_index] = out_args;
-    indirect_draw_data_out[task_index] = out_draw;
+    // atomically reserve a contiguous range, normally one entry but the hw-instancing fallback fans out into instance_count entries
+    // group_count_x of the triangle cull's indirect dispatch is bumped in lockstep, one workgroup per meshlet survivor
+    uint instance_count        = max(task.instance_count, 1u);
+    uint max_meshlet_instances = (uint)pass_get_f4_value().z;
+    uint slot;
+    InterlockedAdd(triangle_dispatch_args[0].group_count_x, instance_count, slot);
+
+    // bounds-check the destination range, dropping survivors past the cap is preferable to writing oob and corrupting other buffers
+    if (slot >= max_meshlet_instances)
+        return;
+    uint write_count = min(instance_count, max_meshlet_instances - slot);
+
+    for (uint i = 0; i < write_count; i++)
+    {
+        MeshletInstance mi;
+        mi.draw_index     = task.draw_index;
+        mi.meshlet_index  = task.meshlet_index;
+        mi.instance_index = task.instance_index + i;
+        mi.padding0       = 0;
+        meshlet_instances[slot + i] = mi;
+    }
 }

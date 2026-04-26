@@ -198,6 +198,11 @@ namespace spartan
         SP_ASSERT(data != nullptr);
         SP_ASSERT(offset_bytes + size_bytes <= m_object_size);
 
+        // skip if backing allocation failed (e.g. vmaCreateBuffer ran out of device memory)
+        // recording vkCmdCopyBuffer with a null vkbuffer crashes the driver
+        if (!m_rhi_resource)
+            return;
+
         if (m_mappable)
         {
             // for mapped buffers, direct memcpy at the offset

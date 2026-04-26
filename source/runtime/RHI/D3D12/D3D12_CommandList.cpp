@@ -614,6 +614,63 @@ namespace spartan
         cmd_list->Dispatch(x, y, z);
     }
 
+    void RHI_CommandList::DrawIndirect(RHI_Buffer* args_buffer, const uint32_t args_offset)
+    {
+        SP_ASSERT(m_state == RHI_CommandListState::Recording);
+        if (!args_buffer)
+            return;
+
+        static ID3D12CommandSignature* command_signature = nullptr;
+        if (!command_signature)
+        {
+            D3D12_INDIRECT_ARGUMENT_DESC arg_desc = {};
+            arg_desc.Type                         = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
+
+            D3D12_COMMAND_SIGNATURE_DESC desc = {};
+            desc.ByteStride        = sizeof(D3D12_DRAW_ARGUMENTS);
+            desc.NumArgumentDescs  = 1;
+            desc.pArgumentDescs    = &arg_desc;
+            RHI_Context::device->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&command_signature));
+        }
+
+        ID3D12GraphicsCommandList* cmd_list = static_cast<ID3D12GraphicsCommandList*>(m_rhi_resource);
+        flush_pending_bindings(cmd_list, this, false);
+        cmd_list->ExecuteIndirect(
+            command_signature, 1u,
+            static_cast<ID3D12Resource*>(args_buffer->GetRhiResource()), static_cast<UINT64>(args_offset),
+            nullptr, 0
+        );
+        Profiler::m_rhi_draw++;
+    }
+
+    void RHI_CommandList::DispatchIndirect(RHI_Buffer* args_buffer, const uint32_t args_offset)
+    {
+        SP_ASSERT(m_state == RHI_CommandListState::Recording);
+        if (!args_buffer)
+            return;
+
+        static ID3D12CommandSignature* command_signature = nullptr;
+        if (!command_signature)
+        {
+            D3D12_INDIRECT_ARGUMENT_DESC arg_desc = {};
+            arg_desc.Type                         = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+
+            D3D12_COMMAND_SIGNATURE_DESC desc = {};
+            desc.ByteStride        = sizeof(D3D12_DISPATCH_ARGUMENTS);
+            desc.NumArgumentDescs  = 1;
+            desc.pArgumentDescs    = &arg_desc;
+            RHI_Context::device->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&command_signature));
+        }
+
+        ID3D12GraphicsCommandList* cmd_list = static_cast<ID3D12GraphicsCommandList*>(m_rhi_resource);
+        flush_pending_bindings(cmd_list, this, true);
+        cmd_list->ExecuteIndirect(
+            command_signature, 1u,
+            static_cast<ID3D12Resource*>(args_buffer->GetRhiResource()), static_cast<UINT64>(args_offset),
+            nullptr, 0
+        );
+    }
+
     void RHI_CommandList::TraceRays(const uint32_t width, const uint32_t height) { }
 
     void RHI_CommandList::SetAccelerationStructure(Renderer_BindingsSrv slot, RHI_AccelerationStructure* tlas) { }

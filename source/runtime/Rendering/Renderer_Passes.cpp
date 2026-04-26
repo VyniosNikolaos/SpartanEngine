@@ -57,7 +57,6 @@ namespace spartan
     uint32_t Renderer::m_draw_call_count;
     array<Renderer_DrawCall, renderer_max_draw_calls> Renderer::m_draw_calls_prepass;
     uint32_t Renderer::m_draw_calls_prepass_count;
-    array<Sb_IndirectDrawArgs, renderer_max_indirect_draws> Renderer::m_indirect_draw_args;
     array<Sb_DrawData, renderer_max_indirect_draws> Renderer::m_indirect_draw_data;
     uint32_t Renderer::m_indirect_draw_count       = 0;
     uint32_t Renderer::m_indirect_renderable_count = 0;
@@ -489,34 +488,64 @@ namespace spartan
         {
             RHI_Texture* tex_occluders_hiz = GetRenderTarget(Renderer_RenderTarget::gbuffer_depth_occluders_hiz);
 
-            RHI_PipelineState pso;
-            pso.name             = "indirect_cull";
-            pso.shaders[Compute] = GetShader(Renderer_Shader::indirect_cull_c);
-            cmd_list->SetPipelineState(pso);
+            // pass 1, per-meshlet cone + per-renderable hi-z, survivors land in meshlet_instances and bump triangle_dispatch_args.group_count_x
+            {
+                RHI_PipelineState pso;
+                pso.name             = "indirect_cull_meshlet";
+                pso.shaders[Compute] = GetShader(Renderer_Shader::indirect_cull_c);
+                cmd_list->SetPipelineState(pso);
 
-            cmd_list->SetTexture(Renderer_BindingsSrv::tex, tex_occluders_hiz);
+                cmd_list->SetTexture(Renderer_BindingsSrv::tex, tex_occluders_hiz);
 
-            // input
-            cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_args, GetBuffer(Renderer_Buffer::IndirectDrawArgs));
-            cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_data, GetBuffer(Renderer_Buffer::IndirectDrawData));
-            cmd_list->SetBuffer(Renderer_BindingsUav::meshlet_bounds,     GeometryBuffer::GetMeshletBoundsBuffer());
-            cmd_list->SetBuffer(Renderer_BindingsUav::cull_tasks,         GetBuffer(Renderer_Buffer::CullTasks));
+                cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_args,     GetBuffer(Renderer_Buffer::IndirectDrawArgs));
+                cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_data,     GetBuffer(Renderer_Buffer::IndirectDrawData));
+                cmd_list->SetBuffer(Renderer_BindingsUav::meshlet_bounds,         GeometryBuffer::GetMeshletBoundsBuffer());
+                cmd_list->SetBuffer(Renderer_BindingsUav::cull_tasks,             GetBuffer(Renderer_Buffer::CullTasks));
+                cmd_list->SetBuffer(Renderer_BindingsUav::meshlet_instances,      GetBuffer(Renderer_Buffer::MeshletInstances));
+                cmd_list->SetBuffer(Renderer_BindingsUav::triangle_dispatch_args, GetBuffer(Renderer_Buffer::TriangleDispatchArgs));
 
-            // output
-            cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_args_out, GetBuffer(Renderer_Buffer::IndirectDrawArgsOut));
-            cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_data_out, GetBuffer(Renderer_Buffer::IndirectDrawDataOut));
-            cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_count,    GetBuffer(Renderer_Buffer::IndirectDrawCount));
+                // f4_value: x = task count, y = max hiz mip, z = meshlet instances cap (drop survivors past this)
+                m_pcb_pass_cpu.set_f4_value(
+                    static_cast<float>(m_cull_task_count),
+                    static_cast<float>(tex_occluders_hiz->GetMipCount() - 1),
+                    static_cast<float>(renderer_max_meshlet_instances),
+                    0.0f);
+                cmd_list->PushConstants(m_pcb_pass_cpu);
 
-            m_pcb_pass_cpu.set_f4_value(static_cast<float>(m_cull_task_count), static_cast<float>(tex_occluders_hiz->GetMipCount() - 1), 0.0f, 0.0f);
-            cmd_list->PushConstants(m_pcb_pass_cpu);
+                uint32_t thread_group_count = (m_cull_task_count + 255) / 256;
+                cmd_list->Dispatch(thread_group_count, 1, 1);
 
-            uint32_t thread_group_count = (m_cull_task_count + 255) / 256;
-            cmd_list->Dispatch(thread_group_count, 1, 1);
+                // meshlet_instances and triangle_dispatch_args feed the triangle cull pass
+                cmd_list->InsertBarrier(GetBuffer(Renderer_Buffer::MeshletInstances));
+                cmd_list->InsertBarrier(GetBuffer(Renderer_Buffer::TriangleDispatchArgs));
+            }
 
-            // barrier: compute write -> vertex/indirect read
-            cmd_list->InsertBarrier(GetBuffer(Renderer_Buffer::IndirectDrawArgsOut));
-            cmd_list->InsertBarrier(GetBuffer(Renderer_Buffer::IndirectDrawDataOut));
-            cmd_list->InsertBarrier(GetBuffer(Renderer_Buffer::IndirectDrawCount));
+            // pass 2, per-triangle frustum + backface + sub-pixel cull, dispatched indirect with one workgroup per surviving meshlet
+            {
+                RHI_PipelineState pso;
+                pso.name             = "indirect_cull_triangle";
+                pso.shaders[Compute] = GetShader(Renderer_Shader::indirect_cull_triangle_c);
+                cmd_list->SetPipelineState(pso);
+
+                cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_args,     GetBuffer(Renderer_Buffer::IndirectDrawArgs));
+                cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_data,     GetBuffer(Renderer_Buffer::IndirectDrawData));
+                cmd_list->SetBuffer(Renderer_BindingsUav::meshlet_bounds,         GeometryBuffer::GetMeshletBoundsBuffer());
+                cmd_list->SetBuffer(Renderer_BindingsUav::meshlet_instances,      GetBuffer(Renderer_Buffer::MeshletInstances));
+                cmd_list->SetBuffer(Renderer_BindingsUav::visible_triangles,      GetBuffer(Renderer_Buffer::VisibleTriangles));
+
+                // f4_value: x = meshlet instances cap, y = visible triangles cap (drop survivors past either cap)
+                m_pcb_pass_cpu.set_f4_value(
+                    static_cast<float>(renderer_max_meshlet_instances),
+                    static_cast<float>(renderer_max_visible_triangles),
+                    0.0f, 0.0f);
+                cmd_list->PushConstants(m_pcb_pass_cpu);
+
+                cmd_list->DispatchIndirect(GetBuffer(Renderer_Buffer::TriangleDispatchArgs), 0);
+
+                // indirect_draw_args + visible_triangles feed the final indirect draw, plus indirect args needed for the indirect-draw stage
+                cmd_list->InsertBarrier(GetBuffer(Renderer_Buffer::IndirectDrawArgs));
+                cmd_list->InsertBarrier(GetBuffer(Renderer_Buffer::VisibleTriangles));
+            }
         }
         cmd_list->EndTimeblock();
     }
@@ -552,18 +581,14 @@ namespace spartan
                 pso.is_multiview                     = xr_multiview;
                 cmd_list->SetPipelineState(pso);
 
-                cmd_list->SetBufferIndex(GeometryBuffer::GetIndexBuffer());
-                cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_data_out, GetBuffer(Renderer_Buffer::IndirectDrawDataOut));
-                // single pso for the whole indirect bucket cannot honor per material cull, none keeps two sided assets visible
+                cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_data,    GetBuffer(Renderer_Buffer::IndirectDrawData));
+                cmd_list->SetBuffer(Renderer_BindingsUav::meshlet_instances,     GetBuffer(Renderer_Buffer::MeshletInstances));
+                cmd_list->SetBuffer(Renderer_BindingsUav::visible_triangles,     GetBuffer(Renderer_Buffer::VisibleTriangles));
+                cmd_list->SetBuffer(Renderer_BindingsUav::meshlet_bounds,        GeometryBuffer::GetMeshletBoundsBuffer());
+                // triangle cull pass already discarded backfaces, raster keeps both sides as a safety net for any flag mismatch
                 cmd_list->SetCullMode(RHI_CullMode::None);
 
-                cmd_list->DrawIndexedIndirectCount(
-                    GetBuffer(Renderer_Buffer::IndirectDrawArgsOut),
-                    0,
-                    GetBuffer(Renderer_Buffer::IndirectDrawCount),
-                    0,
-                    min(m_cull_task_count, renderer_max_cull_tasks)
-                );
+                cmd_list->DrawIndirect(GetBuffer(Renderer_Buffer::IndirectDrawArgs), 0);
             }
 
             // cpu-driven tessellated path (only tessellated still uses cpu draws, indirect path covers everything else)
@@ -670,18 +695,14 @@ namespace spartan
                 pso.clear_color[3]                   = Color::standard_transparent;
                 cmd_list->SetPipelineState(pso);
 
-                cmd_list->SetBufferIndex(GeometryBuffer::GetIndexBuffer());
-                cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_data_out, GetBuffer(Renderer_Buffer::IndirectDrawDataOut));
-                // single pso for the whole indirect bucket cannot honor per material cull, none keeps two sided assets visible
+                cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_data,    GetBuffer(Renderer_Buffer::IndirectDrawData));
+                cmd_list->SetBuffer(Renderer_BindingsUav::meshlet_instances,     GetBuffer(Renderer_Buffer::MeshletInstances));
+                cmd_list->SetBuffer(Renderer_BindingsUav::visible_triangles,     GetBuffer(Renderer_Buffer::VisibleTriangles));
+                cmd_list->SetBuffer(Renderer_BindingsUav::meshlet_bounds,        GeometryBuffer::GetMeshletBoundsBuffer());
+                // triangle cull pass already discarded backfaces, raster keeps both sides as a safety net for any flag mismatch
                 cmd_list->SetCullMode(RHI_CullMode::None);
 
-                cmd_list->DrawIndexedIndirectCount(
-                    GetBuffer(Renderer_Buffer::IndirectDrawArgsOut),
-                    0,
-                    GetBuffer(Renderer_Buffer::IndirectDrawCount),
-                    0,
-                    min(m_cull_task_count, renderer_max_cull_tasks)
-                );
+                cmd_list->DrawIndirect(GetBuffer(Renderer_Buffer::IndirectDrawArgs), 0);
 
                 // update previous transforms for motion vectors
                 for (uint32_t i = 0; i < m_draw_call_count; i++)
@@ -821,12 +842,17 @@ namespace spartan
             // gbuffer left depth in Shader_Read; promote it back to an attachment so we can do a read-only depth test
             tex_depth->SetLayout(RHI_Image_Layout::Attachment, cmd_list);
 
+            // mode 1/2 color/wireframe by meshlet id, mode 3/4 color/wireframe by post-cull draw id
+            bool wireframe                  = (mode == 2 || mode == 4);
+            bool color_by_draw_id           = (mode == 3 || mode == 4);
+            RHI_RasterizerState* rasterizer = wireframe ? GetRasterizerState(Renderer_RasterizerState::Wireframe) : GetRasterizerState(Renderer_RasterizerState::Solid);
+
             RHI_PipelineState pso;
             pso.name                             = "meshlet_visualize";
             pso.shaders[RHI_Shader_Type::Vertex] = GetShader(Renderer_Shader::meshlet_visualize_v);
             pso.shaders[RHI_Shader_Type::Pixel]  = GetShader(Renderer_Shader::meshlet_visualize_p);
             pso.blend_state                      = GetBlendState(Renderer_BlendState::Off);
-            pso.rasterizer_state                 = GetRasterizerState(Renderer_RasterizerState::Solid);
+            pso.rasterizer_state                 = rasterizer;
             // greater_equal mirrors the gbuffer test instead of equal which is fragile under fp drift between two vertex paths
             pso.depth_stencil_state              = GetDepthStencilState(Renderer_DepthStencilState::ReadGreaterEqual);
             pso.resolution_scale                 = true;
@@ -836,21 +862,18 @@ namespace spartan
             pso.clear_color[0]                   = Color::standard_black;
             cmd_list->SetPipelineState(pso);
 
-            cmd_list->SetBufferIndex(GeometryBuffer::GetIndexBuffer());
-            cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_data_out, GetBuffer(Renderer_Buffer::IndirectDrawDataOut));
-            cmd_list->SetCullMode(RHI_CullMode::Back);
+            cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_data,    GetBuffer(Renderer_Buffer::IndirectDrawData));
+            cmd_list->SetBuffer(Renderer_BindingsUav::meshlet_instances,     GetBuffer(Renderer_Buffer::MeshletInstances));
+            cmd_list->SetBuffer(Renderer_BindingsUav::visible_triangles,     GetBuffer(Renderer_Buffer::VisibleTriangles));
+            cmd_list->SetBuffer(Renderer_BindingsUav::meshlet_bounds,        GeometryBuffer::GetMeshletBoundsBuffer());
+            // wireframe shows both faces so the rear edges of thin meshlets stay visible, solid leaves cull to the triangle cull pass
+            cmd_list->SetCullMode(RHI_CullMode::None);
 
             // f3.x: 0 = color by global meshlet index, 1 = color by post-cull draw id
-            m_pcb_pass_cpu.set_f3_value(mode == 2 ? 1.0f : 0.0f, 0.0f, 0.0f);
+            m_pcb_pass_cpu.set_f3_value(color_by_draw_id ? 1.0f : 0.0f, 0.0f, 0.0f);
             cmd_list->PushConstants(m_pcb_pass_cpu);
 
-            cmd_list->DrawIndexedIndirectCount(
-                GetBuffer(Renderer_Buffer::IndirectDrawArgsOut),
-                0,
-                GetBuffer(Renderer_Buffer::IndirectDrawCount),
-                0,
-                min(m_cull_task_count, renderer_max_cull_tasks)
-            );
+            cmd_list->DrawIndirect(GetBuffer(Renderer_Buffer::IndirectDrawArgs), 0);
 
             // restore the layout the rest of the frame expects
             tex_depth->SetLayout(RHI_Image_Layout::Shader_Read, cmd_list);
@@ -1560,7 +1583,9 @@ namespace spartan
                     cmd_list->SetTexture(Renderer_BindingsSrv::tex3d_cloud_shape, tex_cloud_shape);
                 if (tex_cloud_detail)
                     cmd_list->SetTexture(Renderer_BindingsSrv::tex3d_cloud_detail, tex_cloud_detail);
-                
+
+                // shader reads buffer_pass via get_camera_position so push constants must be set
+                cmd_list->PushConstants(m_pcb_pass_cpu);
                 cmd_list->Dispatch(tex_skysphere);
             }
             else

@@ -49,6 +49,7 @@ namespace spartan
     uint32_t GeometryBuffer::m_index_capacity                 = 0;
     uint32_t GeometryBuffer::m_meshlet_bounds_capacity        = 0;
     uint32_t GeometryBuffer::m_instance_capacity              = 0;
+    uint32_t GeometryBuffer::m_instance_capacity_failed_at    = 0;
     bool GeometryBuffer::m_dirty                              = false;
     bool GeometryBuffer::m_was_rebuilt                        = false;
     mutex GeometryBuffer::m_mutex;
@@ -101,6 +102,12 @@ namespace spartan
         }
 
         uint32_t base_offset = static_cast<uint32_t>(m_instances.size());
+
+        // a previous BuildIfDirty hit oom at this size, drop the new instances so we don't grow the
+        // cpu-side vector unboundedly and don't retry ever-larger allocations every frame
+        if (m_instance_capacity_failed_at != 0 && base_offset + count >= m_instance_capacity_failed_at)
+            return base_offset;
+
         if (count > 0)
         {
             m_instances.insert(m_instances.end(), data, data + count);
@@ -154,15 +161,6 @@ namespace spartan
 
         if (needs_full_rebuild)
         {
-            // route old buffers through the deletion queue so frames in flight finish using them
-            // and we don't stall the renderer thread with QueueWaitAll
-            // the deletion queue retires after renderer_draw_data_buffer_count + 2 frames so the
-            // overlap window is bounded, callers should pre-size via Reserve() to avoid this path
-            m_vertex_buffer.reset();
-            m_index_buffer.reset();
-            m_meshlet_bounds_buffer.reset();
-            m_instance_buffer.reset();
-
             // allocate with headroom so late-arriving meshes don't trigger another rebuild
             // a flat 25% headroom on a multi-gb instance buffer wastes hundreds of mb, clamp to 64mb of slack
             auto add_headroom = [](uint64_t count, uint64_t stride, uint64_t max_slack_bytes) -> uint32_t
@@ -178,59 +176,94 @@ namespace spartan
             };
 
             constexpr uint64_t max_slack_bytes = 64ull * 1024ull * 1024ull;
-            m_vertex_capacity         = max(add_headroom(vertex_count,         sizeof(RHI_Vertex_PosTexNorTan), max_slack_bytes), m_vertex_capacity);
-            m_index_capacity          = max(add_headroom(index_count,          sizeof(uint32_t),                max_slack_bytes), m_index_capacity);
-            m_meshlet_bounds_capacity = max(add_headroom(meshlet_bounds_count, sizeof(Sb_MeshletBounds),        max_slack_bytes), max(m_meshlet_bounds_capacity, 1u));
-            m_instance_capacity       = max(add_headroom(instance_count,       sizeof(Instance),                max_slack_bytes), max(m_instance_capacity, 1u));
+            uint32_t new_vertex_capacity         = max(add_headroom(vertex_count,         sizeof(RHI_Vertex_PosTexNorTan), max_slack_bytes), m_vertex_capacity);
+            uint32_t new_index_capacity          = max(add_headroom(index_count,          sizeof(uint32_t),                max_slack_bytes), m_index_capacity);
+            uint32_t new_meshlet_bounds_capacity = max(add_headroom(meshlet_bounds_count, sizeof(Sb_MeshletBounds),        max_slack_bytes), max(m_meshlet_bounds_capacity, 1u));
+            uint32_t new_instance_capacity       = max(add_headroom(instance_count,       sizeof(Instance),                max_slack_bytes), max(m_instance_capacity, 1u));
 
-            // create vertex buffer with capacity (no initial data - we upload via sub-region)
-            m_vertex_buffer = make_unique<RHI_Buffer>(
+            // allocate into temporaries first so a failure doesn't tear down the previously-working buffers
+            // the renderer keeps using the old buffers (with whatever was previously committed) until the
+            // new set fully succeeds, this avoids null vkbuffer dereferences in downstream passes
+            auto new_vertex_buffer = make_unique<RHI_Buffer>(
                 RHI_Buffer_Type::Vertex,
                 sizeof(RHI_Vertex_PosTexNorTan),
-                m_vertex_capacity,
-                nullptr, // no initial data
+                new_vertex_capacity,
+                nullptr,
                 false,
                 "geometry_buffer_vertex"
             );
 
-            // create index buffer with capacity (no initial data)
-            m_index_buffer = make_unique<RHI_Buffer>(
+            auto new_index_buffer = make_unique<RHI_Buffer>(
                 RHI_Buffer_Type::Index,
                 sizeof(uint32_t),
-                m_index_capacity,
-                nullptr, // no initial data
+                new_index_capacity,
+                nullptr,
                 false,
                 "geometry_buffer_index"
             );
 
-            // create meshlet bounds storage buffer
-            m_meshlet_bounds_buffer = make_unique<RHI_Buffer>(
+            auto new_meshlet_bounds_buffer = make_unique<RHI_Buffer>(
                 RHI_Buffer_Type::Storage,
                 sizeof(Sb_MeshletBounds),
-                m_meshlet_bounds_capacity,
+                new_meshlet_bounds_capacity,
                 nullptr,
                 false,
                 "geometry_buffer_meshlet_bounds"
             );
 
-            // create instance storage buffer (12-byte stride matches Instance struct after padding and shader PackedInstance)
-            m_instance_buffer = make_unique<RHI_Buffer>(
+            auto new_instance_buffer = make_unique<RHI_Buffer>(
                 RHI_Buffer_Type::Instance,
                 sizeof(Instance),
-                m_instance_capacity,
+                new_instance_capacity,
                 nullptr,
                 false,
                 "geometry_buffer_instances"
             );
 
-            // upload all committed data into the newly allocated buffers
-            m_vertex_buffer->UploadSubRegion(m_vertices.data(), 0, vertex_count * sizeof(RHI_Vertex_PosTexNorTan));
-            m_index_buffer->UploadSubRegion(m_indices.data(), 0, index_count * sizeof(uint32_t));
+            bool allocation_failed = !new_vertex_buffer->GetRhiResource()         ||
+                                     !new_index_buffer->GetRhiResource()          ||
+                                     !new_meshlet_bounds_buffer->GetRhiResource() ||
+                                     !new_instance_buffer->GetRhiResource();
+            if (allocation_failed)
+            {
+                SP_LOG_ERROR("Failed to allocate global geometry buffer (vertex_capacity=%u, index_capacity=%u, meshlet_capacity=%u, instance_capacity=%u), the world is too large for the available device memory, dropping further appends",
+                    new_vertex_capacity, new_index_capacity, new_meshlet_bounds_capacity, new_instance_capacity);
+
+                // record the failed instance count, future AppendInstances calls bail out before growing m_instances
+                // and BuildIfDirty stops re-attempting larger allocations every frame
+                m_instance_capacity_failed_at = instance_count;
+
+                // truncate cpu-side instance vector back to what the previous gpu buffer can hold so
+                // m_dirty stays clean and BuildIfDirty stops triggering, identity slot 0 is preserved
+                if (m_instance_buffer && m_instance_count_committed > 0 && m_instances.size() > m_instance_count_committed)
+                {
+                    m_instances.resize(m_instance_count_committed);
+                }
+
+                m_dirty       = false;
+                m_was_rebuilt = false;
+                return;
+            }
+
+            // upload committed data into the newly allocated buffers before swapping
+            new_vertex_buffer->UploadSubRegion(m_vertices.data(), 0, vertex_count * sizeof(RHI_Vertex_PosTexNorTan));
+            new_index_buffer->UploadSubRegion(m_indices.data(), 0, index_count * sizeof(uint32_t));
             if (meshlet_bounds_count > 0)
             {
-                m_meshlet_bounds_buffer->UploadSubRegion(m_meshlet_bounds.data(), 0, meshlet_bounds_count * sizeof(Sb_MeshletBounds));
+                new_meshlet_bounds_buffer->UploadSubRegion(m_meshlet_bounds.data(), 0, meshlet_bounds_count * sizeof(Sb_MeshletBounds));
             }
-            m_instance_buffer->UploadSubRegion(m_instances.data(), 0, instance_count * sizeof(Instance));
+            new_instance_buffer->UploadSubRegion(m_instances.data(), 0, instance_count * sizeof(Instance));
+
+            // commit, the old buffers go through the deletion queue here so frames in flight finish using them
+            m_vertex_buffer         = std::move(new_vertex_buffer);
+            m_index_buffer          = std::move(new_index_buffer);
+            m_meshlet_bounds_buffer = std::move(new_meshlet_bounds_buffer);
+            m_instance_buffer       = std::move(new_instance_buffer);
+
+            m_vertex_capacity                = new_vertex_capacity;
+            m_index_capacity                 = new_index_capacity;
+            m_meshlet_bounds_capacity        = new_meshlet_bounds_capacity;
+            m_instance_capacity              = new_instance_capacity;
 
             m_vertex_count_committed         = vertex_count;
             m_index_count_committed          = index_count;
@@ -341,6 +374,7 @@ namespace spartan
         m_index_capacity                 = 0;
         m_meshlet_bounds_capacity        = 0;
         m_instance_capacity              = 0;
+        m_instance_capacity_failed_at    = 0;
         m_dirty                          = false;
         m_was_rebuilt                    = false;
     }

@@ -278,24 +278,24 @@ namespace spartan
         static std::array<Renderer_DrawCall, renderer_max_draw_calls> m_draw_calls_prepass;
         static uint32_t m_draw_calls_prepass_count;
 
-        // gpu-driven indirect drawing (sized for one-entry-per-meshlet expansion)
-        static std::array<Sb_IndirectDrawArgs, renderer_max_indirect_draws> m_indirect_draw_args;
+        // gpu-driven indirect drawing
+        // m_indirect_draw_data holds per-renderable lod entries, sized for the per-renderable budget
+        // m_cull_tasks expands to one entry per (renderable, meshlet) and is what the cull pass dispatches over
         static std::array<Sb_DrawData, renderer_max_indirect_draws> m_indirect_draw_data;
         static uint32_t m_indirect_draw_count;
         // count of distinct renderables in the indirect path, used to lay out one aabb slot per renderable
         static uint32_t m_indirect_renderable_count;
-        // per-instance cull tasks, the cull pass dispatches over these and emits surviving entries into the indirect_draw_*_out buffers
         static std::array<Sb_CullTask, renderer_max_cull_tasks> m_cull_tasks;
         static uint32_t m_cull_task_count;
 
         // per-frame gpu buffers, rotated so in-flight frames never race
         struct FrameResource
         {
-            std::shared_ptr<RHI_Buffer> indirect_draw_args;
-            std::shared_ptr<RHI_Buffer> indirect_draw_data;
-            std::shared_ptr<RHI_Buffer> indirect_draw_args_out;
-            std::shared_ptr<RHI_Buffer> indirect_draw_data_out;
-            std::shared_ptr<RHI_Buffer> indirect_draw_count;
+            std::shared_ptr<RHI_Buffer> indirect_draw_args;     // single-slot args buffer for the final non-indexed indirect draw
+            std::shared_ptr<RHI_Buffer> indirect_draw_data;     // per-renderable lod draw data
+            std::shared_ptr<RHI_Buffer> meshlet_instances;      // meshlet-cull survivor list
+            std::shared_ptr<RHI_Buffer> visible_triangles;      // triangle-cull survivor list (packed meshlet_instance + triangle index)
+            std::shared_ptr<RHI_Buffer> triangle_dispatch_args; // single-slot indirect dispatch args for the triangle cull pass
             std::shared_ptr<RHI_Buffer> cull_tasks;
         };
         static std::array<FrameResource, renderer_draw_data_buffer_count> m_frame_resources;

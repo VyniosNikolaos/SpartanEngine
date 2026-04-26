@@ -98,13 +98,17 @@ StructuredBuffer<uint> geometry_indices             : register(t22, space9);
 StructuredBuffer<PackedInstance> geometry_instances : register(t23, space10);
 
 // gpu-driven indirect drawing uav bindings
-// input: populated by cpu, read by the cull compute shader
+// indirect_draw_args is a single-slot buffer used as the args for the final non-indexed indirect draw
+//   slot 0 layout matches VkDrawIndirectCommand for the first 16 bytes: vertex_count, instance_count, first_vertex, first_instance
+//   the cpu primes instance_count = 1 each frame, vertex_count is atomically bumped by triangle cull (in 3-vertex steps)
 RWStructuredBuffer<IndirectDrawArgs> indirect_draw_args : register(u31);
 RWStructuredBuffer<DrawData> indirect_draw_data         : register(u32);
-// output: written by the cull compute shader, read by vertex shaders
-RWStructuredBuffer<IndirectDrawArgs> indirect_draw_args_out : register(u33);
-RWStructuredBuffer<DrawData> indirect_draw_data_out         : register(u34);
-RWStructuredBuffer<uint> indirect_draw_count                : register(u35);
+// meshlet_instances is the meshlet-cull survivor list, the triangle cull dispatches one workgroup per entry
+RWStructuredBuffer<MeshletInstance> meshlet_instances   : register(u33);
+// visible_triangles is the triangle-cull survivor list, packed via VISIBLE_TRI_PACK
+RWStructuredBuffer<uint> visible_triangles              : register(u34);
+// triangle_dispatch_args is the indirect dispatch args for the triangle cull, group_count_x is the meshlet survivor count
+RWStructuredBuffer<IndirectDispatchArgs> triangle_dispatch_args : register(u35);
 
 RWStructuredBuffer<Particle>      particle_buffer_a : register(u36);
 RWStructuredBuffer<uint>          particle_counter  : register(u38);
@@ -139,7 +143,7 @@ bool is_ray_traced_shadows_enabled()     { return buffer_frame.options & uint(1U
 bool is_restir_pt_enabled()              { return buffer_frame.options & uint(1U << 3); }
 
 // per-draw data is stored in a static so both vertex and pixel shaders can access it
-// vertex shaders populate this from the appropriate buffer (draw_data or indirect_draw_data_out)
+// vertex shaders populate this from the appropriate buffer (draw_data for cpu-driven, indirect_draw_data via MeshletInstance for gpu-driven)
 static DrawData _draw;
 
 // per-draw accessors - read from the static draw data populated by the vertex shader entry point

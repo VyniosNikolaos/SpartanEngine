@@ -21,7 +21,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #pragma once
 
-//= INCLUDES ===========
+//= INCLUDES ======================
 #include <string>
 #include <vector>
 #include <array>
@@ -31,7 +31,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <algorithm>
 #include "Definitions.h"
 #include "../RHI/RHI_Definitions.h"
-//======================
+//=================================
 
 namespace spartan
 {

@@ -104,14 +104,14 @@ namespace spartan
         );
 
         // per-frame rotated buffers
-        uint32_t draw_count_init = 0;
         for (uint32_t i = 0; i < renderer_draw_data_buffer_count; i++)
         {
             FrameResource& fr = m_frame_resources[i];
 
+            // single-slot args buffer for the final non-indexed indirect draw, vertex_count is bumped atomically by the triangle cull pass
             fr.indirect_draw_args = make_shared<RHI_Buffer>(
                 RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_IndirectDrawArgs)),
-                renderer_max_indirect_draws, nullptr, true,
+                1, nullptr, true,
                 (string("indirect_draw_args_") + to_string(i)).c_str()
             );
 
@@ -121,24 +121,25 @@ namespace spartan
                 (string("indirect_draw_data_") + to_string(i)).c_str()
             );
 
-            // out buffers are written by the cull pass, one expanded draw per surviving cull task
-            // so they must be sized for renderer_max_cull_tasks, not renderer_max_indirect_draws
-            fr.indirect_draw_args_out = make_shared<RHI_Buffer>(
-                RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_IndirectDrawArgs)),
-                renderer_max_cull_tasks, nullptr, true,
-                (string("indirect_draw_args_out_") + to_string(i)).c_str()
+            // meshlet-cull survivors, gpu-only (compute writes, vs reads), keep it off the host-visible heap
+            fr.meshlet_instances = make_shared<RHI_Buffer>(
+                RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_MeshletInstance)),
+                renderer_max_meshlet_instances, nullptr, false,
+                (string("meshlet_instances_") + to_string(i)).c_str()
             );
 
-            fr.indirect_draw_data_out = make_shared<RHI_Buffer>(
-                RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_DrawData)),
-                renderer_max_cull_tasks, nullptr, true,
-                (string("indirect_draw_data_out_") + to_string(i)).c_str()
-            );
-
-            fr.indirect_draw_count = make_shared<RHI_Buffer>(
+            // triangle-cull survivors, gpu-only and the largest of the cull buffers, must not land in bar memory
+            fr.visible_triangles = make_shared<RHI_Buffer>(
                 RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(uint32_t)),
-                1, &draw_count_init, true,
-                (string("indirect_draw_count_") + to_string(i)).c_str()
+                renderer_max_visible_triangles, nullptr, false,
+                (string("visible_triangles_") + to_string(i)).c_str()
+            );
+
+            // single-slot indirect dispatch args for the triangle cull pass, group_count_x is bumped atomically by the meshlet cull
+            fr.triangle_dispatch_args = make_shared<RHI_Buffer>(
+                RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_IndirectDispatchArgs)),
+                1, nullptr, true,
+                (string("triangle_dispatch_args_") + to_string(i)).c_str()
             );
 
             fr.cull_tasks = make_shared<RHI_Buffer>(
@@ -150,12 +151,12 @@ namespace spartan
 
         // point the active buffer slots at frame 0
         const FrameResource& fr = m_frame_resources[0];
-        at(buffers, Renderer_Buffer::IndirectDrawArgs)    = fr.indirect_draw_args;
-        at(buffers, Renderer_Buffer::IndirectDrawData)    = fr.indirect_draw_data;
-        at(buffers, Renderer_Buffer::IndirectDrawArgsOut) = fr.indirect_draw_args_out;
-        at(buffers, Renderer_Buffer::IndirectDrawDataOut) = fr.indirect_draw_data_out;
-        at(buffers, Renderer_Buffer::IndirectDrawCount)   = fr.indirect_draw_count;
-        at(buffers, Renderer_Buffer::CullTasks)           = fr.cull_tasks;
+        at(buffers, Renderer_Buffer::IndirectDrawArgs)     = fr.indirect_draw_args;
+        at(buffers, Renderer_Buffer::IndirectDrawData)     = fr.indirect_draw_data;
+        at(buffers, Renderer_Buffer::MeshletInstances)     = fr.meshlet_instances;
+        at(buffers, Renderer_Buffer::VisibleTriangles)     = fr.visible_triangles;
+        at(buffers, Renderer_Buffer::TriangleDispatchArgs) = fr.triangle_dispatch_args;
+        at(buffers, Renderer_Buffer::CullTasks)            = fr.cull_tasks;
 
         // particle buffers
         const uint32_t particle_max = 100000;
@@ -615,7 +616,8 @@ namespace spartan
         compile_shader(Renderer_Shader::blit_c,                 RHI_Shader_Type::Compute, sd + "blit.hlsl");
 
         // indirect draw
-        compile_shader(Renderer_Shader::indirect_cull_c,         RHI_Shader_Type::Compute, sd + "indirect_cull.hlsl");
+        compile_shader(Renderer_Shader::indirect_cull_c,          RHI_Shader_Type::Compute, sd + "indirect_cull.hlsl");
+        compile_shader(Renderer_Shader::indirect_cull_triangle_c, RHI_Shader_Type::Compute, sd + "indirect_cull_triangle.hlsl");
         compile_shader(Renderer_Shader::gbuffer_indirect_v,      RHI_Shader_Type::Vertex,  sd + "g_buffer.hlsl",      true, RHI_Vertex_Type::Max, "INDIRECT_DRAW");
         compile_shader(Renderer_Shader::gbuffer_indirect_p,      RHI_Shader_Type::Pixel,   sd + "g_buffer.hlsl",      true, RHI_Vertex_Type::Max, "INDIRECT_DRAW");
         compile_shader(Renderer_Shader::depth_prepass_indirect_v,           RHI_Shader_Type::Vertex,  sd + "depth_prepass.hlsl", true, RHI_Vertex_Type::Max, "INDIRECT_DRAW");
@@ -845,12 +847,12 @@ namespace spartan
         m_frame_resource_index = (m_frame_resource_index + 1) % renderer_draw_data_buffer_count;
         const FrameResource& fr = m_frame_resources[m_frame_resource_index];
 
-        buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawArgs)]    = fr.indirect_draw_args;
-        buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawData)]    = fr.indirect_draw_data;
-        buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawArgsOut)] = fr.indirect_draw_args_out;
-        buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawDataOut)] = fr.indirect_draw_data_out;
-        buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawCount)]   = fr.indirect_draw_count;
-        buffers[static_cast<uint8_t>(Renderer_Buffer::CullTasks)]           = fr.cull_tasks;
+        buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawArgs)]     = fr.indirect_draw_args;
+        buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawData)]     = fr.indirect_draw_data;
+        buffers[static_cast<uint8_t>(Renderer_Buffer::MeshletInstances)]     = fr.meshlet_instances;
+        buffers[static_cast<uint8_t>(Renderer_Buffer::VisibleTriangles)]     = fr.visible_triangles;
+        buffers[static_cast<uint8_t>(Renderer_Buffer::TriangleDispatchArgs)] = fr.triangle_dispatch_args;
+        buffers[static_cast<uint8_t>(Renderer_Buffer::CullTasks)]            = fr.cull_tasks;
     }
 
     RHI_Texture* Renderer::GetStandardTexture(const Renderer_StandardTexture type)

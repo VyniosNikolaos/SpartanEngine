@@ -157,7 +157,8 @@ namespace spartan
                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
                            (is_depth ? (VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT) : VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
                 case RHI_Barrier_Scope::Compute:
-                    return VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                    // include draw_indirect so a compute pass that consumes indirect dispatch args reads them with the correct stage
+                    return VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
                 case RHI_Barrier_Scope::Transfer:
                     return VK_PIPELINE_STAGE_2_TRANSFER_BIT;
                 case RHI_Barrier_Scope::Fragment:
@@ -1571,6 +1572,25 @@ namespace spartan
         Profiler::m_rhi_draw++;
     }
 
+    void RHI_CommandList::DrawIndirect(RHI_Buffer* args_buffer, const uint32_t args_offset)
+    {
+        SP_ASSERT(m_state == RHI_CommandListState::Recording);
+        SP_ASSERT(args_buffer != nullptr);
+
+        PreDraw();
+
+        // single non-indexed indirect draw, args layout matches VkDrawIndirectCommand
+        vkCmdDrawIndirect(
+            static_cast<VkCommandBuffer>(m_rhi_resource),
+            static_cast<VkBuffer>(args_buffer->GetRhiResource()),
+            static_cast<VkDeviceSize>(args_offset),
+            1u,
+            sizeof(uint32_t) * 4
+        );
+
+        Profiler::m_rhi_draw++;
+    }
+
     void RHI_CommandList::Dispatch(uint32_t x, uint32_t y, uint32_t z /*= 1*/)
     {
         SP_ASSERT(m_state == RHI_CommandListState::Recording);
@@ -1578,6 +1598,21 @@ namespace spartan
         PreDraw();
 
         vkCmdDispatch(static_cast<VkCommandBuffer>(m_rhi_resource), x, y, z);
+    }
+
+    void RHI_CommandList::DispatchIndirect(RHI_Buffer* args_buffer, const uint32_t args_offset /*= 0*/)
+    {
+        SP_ASSERT(m_state == RHI_CommandListState::Recording);
+        SP_ASSERT(args_buffer != nullptr);
+
+        PreDraw();
+
+        // args layout matches VkDispatchIndirectCommand: group_count_x, group_count_y, group_count_z
+        vkCmdDispatchIndirect(
+            static_cast<VkCommandBuffer>(m_rhi_resource),
+            static_cast<VkBuffer>(args_buffer->GetRhiResource()),
+            static_cast<VkDeviceSize>(args_offset)
+        );
     }
 
     void RHI_CommandList::TraceRays(const uint32_t width, const uint32_t height)
