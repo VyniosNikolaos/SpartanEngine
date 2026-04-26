@@ -61,13 +61,17 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
         return;
     }
     
-    // miss (sky) - sample skysphere using stored direction
+    // miss (sky) sample skysphere using stored direction with cone width matched to source roughness
     if (hit_distance == 0.0f)
     {
-        float3 ray_dir   = position; // direction stored in position for misses
-        float2 sky_uv    = direction_sphere_uv(ray_dir);
-        float3 sky_color = tex4.SampleLevel(GET_SAMPLER(sampler_trilinear_clamp), sky_uv, 0).rgb;
-        tex_uav[thread_id.xy] = float4(sky_color, 1.0f);
+        // mip is driven by the source surface roughness so smooth metals get sharp sky and rough surfaces get pre filtered sky
+        float source_roughness = tex_material[thread_id.xy].r;
+        float mip_count        = pass_get_f3_value().y;
+        float sky_mip          = source_roughness * source_roughness * (mip_count - 1.0f);
+        float3 ray_dir         = position; // direction stored in position for misses
+        float2 sky_uv          = direction_sphere_uv(ray_dir);
+        float3 sky_color       = tex4.SampleLevel(GET_SAMPLER(sampler_trilinear_clamp), sky_uv, sky_mip).rgb;
+        tex_uav[thread_id.xy]  = float4(sky_color, 1.0f);
         return;
     }
     
@@ -151,23 +155,21 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
         if (n_dot_l <= 0.0f || attenuation <= 0.0f)
             continue;
         
-        // shadow (simplified - only directional light cascade 0)
+        // shadow directional light cascade 0 with hardware pcf, reverse z requires receiver greater than occluder to be lit
         float shadow = 1.0f;
         if (has_shadows && is_directional)
         {
-            // transform to light space (cascade 0)
             float4 clip_pos = mul(float4(position, 1.0f), light_params.transform[0]);
             float3 ndc      = clip_pos.xyz / clip_pos.w;
             float2 uv       = ndc_to_uv(ndc.xy);
-            
-            // check bounds
+
             float2 ndc_abs = abs(ndc.xy);
             if (max(ndc_abs.x, ndc_abs.y) <= 1.0f)
             {
-                // simple shadow comparison (no soft shadows for reflections)
-                float2 atlas_uv = light_params.atlas_offsets[0] + uv * light_params.atlas_scales[0];
-                float depth_sample = tex5.SampleLevel(GET_SAMPLER(sampler_point_clamp), atlas_uv, 0).r;
-                shadow = (ndc.z < depth_sample) ? 1.0f : 0.0f;
+                // small bias avoids acne, comparison sampler is configured for reverse z so this returns one when lit
+                const float shadow_bias = 0.001f;
+                float2 atlas_uv         = light_params.atlas_offsets[0] + uv * light_params.atlas_scales[0];
+                shadow                  = tex5.SampleCmpLevelZero(samplers_comparison[sampler_compare_depth], atlas_uv, ndc.z + shadow_bias).r;
             }
         }
         

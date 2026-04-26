@@ -71,38 +71,37 @@ namespace spartan
             const int x = area->x;
             const int y = area->y;
             const int resize_margin = static_cast<int>(resize_border * dpi_scale);
+            const bool is_maximized = (SDL_GetWindowFlags(win) & SDL_WINDOW_MAXIMIZED) != 0;
 
-            // check corners first (for diagonal resize)
-            bool top    = y < resize_margin;
-            bool bottom = y >= h - resize_margin;
-            bool left   = x < resize_margin;
-            bool right  = x >= w - resize_margin;
-
-            // corner hit tests
-            if (top && left)     return SDL_HITTEST_RESIZE_TOPLEFT;
-            if (top && right)    return SDL_HITTEST_RESIZE_TOPRIGHT;
-            if (bottom && left)  return SDL_HITTEST_RESIZE_BOTTOMLEFT;
-            if (bottom && right) return SDL_HITTEST_RESIZE_BOTTOMRIGHT;
-
-            // edge hit tests
-            if (top)    return SDL_HITTEST_RESIZE_TOP;
-            if (bottom) return SDL_HITTEST_RESIZE_BOTTOM;
-            if (left)   return SDL_HITTEST_RESIZE_LEFT;
-            if (right)  return SDL_HITTEST_RESIZE_RIGHT;
-
-            // title bar area - make draggable only when no imgui items are hovered
-            if (y < static_cast<int>(titlebar_height))
+            // titlebar buttons take priority so the close button stays clickable at the top right corner
+            if (y < static_cast<int>(titlebar_height) && x >= w - static_cast<int>(titlebar_button_width))
             {
-                // exclude window buttons area on the right
-                if (x < w - static_cast<int>(titlebar_button_width))
-                {
-                    // only allow dragging when no imgui items were hovered recently
-                    // use persistence to avoid timing issues between hit test and imgui frame
-                    if (titlebar_hovered_frames == 0)
-                    {
-                        return SDL_HITTEST_DRAGGABLE;
-                    }
-                }
+                return SDL_HITTEST_NORMAL;
+            }
+
+            // resize hit tests, skipped when maximized since resizing is a no op
+            if (!is_maximized)
+            {
+                bool top    = y < resize_margin;
+                bool bottom = y >= h - resize_margin;
+                bool left   = x < resize_margin;
+                bool right  = x >= w - resize_margin;
+
+                if (top && left)     return SDL_HITTEST_RESIZE_TOPLEFT;
+                if (top && right)    return SDL_HITTEST_RESIZE_TOPRIGHT;
+                if (bottom && left)  return SDL_HITTEST_RESIZE_BOTTOMLEFT;
+                if (bottom && right) return SDL_HITTEST_RESIZE_BOTTOMRIGHT;
+
+                if (top)    return SDL_HITTEST_RESIZE_TOP;
+                if (bottom) return SDL_HITTEST_RESIZE_BOTTOM;
+                if (left)   return SDL_HITTEST_RESIZE_LEFT;
+                if (right)  return SDL_HITTEST_RESIZE_RIGHT;
+            }
+
+            // remaining titlebar area is draggable when imgui is not interacting with anything
+            if (y < static_cast<int>(titlebar_height) && titlebar_hovered_frames == 0)
+            {
+                return SDL_HITTEST_DRAGGABLE;
             }
 
             return SDL_HITTEST_NORMAL;

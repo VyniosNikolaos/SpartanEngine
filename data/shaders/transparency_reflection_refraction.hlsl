@@ -240,16 +240,17 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
         }
     }
     
-    // compute specular reflection using Fresnel and BRDF
+    // compute specular reflection using fresnel and brdf split sum
     float3 reflection = tex[thread_id.xy].rgb;
-    float2 brdf = tex3.SampleLevel(samplers[sampler_bilinear_clamp], float2(n_dot_v, surface.roughness), 0.0f).rg;
-    
-    // compute F0 for dielectrics: F0 = ((n1-n2)/(n1+n2))^2
-    float f0_dielectric = pow((ior_air - ior_material) / (ior_air + ior_material), 2.0f);
-    float3 F0_dielectric = float3(f0_dielectric, f0_dielectric, f0_dielectric);
-    
-    // compute specular reflection: brdf.x = fresnel-dependent, brdf.y = fresnel-independent
-    float3 specular_reflection = reflection * (F0_dielectric * brdf.x + brdf.y);
+    float2 brdf       = tex3.SampleLevel(samplers[sampler_bilinear_clamp], float2(n_dot_v, surface.roughness), 0.0f).rg;
+
+    // pick the right F0, transparent surfaces use the ior derived dielectric F0, opaque surfaces use the actual surface F0 which is colored for metals
+    float  f0_dielectric  = pow((ior_air - ior_material) / (ior_air + ior_material), 2.0f);
+    float3 F0_dielectric  = float3(f0_dielectric, f0_dielectric, f0_dielectric);
+    float3 F0_brdf        = (surface.is_water() || surface.is_transparent()) ? F0_dielectric : surface.F0;
+
+    // brdf.x is fresnel dependent and brdf.y is fresnel independent, this matches the split sum used in light_image_based.hlsl
+    float3 specular_reflection = reflection * (F0_brdf * brdf.x + brdf.y);
     
     // blend reflection and refraction using Fresnel
     float3 kT = float3(1.0f, 1.0f, 1.0f) - F; // transmission coefficient

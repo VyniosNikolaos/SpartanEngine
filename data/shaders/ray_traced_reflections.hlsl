@@ -76,12 +76,12 @@ void ray_gen()
     float3 V         = normalize(get_camera_position() - pos_ws);
     float3 R         = reflect(-V, normal_ws);
     
-    // ray origin offset
+    // ray origin offset, scaled with camera distance and pushed harder along the reflection at grazing angles to escape self intersection on curved metal panels
     float camera_distance = length(get_camera_position() - pos_ws);
-    float base_offset     = 0.0001f + camera_distance * 0.00005f;
+    float base_offset     = 0.001f + camera_distance * 0.0001f;
     float n_dot_v         = saturate(dot(normal_ws, V));
     float grazing_factor  = 1.0f - n_dot_v;
-    float3 ray_origin     = pos_ws + normal_ws * base_offset + R * base_offset * grazing_factor * 0.5f;
+    float3 ray_origin     = pos_ws + normal_ws * base_offset + R * base_offset * grazing_factor * 2.0f;
     
     RayDesc ray;
     ray.Origin    = ray_origin;
@@ -197,26 +197,32 @@ void closest_hit(inout Payload payload : SV_RayPayload, in BuiltInTriangleInters
     if (mat.uv_rotation != 0.0f)
         texcoord = rotate_uv_90(texcoord, mat.uv_rotation);
     
-    // normal mapping
+    // normal mapping, mild mip bias to avoid specular sparkle on detailed normal maps without destroying surface detail
     if (mat.has_texture_normal())
     {
-        uint normal_texture_index = material_index + material_texture_index_normal;
-        float3 normal_sample      = material_textures[normal_texture_index].SampleLevel(GET_SAMPLER(sampler_bilinear_wrap), texcoord, 0).xyz;
-        normal_sample             = normal_sample * 2.0f - 1.0f;
-        
+        uint  normal_texture_index = material_index + material_texture_index_normal;
+        float hit_distance_n       = RayTCurrent();
+        float n_dot_v_n            = saturate(dot(normal_world, -WorldRayDirection()));
+        float normal_mip           = clamp(log2(max(hit_distance_n, 1.0f)) + lerp(1.5f, 0.0f, n_dot_v_n), 0.0f, 5.0f);
+        float3 normal_sample       = material_textures[normal_texture_index].SampleLevel(GET_SAMPLER(sampler_bilinear_wrap), texcoord, normal_mip).xyz;
+        normal_sample              = normal_sample * 2.0f - 1.0f;
+
         float3 bitangent_world = normalize(cross(normal_world, tangent_world));
         float3x3 tbn           = float3x3(tangent_world, bitangent_world, normal_world);
         normal_world           = normalize(mul(normal_sample, tbn));
     }
     
-    // albedo
+    // albedo, mip is biased by hit distance and grazing angle so ray traced reflections do not produce texture moire on tiled or stretched footprints
     float3 albedo = mat.color.rgb;
     if (mat.has_texture_albedo())
     {
-        uint albedo_texture_index = material_index + material_texture_index_albedo;
-        float hit_distance = RayTCurrent();
-        float mip_level    = clamp(log2(max(hit_distance * 0.5f, 1.0f)), 0.0f, 4.0f);
-        
+        uint  albedo_texture_index = material_index + material_texture_index_albedo;
+        float hit_distance         = RayTCurrent();
+        float n_dot_v_hit          = saturate(dot(normal_world, -WorldRayDirection()));
+        float grazing_mip_boost    = lerp(2.5f, 0.0f, n_dot_v_hit);
+        float distance_mip         = log2(max(hit_distance, 1.0f));
+        float mip_level            = clamp(distance_mip + grazing_mip_boost, 0.0f, 7.0f);
+
         float4 sampled_albedo = material_textures[albedo_texture_index].SampleLevel(GET_SAMPLER(sampler_bilinear_wrap), texcoord, mip_level);
         if (sampled_albedo.a > 0.01f)
             albedo = sampled_albedo.rgb * mat.color.rgb;
