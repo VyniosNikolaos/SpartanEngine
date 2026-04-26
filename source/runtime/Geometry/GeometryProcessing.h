@@ -25,6 +25,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <vector>
 #include "../RHI/RHI_Vertex.h"
 #include "../Core/ThreadPool.h"
+#include "../Rendering/Renderer_Buffers.h"
 SP_WARNINGS_OFF
 #include "meshoptimizer/meshoptimizer.h"
 SP_WARNINGS_ON
@@ -273,6 +274,111 @@ namespace spartan::geometry_processing
     
         // step 5: vertex fetch optimization
         meshopt_optimizeVertexFetch(vertices.data(), indices.data(), index_count, vertices.data(), vertex_count, sizeof(RHI_Vertex_PosTexNorTan));
+    }
+
+    // meshlet generation tunables, matches meshoptimizer recommendations
+    static constexpr size_t meshlet_max_vertices  = 64;
+    static constexpr size_t meshlet_max_triangles = 124;
+
+    // build per-lod meshlets and repack the index buffer in meshlet order
+    // each meshlet ends up with a contiguous range in the returned index buffer (first_index/index_count are local to that range)
+    // returns the meshlet bounding spheres in the same order as the repacked indices
+    static void build_meshlets(
+        const std::vector<RHI_Vertex_PosTexNorTan>& vertices,
+        std::vector<uint32_t>& indices,
+        std::vector<Sb_MeshletBounds>& meshlets_out
+    )
+    {
+        meshlets_out.clear();
+
+        const size_t index_count  = indices.size();
+        const size_t vertex_count = vertices.size();
+        if (index_count == 0 || vertex_count == 0)
+            return;
+
+        // worst case meshlet count, used for buffer allocation
+        const size_t max_meshlets = meshopt_buildMeshletsBound(index_count, meshlet_max_vertices, meshlet_max_triangles);
+
+        std::vector<meshopt_Meshlet> meshlets(max_meshlets);
+        std::vector<unsigned int> meshlet_vertices(max_meshlets * meshlet_max_vertices);
+        std::vector<unsigned char> meshlet_triangles(max_meshlets * meshlet_max_triangles * 3);
+
+        // cone_weight 0.5 biases meshlet builds toward triangles with similar normals so cone backface culling is effective
+        const size_t meshlet_count = meshopt_buildMeshlets(
+            meshlets.data(),
+            meshlet_vertices.data(),
+            meshlet_triangles.data(),
+            indices.data(),
+            index_count,
+            &vertices[0].pos[0],
+            vertex_count,
+            sizeof(RHI_Vertex_PosTexNorTan),
+            meshlet_max_vertices,
+            meshlet_max_triangles,
+            0.5f
+        );
+
+        if (meshlet_count == 0)
+            return;
+
+        // trim the worst-case allocation and tightly-pack the last meshlet (per meshopt docs)
+        const meshopt_Meshlet& last = meshlets[meshlet_count - 1];
+        meshlet_vertices.resize(last.vertex_offset + last.vertex_count);
+        meshlet_triangles.resize(last.triangle_offset + ((last.triangle_count * 3 + 3) & ~3));
+        meshlets.resize(meshlet_count);
+
+        // repack the lod's index buffer so each meshlet occupies a contiguous range
+        std::vector<uint32_t> repacked;
+        repacked.reserve(index_count);
+        meshlets_out.reserve(meshlet_count);
+
+        for (size_t m = 0; m < meshlet_count; ++m)
+        {
+            const meshopt_Meshlet& ml = meshlets[m];
+
+            Sb_MeshletBounds bounds = {};
+            bounds.first_index      = static_cast<uint32_t>(repacked.size());
+            bounds.index_count      = ml.triangle_count * 3;
+
+            // emit triangles for this meshlet
+            for (uint32_t t = 0; t < ml.triangle_count; ++t)
+            {
+                const uint8_t i0 = meshlet_triangles[ml.triangle_offset + t * 3 + 0];
+                const uint8_t i1 = meshlet_triangles[ml.triangle_offset + t * 3 + 1];
+                const uint8_t i2 = meshlet_triangles[ml.triangle_offset + t * 3 + 2];
+
+                repacked.push_back(meshlet_vertices[ml.vertex_offset + i0]);
+                repacked.push_back(meshlet_vertices[ml.vertex_offset + i1]);
+                repacked.push_back(meshlet_vertices[ml.vertex_offset + i2]);
+            }
+
+            // bounding sphere for hi-z meshlet culling
+            meshopt_Bounds mb = meshopt_computeMeshletBounds(
+                &meshlet_vertices[ml.vertex_offset],
+                &meshlet_triangles[ml.triangle_offset],
+                ml.triangle_count,
+                &vertices[0].pos[0],
+                vertex_count,
+                sizeof(RHI_Vertex_PosTexNorTan)
+            );
+
+            bounds.center.x = mb.center[0];
+            bounds.center.y = mb.center[1];
+            bounds.center.z = mb.center[2];
+            bounds.radius   = mb.radius;
+
+            // pack the snorm cone axis xyz and cone cutoff into one uint, byte 0..2 axis, byte 3 cutoff
+            uint32_t ax = static_cast<uint32_t>(static_cast<uint8_t>(mb.cone_axis_s8[0]));
+            uint32_t ay = static_cast<uint32_t>(static_cast<uint8_t>(mb.cone_axis_s8[1]));
+            uint32_t az = static_cast<uint32_t>(static_cast<uint8_t>(mb.cone_axis_s8[2]));
+            uint32_t cc = static_cast<uint32_t>(static_cast<uint8_t>(mb.cone_cutoff_s8));
+            bounds.cone_axis_cutoff = ax | (ay << 8) | (az << 16) | (cc << 24);
+
+            meshlets_out.push_back(bounds);
+        }
+
+        // commit repacked index buffer
+        indices = std::move(repacked);
     }
 
     static void split_surface_into_tiles(

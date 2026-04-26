@@ -85,6 +85,8 @@ namespace spartan
     extern TConsoleVar<float> cvar_resolution_scale;
     extern TConsoleVar<float> cvar_dynamic_resolution;
     extern TConsoleVar<float> cvar_hiz_occlusion;
+    extern TConsoleVar<float> cvar_meshlet_cull_skinned;
+    extern TConsoleVar<float> cvar_meshlet_visualize;
     extern TConsoleVar<float> cvar_auto_exposure_adaptation_speed;
     extern TConsoleVar<float> cvar_cloud_coverage;
     extern TConsoleVar<float> cvar_cloud_shadows;
@@ -211,6 +213,7 @@ namespace spartan
         static void Pass_IndirectCull(RHI_CommandList* cmd_list);
         static void Pass_Depth_Prepass(RHI_CommandList* cmd_list);
         static void Pass_GBuffer(RHI_CommandList* cmd_list, const bool is_transparent_pass);
+        static void Pass_MeshletVisualize(RHI_CommandList* cmd_list);
         static void Pass_ScreenSpaceAmbientOcclusion(RHI_CommandList* cmd_list);
         static void Pass_TransparencyReflectionRefraction(RHI_CommandList* cmd_list, uint32_t eye_layer = rhi_all_mips);
         static void Pass_RayTracedReflections(RHI_CommandList* cmd_list, uint32_t eye_layer = rhi_all_mips);
@@ -259,9 +262,6 @@ namespace spartan
         static void UpdateLights(RHI_CommandList* cmd_lis);
         static void UpdateBoundingBoxes(RHI_CommandList* cmd_list);
 
-        // true if this draw can't go through the gpu-driven indirect path
-        static bool IsCpuDrivenDraw(const Renderer_DrawCall& draw_call, Material* material);
-
         // misc
         static void AddLinesToBeRendered();
         static void UpdatePersistentLines();
@@ -278,10 +278,15 @@ namespace spartan
         static std::array<Renderer_DrawCall, renderer_max_draw_calls> m_draw_calls_prepass;
         static uint32_t m_draw_calls_prepass_count;
 
-        // gpu-driven indirect drawing
-        static std::array<Sb_IndirectDrawArgs, rhi_max_array_size> m_indirect_draw_args;
-        static std::array<Sb_DrawData, rhi_max_array_size> m_indirect_draw_data;
+        // gpu-driven indirect drawing (sized for one-entry-per-meshlet expansion)
+        static std::array<Sb_IndirectDrawArgs, renderer_max_indirect_draws> m_indirect_draw_args;
+        static std::array<Sb_DrawData, renderer_max_indirect_draws> m_indirect_draw_data;
         static uint32_t m_indirect_draw_count;
+        // count of distinct renderables in the indirect path, used to lay out one aabb slot per renderable
+        static uint32_t m_indirect_renderable_count;
+        // per-instance cull tasks, the cull pass dispatches over these and emits surviving entries into the indirect_draw_*_out buffers
+        static std::array<Sb_CullTask, renderer_max_cull_tasks> m_cull_tasks;
+        static uint32_t m_cull_task_count;
 
         // per-frame gpu buffers, rotated so in-flight frames never race
         struct FrameResource
@@ -291,6 +296,7 @@ namespace spartan
             std::shared_ptr<RHI_Buffer> indirect_draw_args_out;
             std::shared_ptr<RHI_Buffer> indirect_draw_data_out;
             std::shared_ptr<RHI_Buffer> indirect_draw_count;
+            std::shared_ptr<RHI_Buffer> cull_tasks;
         };
         static std::array<FrameResource, renderer_draw_data_buffer_count> m_frame_resources;
         static uint32_t m_frame_resource_index;

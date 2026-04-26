@@ -115,6 +115,12 @@ RWStructuredBuffer<uint>  tex_compress_in      : register(u40);
 RWStructuredBuffer<uint4> tex_compress_out     : register(u41); // bc3, bc5 (16 bytes per block)
 RWStructuredBuffer<uint2> tex_compress_out_bc1 : register(u42); // bc1 (8 bytes per block)
 
+// per-meshlet bounds (read-only, declared as rw to keep slot management uniform with other indirect buffers)
+RWStructuredBuffer<MeshletBounds> meshlet_bounds : register(u43);
+
+// per-instance cull tasks (read-only, declared as rw to keep slot management uniform with other indirect buffers)
+RWStructuredBuffer<CullTask> cull_tasks : register(u44);
+
 // buffers
 #ifdef API_D3D12
 // d3d12 path: root 32-bit constants at b1 (vk::push_constant is ignored by dxil)

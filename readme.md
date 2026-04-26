@@ -73,7 +73,8 @@ The renderer is built around a single principle: **the GPU owns the data**. Ever
 
 - **Zero-binding draw path**, all per-draw data is stored in a single bindless storage buffer, push constants carry only a 4-byte index into it, keeping the entire push constant footprint at 80 bytes
 - **Single global vertex and index buffer** for all geometry, inspired by id Tech, with **vertex pulling** (vertex shaders fetch directly from bindless StructuredBuffers, bypassing the fixed-function Input Assembler), the same buffers are shared by rasterization and ray tracing
-- **GPU-driven indirect rendering**, a compute shader performs frustum and occlusion culling entirely on the GPU, emitting a compacted indirect argument buffer, the CPU issues a single `DrawIndexedIndirectCount` per pass, replacing thousands of individual draw calls
+- **GPU-driven indirect rendering**, a compute shader performs per-meshlet frustum and occlusion culling entirely on the GPU, emitting a compacted indirect argument buffer, the CPU issues a single `DrawIndexedIndirectCount` per pass, replacing thousands of individual draw calls
+- **Meshlet clusters** (via meshoptimizer) split every mesh into bounded triangle clusters, enabling fine-grained per-meshlet frustum, Hi-Z occlusion, and backface cone culling on the GPU without relying on mesh shaders
 - **Bindless materials, lights, and samplers**, all accessed through global descriptor arrays with no per-object binding
 - **Uber shaders**, minimal pipeline state object (PSO) permutations eliminate draw call state changes
 - **Universal HLSL**, all shaders are written once in HLSL and compiled for both Vulkan (via SPIR-V) and DirectX 12
@@ -94,7 +95,7 @@ The renderer is built around a single principle: **the GPU owns the data**. Ever
 
 ### Performance and Upscaling
 
-- **GPU-driven frustum and occlusion culling** (Hi-Z), the CPU never touches per-object visibility
+- **GPU-driven frustum, occlusion (Hi-Z), and backface (cone) culling** at the meshlet level, the CPU never touches per-object visibility
 - **Variable rate shading** and **dynamic resolution scaling**
 - **Upscaling** with Intel XeSS 2 and AMD FSR 3
 - **Temporal anti-aliasing** and **FXAA**

@@ -112,10 +112,12 @@ float3 compute_flower_color(float height_percent, uint instance_id)
 }
 
 #ifdef INDIRECT_DRAW
-gbuffer_vertex main_vs(uint vertex_id : SV_VertexID, uint instance_id : SV_InstanceID, [[vk::builtin("DrawIndex")]] uint draw_id : DRAW_INDEX, uint view_id : SV_ViewID)
+gbuffer_vertex main_vs(uint vertex_id : SV_VertexID, uint sv_instance_id : SV_InstanceID, [[vk::builtin("DrawIndex")]] uint draw_id : DRAW_INDEX, uint view_id : SV_ViewID)
 {
     _draw = indirect_draw_data_out[draw_id];
-    Vertex_PosUvNorTan input = pull_vertex(vertex_id);
+    // per-instance culled draws have instance_count=1 and instance_index set, hw-instanced have instance_count=N and instance_index=0
+    uint instance_id         = _draw.instance_index + sv_instance_id;
+    Vertex_PosUvNorTan input = pull_vertex(vertex_id, instance_id, _draw.instance_offset);
 #else
 gbuffer_vertex main_vs(Vertex_PosUvNorTan input, uint instance_id : SV_InstanceID, uint view_id : SV_ViewID)
 {

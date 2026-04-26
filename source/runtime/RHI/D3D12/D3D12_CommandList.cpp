@@ -912,11 +912,12 @@ namespace spartan
         if (Debugging::IsBreadcrumbsEnabled())
         {
             Breadcrumbs::BeginMarker(name);
-            int32_t gpu_slot = Breadcrumbs::GpuMarkerBegin(name);
+            RHI_Queue_Type queue_type = m_queue ? m_queue->GetType() : RHI_Queue_Type::Max;
+            int32_t gpu_slot          = Breadcrumbs::GpuMarkerBegin(name, queue_type);
             if (gpu_slot >= 0)
             {
                 m_breadcrumb_gpu_slots.push(gpu_slot);
-                RHI_Buffer* buffer = Breadcrumbs::GetGpuBuffer();
+                RHI_Buffer* buffer = Breadcrumbs::GetGpuBuffer(queue_type);
                 if (buffer) WriteGpuBreadcrumb(buffer, static_cast<uint32_t>(gpu_slot), static_cast<uint32_t>(gpu_slot + 1));
             }
         }
@@ -931,7 +932,8 @@ namespace spartan
             {
                 int32_t gpu_slot = m_breadcrumb_gpu_slots.top();
                 m_breadcrumb_gpu_slots.pop();
-                RHI_Buffer* buffer = Breadcrumbs::GetGpuBuffer();
+                RHI_Queue_Type queue_type = m_queue ? m_queue->GetType() : RHI_Queue_Type::Max;
+                RHI_Buffer* buffer        = Breadcrumbs::GetGpuBuffer(queue_type);
                 if (buffer && gpu_slot >= 0) WriteGpuBreadcrumb(buffer, static_cast<uint32_t>(gpu_slot), Breadcrumbs::gpu_marker_completed);
             }
         }
@@ -942,11 +944,12 @@ namespace spartan
         if (Debugging::IsBreadcrumbsEnabled())
         {
             Breadcrumbs::BeginMarker(name);
-            int32_t gpu_slot = Breadcrumbs::GpuMarkerBegin(name);
+            RHI_Queue_Type queue_type = m_queue ? m_queue->GetType() : RHI_Queue_Type::Max;
+            int32_t gpu_slot          = Breadcrumbs::GpuMarkerBegin(name, queue_type);
             if (gpu_slot >= 0)
             {
                 m_breadcrumb_gpu_slots.push(gpu_slot);
-                RHI_Buffer* buffer = Breadcrumbs::GetGpuBuffer();
+                RHI_Buffer* buffer = Breadcrumbs::GetGpuBuffer(queue_type);
                 if (buffer) WriteGpuBreadcrumb(buffer, static_cast<uint32_t>(gpu_slot), static_cast<uint32_t>(gpu_slot + 1));
             }
         }
@@ -961,7 +964,8 @@ namespace spartan
             {
                 int32_t gpu_slot = m_breadcrumb_gpu_slots.top();
                 m_breadcrumb_gpu_slots.pop();
-                RHI_Buffer* buffer = Breadcrumbs::GetGpuBuffer();
+                RHI_Queue_Type queue_type = m_queue ? m_queue->GetType() : RHI_Queue_Type::Max;
+                RHI_Buffer* buffer        = Breadcrumbs::GetGpuBuffer(queue_type);
                 if (buffer && gpu_slot >= 0) WriteGpuBreadcrumb(buffer, static_cast<uint32_t>(gpu_slot), Breadcrumbs::gpu_marker_completed);
             }
         }

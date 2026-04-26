@@ -1,0 +1,7 @@
+497:                    RHI_Buffer* current_vertex = GeometryBuffer::GetVertexBuffer();
+506:                    RHI_Buffer* current_index = GeometryBuffer::GetIndexBuffer();
+519:                    RHI_Buffer* current_instance            = GeometryBuffer::GetInstanceBuffer();
+522:                        current_instance = GetBuffer(Renderer_Buffer::DummyInstance);
+1032:    bool Renderer::IsCpuDrivenDraw(const Renderer_DrawCall& draw_call, Material* material)
+1341:                if (IsCpuDrivenDraw(dc, material))
+1481:                if (IsCpuDrivenDraw(dc, material))

@@ -1,0 +1,321 @@
+﻿diff --git a/source/runtime/Rendering/Renderer.cpp b/source/runtime/Rendering/Renderer.cpp
+index b1189f898..6f5070aa6 100644
+--- a/source/runtime/Rendering/Renderer.cpp
++++ b/source/runtime/Rendering/Renderer.cpp
+@@ -373,6 +373,10 @@ namespace spartan
+             if (GeometryBuffer::WasRebuilt())
+             {
+                 DestroyAccelerationStructures();
++
++                // free released blas/tlas gpu memory before rebuilding to avoid a peak
++                // geometrybuffer rebuild already waited the queues so this is just a free
++                RHI_Device::DeletionQueueParse();
+             }
+ 
+             // rotate per-frame buffers to avoid cpu-gpu races
+@@ -482,13 +486,19 @@ namespace spartan
+                     }
+                 }
+ 
+-                // dummy instance buffer (vertex pulling identity instances)
++                // global instance buffer (vertex pulling for instanced indirect draws)
++                // falls back to the dummy buffer until the global one exists, rebinds whenever the global buffer is recreated
+                 {
+-                    static bool instances_descriptor_set = false;
+-                    if (!instances_descriptor_set)
++                    static RHI_Buffer* last_instance_buffer = nullptr;
++                    RHI_Buffer* current_instance            = GeometryBuffer::GetInstanceBuffer();
++                    if (current_instance == nullptr)
+                     {
+-                        RHI_Device::UpdateBindlessInstances(GetBuffer(Renderer_Buffer::DummyInstance));
+-                        instances_descriptor_set = true;
++                        current_instance = GetBuffer(Renderer_Buffer::DummyInstance);
++                    }
++                    if (current_instance != last_instance_buffer)
++                    {
++                        RHI_Device::UpdateBindlessInstances(current_instance);
++                        last_instance_buffer = current_instance;
+                     }
+                 }
+ 
+@@ -503,11 +513,19 @@ namespace spartan
+                     data_buffer->ResetOffset();
+                     data_buffer->Update(m_cmd_list_present, &m_indirect_draw_data[0], data_buffer->GetStride() * m_indirect_draw_count);
+ 
+-                    // reset count, the cull shader atomically increments it
+-                    uint32_t zero = 0;
++                    // prime count to cull_task_count, the cull shader writes deterministically at slot=task_index
++                    // culled tasks are emitted as zero-instance draws so the slot is harmless
++                    uint32_t cull_count = m_cull_task_count;
+                     RHI_Buffer* count_buffer = GetBuffer(Renderer_Buffer::IndirectDrawCount);
+                     count_buffer->ResetOffset();
+-                    count_buffer->Update(m_cmd_list_present, &zero, sizeof(uint32_t));
++                    count_buffer->Update(m_cmd_list_present, &cull_count, sizeof(uint32_t));
++                }
++
++                if (m_cull_task_count > 0)
++                {
++                    RHI_Buffer* tasks_buffer = GetBuffer(Renderer_Buffer::CullTasks);
++                    tasks_buffer->ResetOffset();
++                    tasks_buffer->Update(m_cmd_list_present, &m_cull_tasks[0], tasks_buffer->GetStride() * m_cull_task_count);
+                 }
+             }
+     
+@@ -967,15 +985,6 @@ namespace spartan
+         return frame_num;
+     }
+ 
+-    bool Renderer::IsCpuDrivenDraw(const Renderer_DrawCall& draw_call, Material* material)
+-    {
+-        bool is_tessellated  = material->GetProperty(MaterialProperty::Tessellation) > 0.0f;
+-        bool is_instanced    = draw_call.instance_count > 1;
+-        bool is_alpha_tested = material->IsAlphaTested();
+-        bool is_non_standard_cull = static_cast<RHI_CullMode>(material->GetProperty(MaterialProperty::CullMode)) != RHI_CullMode::Back;
+-        return is_tessellated || is_instanced || is_alpha_tested || is_non_standard_cull;
+-    }
+-
+     void Renderer::SetCommonTextures(RHI_CommandList* cmd_list, uint32_t eye_layer /*= rhi_all_mips*/)
+     {
+         // gbuffer (when eye_layer is specified, bind per-layer 2d views for compute passes)
+@@ -1001,7 +1010,11 @@ namespace spartan
+         entry.material_index     = material_index;
+         entry.is_transparent     = is_transparent;
+         entry.aabb_index         = 0;
+-        entry.padding            = 0;
++        entry.meshlet_index      = 0;
++        entry.flags              = 0;
++        entry.instance_offset    = 0;
++        entry.instance_index     = 0;
++        entry.padding0           = 0;
+ 
+         // the draw data buffer is a single large allocation partitioned into per-frame regions;
+         // each frame writes to its own region so there is no write-after-read race with the gpu
+@@ -1074,6 +1087,7 @@ namespace spartan
+                 properties[count].flags |= material->GetProperty(MaterialProperty::IsWater)                    ? (1U << 13) : 0;
+                 properties[count].flags |= material->GetProperty(MaterialProperty::Tessellation)               ? (1U << 14) : 0;
+                 properties[count].flags |= material->GetProperty(MaterialProperty::EmissiveFromAlbedo)         ? (1U << 15) : 0;
++                properties[count].flags |= material->IsAlphaTested()                                          ? (1U << 16) : 0;
+                 // keep in sync with Surface struct in common_structs.hlsl
+             }
+     
+@@ -1262,23 +1276,28 @@ namespace spartan
+             m_bindless_aabbs[i].is_occluder    = draw_call.is_occluder;
+         }
+ 
+-        // indirect draw aabbs (stored right after prepass aabbs)
++        // indirect draw aabbs (stored right after prepass aabbs, one per renderable not per meshlet)
+         {
+             uint32_t indirect_idx = 0;
+-            for (uint32_t i = 0; i < m_draw_call_count && indirect_idx < m_indirect_draw_count; i++)
++            for (uint32_t i = 0; i < m_draw_call_count && indirect_idx < m_indirect_renderable_count; i++)
+             {
+                 const Renderer_DrawCall& dc = m_draw_calls[i];
+-                Material* material          = dc.renderable->GetMaterial();
++                Render* renderable          = dc.renderable;
++                Material* material          = renderable->GetMaterial();
+ 
+                 if (!material || material->IsTransparent())
+                     continue;
+-                if (IsCpuDrivenDraw(dc, material))
++                if (material->GetProperty(MaterialProperty::Tessellation) > 0.0f)
++                    continue;
++                if (renderable->GetIndexCount(dc.lod_index) == 0)
++                    continue;
++                if (!dc.camera_visible)
+                     continue;
+ 
+                 uint32_t aabb_slot = m_draw_calls_prepass_count + indirect_idx;
+                 if (aabb_slot < rhi_max_array_size)
+                 {
+-                    const BoundingBox& aabb       = dc.renderable->GetBoundingBox();
++                    const BoundingBox& aabb         = renderable->GetBoundingBox();
+                     m_bindless_aabbs[aabb_slot].min = aabb.GetMin();
+                     m_bindless_aabbs[aabb_slot].max = aabb.GetMax();
+                 }
+@@ -1287,7 +1306,7 @@ namespace spartan
+         }
+ 
+         // gpu upload to the current frame's region within the shared aabb buffer
+-        uint32_t total_aabb_count = m_draw_calls_prepass_count + m_indirect_draw_count;
++        uint32_t total_aabb_count = m_draw_calls_prepass_count + m_indirect_renderable_count;
+         if (total_aabb_count > 0)
+         {
+             RHI_Buffer* buffer         = GetBuffer(Renderer_Buffer::AABBs);
+@@ -1390,40 +1409,89 @@ namespace spartan
+         }
+ 
+         // indirect draw buffers (gpu-driven path)
++        // one input draw entry per renderable lod covering the full lod range, one cull task per instance
++        // meshlet-level split is disabled while debugging mangled geometry, the cull shader uses the renderable aabb
+         {
+-            m_indirect_draw_count = 0;
++            m_indirect_draw_count       = 0;
++            m_indirect_renderable_count = 0;
++            m_cull_task_count           = 0;
++            uint32_t aabb_frame_offset  = m_frame_resource_index * rhi_max_array_size;
++
+             for (uint32_t i = 0; i < m_draw_call_count; i++)
+             {
+                 const Renderer_DrawCall& dc = m_draw_calls[i];
+-                Render* renderable      = dc.renderable;
++                Render* renderable          = dc.renderable;
+                 Material* material          = renderable->GetMaterial();
+ 
+                 if (!material || material->IsTransparent())
+                     continue;
+-                if (IsCpuDrivenDraw(dc, material))
++                if (!dc.camera_visible)
++                    continue;
++                if (material->GetProperty(MaterialProperty::Tessellation) > 0.0f)
+                     continue;
+ 
+-                uint32_t idx = m_indirect_draw_count++;
+-                if (idx >= rhi_max_array_size)
+-                    break;
++                uint32_t lod_index_count = renderable->GetIndexCount(dc.lod_index);
++                if (lod_index_count == 0)
++                    continue;
++
++                bool is_instanced  = dc.instance_count > 1;
++                uint32_t inst_n    = is_instanced ? dc.instance_count : 1;
+ 
+-                Sb_IndirectDrawArgs& args = m_indirect_draw_args[idx];
+-                args.index_count          = renderable->GetIndexCount(dc.lod_index);
+-                args.instance_count       = dc.instance_count;
+-                args.first_index          = renderable->GetIndexOffset(dc.lod_index);
+-                args.vertex_offset        = static_cast<int32_t>(renderable->GetVertexOffset(dc.lod_index));
+-                args.first_instance       = dc.instance_index;
+-
+-                // per-draw data (aabb_index includes the frame offset into the shared aabb buffer)
+-                uint32_t aabb_frame_offset = m_frame_resource_index * rhi_max_array_size;
+-                Sb_DrawData& data       = m_indirect_draw_data[idx];
+-                Entity* entity          = renderable->GetEntity();
++                // hw-instancing fallback when per-instance tasks would overflow the cull-task budget
++                bool use_hw_instancing    = is_instanced && (m_cull_task_count + inst_n > renderer_max_cull_tasks);
++                uint32_t actual_tasks_add = use_hw_instancing ? 1u : inst_n;
++
++                if (m_indirect_draw_count + 1 > renderer_max_indirect_draws)
++                    continue;
++                if (m_cull_task_count + actual_tasks_add > renderer_max_cull_tasks)
++                    continue;
++
++                uint32_t renderable_aabb_slot = aabb_frame_offset + m_draw_calls_prepass_count + m_indirect_renderable_count;
++                uint32_t base_first_index     = renderable->GetIndexOffset(dc.lod_index);
++                int32_t  vertex_offset        = static_cast<int32_t>(renderable->GetVertexOffset(dc.lod_index));
++
++                Entity* entity = renderable->GetEntity();
++                Mesh* mesh     = renderable->GetMesh();
++
++                // flags bit 0 skip meshlet cull (passthrough), bit 1 per-instance cull, bit 2 hw instancing
++                bool skinned_skip_cull = mesh->IsSkinned() && cvar_meshlet_cull_skinned.GetValueAs<bool>() == false;
++                bool use_per_instance  = is_instanced && !use_hw_instancing;
++                bool skip_cull         = skinned_skip_cull || use_hw_instancing;
++                uint32_t base_flags    = 0u;
++                if (skip_cull)         base_flags |= 1u;
++                if (use_per_instance)  base_flags |= 2u;
++                if (use_hw_instancing) base_flags |= 4u;
++
++                uint32_t draw_instance_count = use_hw_instancing ? inst_n : 1u;
++                uint32_t tasks_for_draw      = use_per_instance ? inst_n : 1u;
++
++                uint32_t draw_idx         = m_indirect_draw_count++;
++                Sb_IndirectDrawArgs& args = m_indirect_draw_args[draw_idx];
++                args.index_count          = lod_index_count;
++                args.instance_count       = draw_instance_count;
++                args.first_index          = base_first_index;
++                args.vertex_offset        = vertex_offset;
++                args.first_instance       = 0;
++
++                Sb_DrawData& data       = m_indirect_draw_data[draw_idx];
+                 data.transform          = entity->GetMatrix();
+                 data.transform_previous = entity->GetMatrixPrevious();
+                 data.material_index     = material->GetIndex();
+                 data.is_transparent     = 0;
+-                data.aabb_index         = aabb_frame_offset + m_draw_calls_prepass_count + idx;
+-                data.padding            = 0;
++                data.aabb_index         = renderable_aabb_slot;
++                data.meshlet_index      = 0;
++                data.flags              = base_flags;
++                data.instance_offset    = renderable->GetGlobalInstanceOffset();
++                data.instance_index     = 0;
++
++                for (uint32_t inst = 0; inst < tasks_for_draw; inst++)
++                {
++                    Sb_CullTask& task   = m_cull_tasks[m_cull_task_count++];
++                    task.draw_index     = draw_idx;
++                    task.instance_index = inst;
++                }
++
++                m_indirect_renderable_count++;
+             }
+         }
+ 
+@@ -1501,25 +1569,35 @@ namespace spartan
+         }
+ 
+         // blas
++        // built incrementally with a per-frame cap so big scenes (forest has 2148 unique meshes)
++        // don't hit driver tdr or peak gpu memory by recording all builds onto one command list
++        bool blas_burst_done = false;
+         {
+             cmd_list->BeginMarker("blas_build");
+ 
+-            uint32_t blas_built   = 0;
+-            uint32_t blas_skipped = 0;
++            constexpr uint32_t blas_builds_per_frame = 64;
++
++            uint32_t blas_built     = 0;
++            uint32_t blas_remaining = 0;
++            uint32_t blas_total     = 0;
+             for (Entity* entity : World::GetEntitiesRenderables())
+             {
+                 Render* renderable = entity->GetComponent<Render>();
++                blas_total++;
+ 
+                 if (!renderable->HasAccelerationStructure())
+                 {
+-                    renderable->BuildAccelerationStructure(cmd_list);
+-                    if (renderable->HasAccelerationStructure())
++                    if (blas_built < blas_builds_per_frame)
+                     {
+-                        blas_built++;
++                        renderable->BuildAccelerationStructure(cmd_list);
++                        if (renderable->HasAccelerationStructure())
++                        {
++                            blas_built++;
++                        }
+                     }
+                     else
+-                    { 
+-                        blas_skipped++;
++                    {
++                        blas_remaining++;
+                     }
+                 }
+ 
+@@ -1531,9 +1609,25 @@ namespace spartan
+                 }
+             }
+ 
++            blas_burst_done = (blas_remaining == 0);
++
++            // free the shared static scratch only once the burst fully completes
++            // freeing mid-burst would force a reallocation on next frame
++            if (blas_burst_done && blas_built > 0)
++            {
++                RHI_AccelerationStructure::FreeSharedBlasScratch();
++                SP_LOG_INFO("Ray tracing: BLAS build burst complete (last frame built %u, total %u)", blas_built, blas_total);
++            }
++
+             cmd_list->EndMarker();
+         }
+ 
++        // skip tlas build until all blas are ready so we don't keep rebuilding it with an incomplete set
++        if (!blas_burst_done)
++        {
++            return;
++        }
++
+         // tlas
+         {
+             cmd_list->BeginMarker("tlas_build");

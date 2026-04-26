@@ -470,6 +470,18 @@ void RenderOptions::OnTickVisible()
                     option_check_box("AABBs", "r.aabb");
                     option_check_box("Wireframe", "r.wireframe");
                     option_check_box("Occlusion culling", "r.hiz_occlusion", "For development purposes");
+
+                    static const vector<string> meshlet_visualize_modes =
+                    {
+                        "Off",
+                        "Color by meshlet id",
+                        "Color by post-cull draw id"
+                    };
+                    uint32_t meshlet_mode = cvar_meshlet_visualize.GetValueAs<uint32_t>();
+                    if (option_combo_box("Meshlet visualization", meshlet_visualize_modes, meshlet_mode, "Writes hashed meshlet colors to debug_output, view it in Texture Viewer"))
+                    {
+                        ConsoleRegistry::Get().SetValueFromString("r.meshlet_visualize", to_string(static_cast<float>(meshlet_mode)));
+                    }
                 }
 
                 ImGui::EndTable();

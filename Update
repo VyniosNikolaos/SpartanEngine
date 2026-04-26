@@ -1,0 +1,285 @@
+2:Copyright(c) 2015-2026 Panos Karabelas
+73:    // per-frame rotated buffers
+132:                    screen_percentage += adjustment_factor * (gpu_time_target - gpu_time);
+136:                    screen_percentage -= adjustment_factor * (gpu_time - gpu_time_target);
+200:            ConsoleRegistry::Get().SetValueFromString("r.hdr", swapchain->IsHdr() ? "1" : "0");
+224:        if (RHI_Device::GetPrimaryPhysicalDevice()->IsBelowMinimumRequirements())
+270:        // armed for one frame after a geometry rebuild so we can pinpoint where post-rebuild work crashes
+281:            swapchain->AcquireNextImage();
+302:            static float restir_scale_old = -1.0f;
+321:        // prevent write-after-present hazards when idle (skip first frame, nothing to wait for)
+324:            RHI_Device::GetQueue(RHI_Queue_Type::Graphics)->Wait();
+328:            m_cmd_list_present = RHI_Device::GetQueue(RHI_Queue_Type::Graphics)->NextCommandList();
+329:            m_cmd_list_present->Begin();
+335:            m_cmd_list_compute = RHI_Device::GetQueue(RHI_Queue_Type::Compute)->NextCommandList();
+336:            m_cmd_list_compute->Begin();
+346:            // suppress hi-z for a grace period after loading while draw calls stabilize
+363:                    post_load_frames--;
+389:            // rotate per-frame buffers to avoid cpu-gpu races
+404:            // resource cleanup - frame-based retirement, no gpu stall required
+407:                if (s_trace_post_rebuild_frame) SP_LOG_INFO("trace: deletion queue parse (post-as)");
+417:                    GetBuffer(Renderer_Buffer::ConstantFrame)->ResetOffset();
+477:                        m_cmd_list_present->UpdateBuffer(buffer, frame_byte_offset, upload_size, &m_draw_data_cpu[0]);
+482:                    // where vkUpdateDescriptorSets (host-side, instantly visible under UPDATE_AFTER_BIND)
+537:                    args_buffer->ResetOffset();
+538:                    args_buffer->Update(m_cmd_list_present, &m_indirect_draw_args[0], args_buffer->GetStride() * m_indirect_draw_count);
+541:                    data_buffer->ResetOffset();
+542:                    data_buffer->Update(m_cmd_list_present, &m_indirect_draw_data[0], data_buffer->GetStride() * m_indirect_draw_count);
+547:                    count_buffer->ResetOffset();
+548:                    count_buffer->Update(m_cmd_list_present, &zero, sizeof(uint32_t));
+556:                    tasks_buffer->ResetOffset();
+557:                    tasks_buffer->Update(m_cmd_list_present, &m_cull_tasks[0], tasks_buffer->GetStride() * m_cull_task_count);
+567:        if (s_trace_post_rebuild_frame) SP_LOG_INFO("trace: post-update phase complete, entering frame phase");
+569:        // xr: begin the frame before updating the frame constant buffer so the per-eye
+632:        // disarm the trace flag, only the first post-rebuild frame is logged
+635:            SP_LOG_INFO("trace: post-rebuild frame fully completed");
+691:            // (general or undefined), but the per-texture layout tracking may still hold the
+693:            // forces the next InsertBarrier to emit an Undefined -> target transition, which
+694:            // the spec guarantees is always valid regardless of the actual gpu-side layout.
+699:                    rt->ClearLayouts();
+703:            // the layout reset above invalidates one-shot render targets (luts, cloud noise,
+740:    uint32_t Renderer::GetScaledDimension(uint32_t dimension, float scale /*= -1.0f*/)
+764:                if (near_plane != camera->GetNearPlane() || far_plane != camera->GetFarPlane())
+766:                    near_plane                    = camera->GetNearPlane();
+767:                    far_plane                     = camera->GetFarPlane();
+772:                m_cb_frame_cpu.view                = camera->GetViewMatrix();
+775:                m_cb_frame_cpu.projection          = camera->GetProjectionMatrix();
+783:                m_cb_frame_cpu.view_projection_orthographic = Matrix::CreateLookAtLH(Vector3(0, 0, -near_plane), Vector3::Forward, Vector3::Up) * projection_ortho;
+813:            m_cb_frame_cpu.view_projection_unjittered          = m_cb_frame_cpu.view * camera->GetProjectionMatrix();
+814:            m_cb_frame_cpu.camera_near                         = camera->GetNearPlane();
+815:            m_cb_frame_cpu.camera_far                          = camera->GetFarPlane();
+817:            m_cb_frame_cpu.camera_position                     = camera->GetEntity()->GetPosition();
+818:            m_cb_frame_cpu.camera_forward                      = camera->GetEntity()->GetForward();
+819:            m_cb_frame_cpu.camera_right                        = camera->GetEntity()->GetRight();
+820:            m_cb_frame_cpu.camera_fov                          = camera->GetFovHorizontalRad();
+821:            m_cb_frame_cpu.camera_aperture                     = camera->GetAperture();
+822:            m_cb_frame_cpu.camera_last_movement_time           = (m_cb_frame_cpu.camera_position - m_cb_frame_cpu.camera_position_previous).LengthSquared() != 0.0f
+838:        m_cb_frame_cpu.camera_exposure     = World::GetCamera() ? World::GetCamera()->GetExposure() : 1.0f;
+851:        // so that every shader helper can pick the correct per-eye matrices via eye_index
+854:            // left eye -> primary matrices
+865:            // replace them now with the left-eye xr matrices so motion-blur sky reprojection
+866:            // and any other unjittered-vp consumer sees eye-consistent data.
+883:            // store the current per-eye view-projection so the next frame can use it as the
+884:            // previous-frame matrix (the mono path only tracks the left eye through the
+899:        GetBuffer(Renderer_Buffer::ConstantFrame)->Update(cmd_list, &m_cb_frame_cpu);
+945:            font->AddText(text, position_screen_percentage);
+951:        Vector3 world_position = World::GetCamera()->ScreenToWorldCoordinates(position_screen_percentage, 0.5f);
+966:        cmd_list->BeginMarker("blit_to_back_buffer");
+967:        cmd_list->Blit(texture, swapchain.get());
+968:        cmd_list->EndMarker();
+973:        cmd_list->BeginMarker("blit_to_xr_swapchain");
+974:        cmd_list->BlitToXrSwapchain(texture);
+975:        cmd_list->EndMarker();
+982:            SP_ASSERT(m_cmd_list_present->GetState() == RHI_CommandListState::Recording);
+984:            if (swapchain->IsImageAcquired())
+989:                    m_cmd_list_present->RenderPassEnd();
+991:                    ID3D12GraphicsCommandList* cmd_list = static_cast<ID3D12GraphicsCommandList*>(m_cmd_list_present->GetRhiResource());
+992:                    ID3D12Resource* backbuffer          = static_cast<ID3D12Resource*>(swapchain->GetRhiRt());
+1000:                    cmd_list->ResourceBarrier(1, &barrier);
+1002:                    m_cmd_list_present->Submit(swapchain->GetImageAcquiredSemaphore(), false, swapchain->GetRenderingCompleteSemaphore());
+1003:                    swapchain->Present(m_cmd_list_present);
+1008:                    m_cmd_list_present->InsertBarrier(swapchain->GetRhiRt(), swapchain->GetFormat(), 0, 1, 1, RHI_Image_Layout::Present_Source);
+1010:                    m_cmd_list_present->Submit(swapchain->GetImageAcquiredSemaphore(), false, swapchain->GetRenderingCompleteSemaphore());
+1011:                    swapchain->Present(m_cmd_list_present);
+1016:                m_cmd_list_present->Submit(nullptr, true);
+1034:        // tessellation still needs the cpu-driven path until tessellated indirect lands
+1035:        // alpha-tested, instanced and non-standard cull all go through the indirect path now
+1037:        bool is_tessellated = material->GetProperty(MaterialProperty::Tessellation) > 0.0f;
+1043:        // gbuffer (when eye_layer is specified, bind per-layer 2d views for compute passes)
+1044:        cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsSrv::gbuffer_albedo),   GetRenderTarget(Renderer_RenderTarget::gbuffer_color),    rhi_all_mips, 0, false, eye_layer);
+1045:        cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsSrv::gbuffer_normal),   GetRenderTarget(Renderer_RenderTarget::gbuffer_normal),   rhi_all_mips, 0, false, eye_layer);
+1046:        cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsSrv::gbuffer_material), GetRenderTarget(Renderer_RenderTarget::gbuffer_material), rhi_all_mips, 0, false, eye_layer);
+1047:        cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsSrv::gbuffer_velocity), GetRenderTarget(Renderer_RenderTarget::gbuffer_velocity), rhi_all_mips, 0, false, eye_layer);
+1048:        cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsSrv::gbuffer_depth),    GetRenderTarget(Renderer_RenderTarget::gbuffer_depth),    rhi_all_mips, 0, false, eye_layer);
+1052:        cmd_list->SetTexture(Renderer_BindingsSrv::ssao, tex_ssao ? tex_ssao : GetStandardTexture(Renderer_StandardTexture::White));
+1072:        // the draw data buffer is a single large allocation partitioned into per-frame regions;
+1073:        // each frame writes to its own region so there is no write-after-read race with the gpu
+1077:        if (void* mapped = buffer->GetMappedData())
+1094:            if (unique_material_ids.find(material->GetObjectId()) != unique_material_ids.end())
+1097:            unique_material_ids.insert(material->GetObjectId());
+1101:                properties[count].local_width           = material->GetProperty(MaterialProperty::WorldWidth);
+1102:                properties[count].local_height          = material->GetProperty(MaterialProperty::WorldHeight);
+1103:                properties[count].color.x               = material->GetProperty(MaterialProperty::ColorR);
+1104:                properties[count].color.y               = material->GetProperty(MaterialProperty::ColorG);
+1105:                properties[count].color.z               = material->GetProperty(MaterialProperty::ColorB);
+1106:                properties[count].color.w               = material->GetProperty(MaterialProperty::ColorA);
+1107:                properties[count].tiling.x              = material->GetProperty(MaterialProperty::TextureTilingX);
+1108:                properties[count].tiling.y              = material->GetProperty(MaterialProperty::TextureTilingY);
+1109:                properties[count].offset.x              = material->GetProperty(MaterialProperty::TextureOffsetX);
+1110:                properties[count].offset.y              = material->GetProperty(MaterialProperty::TextureOffsetY);
+1111:                properties[count].invert_uv.x           = material->GetProperty(MaterialProperty::TextureInvertX);
+1112:                properties[count].invert_uv.y           = material->GetProperty(MaterialProperty::TextureInvertY);
+1113:                properties[count].roughness             = material->GetProperty(MaterialProperty::Roughness);
+1114:                properties[count].metallness            = material->GetProperty(MaterialProperty::Metalness);
+1115:                properties[count].normal                = material->GetProperty(MaterialProperty::Normal);
+1116:                properties[count].height                = material->GetProperty(MaterialProperty::Height);
+1117:                properties[count].anisotropic           = material->GetProperty(MaterialProperty::Anisotropic);
+1118:                properties[count].anisotropic_rotation  = material->GetProperty(MaterialProperty::AnisotropicRotation);
+1119:                properties[count].clearcoat             = material->GetProperty(MaterialProperty::Clearcoat);
+1120:                properties[count].clearcoat_roughness   = material->GetProperty(MaterialProperty::Clearcoat_Roughness);
+1121:                properties[count].sheen                 = material->GetProperty(MaterialProperty::Sheen);
+1122:                properties[count].subsurface_scattering = material->GetProperty(MaterialProperty::SubsurfaceScattering);
+1123:                properties[count].world_space_uv        = material->GetProperty(MaterialProperty::WorldSpaceUv);
+1124:                properties[count].uv_rotation           = material->GetProperty(MaterialProperty::TextureRotation);
+1127:                properties[count].flags  = material->HasTextureOfType(MaterialTextureType::Height)             ? (1U << 0)  : 0;
+1128:                properties[count].flags |= material->HasTextureOfType(MaterialTextureType::Normal)             ? (1U << 1)  : 0;
+1129:                properties[count].flags |= material->HasTextureOfType(MaterialTextureType::Color)              ? (1U << 2)  : 0;
+1130:                properties[count].flags |= material->HasTextureOfType(MaterialTextureType::Roughness)          ? (1U << 3)  : 0;
+1131:                properties[count].flags |= material->HasTextureOfType(MaterialTextureType::Metalness)          ? (1U << 4)  : 0;
+1132:                properties[count].flags |= material->HasTextureOfType(MaterialTextureType::AlphaMask)          ? (1U << 5)  : 0;
+1133:                properties[count].flags |= material->HasTextureOfType(MaterialTextureType::Emission)           ? (1U << 6)  : 0;
+1134:                properties[count].flags |= material->HasTextureOfType(MaterialTextureType::Occlusion)          ? (1U << 7)  : 0;
+1135:                properties[count].flags |= material->GetProperty(MaterialProperty::IsTerrain)                  ? (1U << 8)  : 0;
+1136:                properties[count].flags |= material->GetProperty(MaterialProperty::WindAnimation)              ? (1U << 9)  : 0;
+1137:                properties[count].flags |= material->GetProperty(MaterialProperty::ColorVariationFromInstance) ? (1U << 10) : 0;
+1138:                properties[count].flags |= material->GetProperty(MaterialProperty::IsGrassBlade)               ? (1U << 11) : 0;
+1139:                properties[count].flags |= material->GetProperty(MaterialProperty::IsFlower)                   ? (1U << 12) : 0;
+1140:                properties[count].flags |= material->GetProperty(MaterialProperty::IsWater)                    ? (1U << 13) : 0;
+1141:                properties[count].flags |= material->GetProperty(MaterialProperty::Tessellation)               ? (1U << 14) : 0;
+1142:                properties[count].flags |= material->GetProperty(MaterialProperty::EmissiveFromAlbedo)         ? (1U << 15) : 0;
+1143:                properties[count].flags |= material->IsAlphaTested()                                          ? (1U << 16) : 0;
+1154:                        m_bindless_textures[bindless_index] = material->GetTexture(static_cast<MaterialTextureType>(type), slot);
+1159:            material->SetIndex(count);
+1168:                if (Material* material = entity->GetComponent<Render>()->GetMaterial())
+1186:            buffer->ResetOffset();
+1187:            buffer->Update(cmd_list, &properties[0], buffer->GetStride() * count);
+1193:        const Entity* camera_entity = World::GetCamera() ? World::GetCamera()->GetEntity() : nullptr;
+1194:        const Vector3 camera_pos    = camera_entity ? camera_entity->GetPosition() : Vector3::Zero;
+1205:            light_component->SetIndex(index);
+1208:            for (uint32_t i = 0; i < light_component->GetSliceCount(); i++)
+1210:                light_buffer_entry.transform[i] = light_component->GetViewProjectionMatrix(i);
+1213:            const bool has_screen_space_shadows                  = light_component->GetLightType() == LightType::Directional &&
+1214:                                                                    light_component->GetFlag(LightFlags::Shadows) &&
+1215:                                                                    light_component->GetFlag(LightFlags::ShadowsScreenSpace);
+1217:            light_buffer_entry.screen_space_shadow_slice_index   = has_screen_space_shadows ? light_component->GetScreenSpaceShadowsSliceIndex() : 0;
+1218:            light_buffer_entry.intensity                         = light_component->GetIntensityRadiometric();
+1219:            light_buffer_entry.range                             = light_component->GetRange();
+1220:            light_buffer_entry.angle                             = light_component->GetAngle();
+1221:            light_buffer_entry.color                             = light_component->GetColor();
+1222:            light_buffer_entry.position                          = light_component->GetEntity()->GetPosition();
+1223:            light_buffer_entry.direction                         = light_component->GetEntity()->GetForward();
+1224:            light_buffer_entry.area_width                        = light_component->GetAreaWidth();
+1225:            light_buffer_entry.area_height                       = light_component->GetAreaHeight();
+1227:            light_buffer_entry.flags                            |= light_component->GetLightType() == LightType::Directional ? (1 << 0) : 0;
+1228:            light_buffer_entry.flags                            |= light_component->GetLightType() == LightType::Point       ? (1 << 1) : 0;
+1229:            light_buffer_entry.flags                            |= light_component->GetLightType() == LightType::Spot        ? (1 << 2) : 0;
+1230:            light_buffer_entry.flags                            |= light_component->GetFlag(LightFlags::Shadows)             ? (1 << 3) : 0;
+1232:            light_buffer_entry.flags                            |= light_component->GetFlag(LightFlags::Volumetric)          ? (1 << 5) : 0;
+1233:            light_buffer_entry.flags                            |= light_component->GetLightType() == LightType::Area        ? (1 << 6) : 0;
+1237:                if (i < light_component->GetSliceCount())
+1239:                    light_buffer_entry.atlas_offsets[i]      = light_component->GetAtlasOffset(i);
+1240:                    light_buffer_entry.atlas_scales[i]       = light_component->GetAtlasScale(i);
+1241:                    const math::Rectangle& rect              = light_component->GetAtlasRectangle(i);
+1256:            if (Light* light_component = entity->GetComponent<Light>())
+1258:                if (light_component->GetLightType() == LightType::Directional)
+1264:                    if (!light_component->GetEntity()->GetActive())
+1276:            if (Light* light_component = entity->GetComponent<Light>())
+1281:                light_component->SetIndex(numeric_limits<uint32_t>::max());
+1283:                if (!light_component->GetEntity()->GetActive())
+1286:                if (light_component->GetIntensityRadiometric() <= 0.0f)
+1291:                    if (!camera->IsInViewFrustum(light_component->GetBoundingBox()))
+1295:                if (light_component->GetLightType() != LightType::Directional)
+1297:                    const float distance_squared      = Vector3::DistanceSquared(light_component->GetEntity()->GetPosition(), camera_pos);
+1298:                    const float draw_distance_squared = light_component->GetDrawDistance() * light_component->GetDrawDistance();
+1309:        buffer->ResetOffset();
+1313:            buffer->Update(cmd_list, &m_bindless_lights[0], buffer->GetStride() * m_count_active_lights);
+1326:            const BoundingBox& aabb            = renderable->GetBoundingBox();
+1339:                Material* material          = renderable->GetMaterial();
+1341:                if (!material || material->IsTransparent())
+1345:                if (renderable->GetMeshletCount(dc.lod_index) == 0 || renderable->GetIndexCount(dc.lod_index) == 0)
+1351:                    const BoundingBox& aabb         = renderable->GetBoundingBox();
+1366:            cmd_list->UpdateBuffer(buffer, frame_byte_offset, upload_size, &m_bindless_aabbs[0]);
+1383:                Render* renderable = entity->GetComponent<Render>();
+1384:                Material* material = renderable->GetMaterial();
+1388:                if (material->IsTransparent())
+1394:                    entity->GetMatrix(),
+1395:                    entity->GetMatrixPrevious(),
+1396:                    material->GetIndex(),
+1397:                    material->IsTransparent() ? 1 : 0
+1402:                draw_call.distance_squared   = renderable->GetDistanceSquared();
+1403:                draw_call.lod_index          = renderable->GetLodIndex();
+1405:                draw_call.camera_visible     = renderable->IsVisible();
+1407:                draw_call.instance_count     = renderable->GetInstanceCount();
+1414:                bool a_transparent = a.renderable->GetMaterial()->IsTransparent();
+1415:                bool b_transparent = b.renderable->GetMaterial()->IsTransparent();
+1421:                uint64_t a_material_id = a.renderable->GetMaterial()->GetObjectId();
+1422:                uint64_t b_material_id = b.renderable->GetMaterial()->GetObjectId();
+1444:                if (!dc.renderable->GetMaterial()->IsTransparent() && dc.camera_visible)
+1452:                bool a_alpha = a.renderable->GetMaterial()->IsAlphaTested();
+1453:                bool b_alpha = b.renderable->GetMaterial()->IsAlphaTested();
+1462:        // indirect draw buffers (gpu-driven path)
+1464:        // the cull pass dispatches over tasks, performs per-instance frustum, hi-z and cone tests, and emits surviving entries
+1475:                Material* material          = renderable->GetMaterial();
+1477:                if (!material || material->IsTransparent())
+1484:                uint32_t meshlet_count   = renderable->GetMeshletCount(dc.lod_index);
+1485:                uint32_t lod_index_count = renderable->GetIndexCount(dc.lod_index);
+1493:                // when per-(meshlet, instance) tasks would overflow the cull-task budget, fall back
+1495:                // this keeps per-meshlet hi-z but loses per-instance hi-z, much cheaper for dense fields
+1506:                uint32_t base_first_index     = renderable->GetIndexOffset(dc.lod_index);
+1507:                int32_t  vertex_offset        = static_cast<int32_t>(renderable->GetVertexOffset(dc.lod_index));
+1508:                uint32_t global_meshlet_base  = renderable->GetGlobalMeshletOffset() + renderable->GetMeshletOffset(dc.lod_index);
+1510:                Entity* entity = renderable->GetEntity();
+1511:                Mesh* mesh     = renderable->GetMesh();
+1512:                const std::vector<Sb_MeshletBounds>& meshlets = mesh->GetMeshlets();
+1513:                uint32_t lod_meshlet_offset                   = renderable->GetMeshletOffset(dc.lod_index);
+1515:                // flags bit 0 skip meshlet cull (passthrough), bit 1 per-instance sphere translation, bit 2 hw instancing
+1516:                // hw-instanced must skip meshlet cull, the meshlet bound is in mesh-local space and instances are scattered far from entity origin
+1517:                bool skinned_skip_cull = mesh->IsSkinned() && cvar_meshlet_cull_skinned.GetValueAs<bool>() == false;
+1541:                    data.transform          = entity->GetMatrix();
+1542:                    data.transform_previous = entity->GetMatrixPrevious();
+1543:                    data.material_index     = material->GetIndex();
+1548:                    data.instance_offset    = renderable->GetGlobalInstanceOffset();
+1551:                    // per-instance path emits one task per instance, hw-instanced path emits one task total
+1568:            auto compute_screen_space_area = [&](const BoundingBox& aabb_world) -> float
+1573:                    math::Rectangle rect_screen = camera->WorldToScreenCoordinates(aabb_world);
+1592:                Material* material = renderable->GetMaterial();
+1594:                if (!material || material->IsTransparent() || renderable->HasInstancing() || !draw_call.camera_visible)
+1597:                float screen_area = compute_screen_space_area(renderable->GetBoundingBox());
+1638:        // built incrementally with a per-frame cap so big scenes (forest has 2148 unique meshes)
+1642:            cmd_list->BeginMarker("blas_build");
+1651:                Render* renderable = entity->GetComponent<Render>();
+1654:                if (!renderable->HasAccelerationStructure())
+1658:                        // trace: log per-entity build with mesh name and entity name so we can pinpoint a crashing build
+1659:                        Mesh* mesh                  = renderable->GetMesh();
+1660:                        const std::string& mesh_nm  = mesh ? mesh->GetObjectName() : std::string("<no_mesh>");
+1661:                        const std::string& ent_nm   = entity->GetObjectName();
+1662:                        uint32_t index_count        = renderable->GetIndexCount(0);
+1664:                        renderable->BuildAccelerationStructure(cmd_list);
+1665:                        if (renderable->HasAccelerationStructure())
+1677:                if (renderable->NeedsBlasRefit() && renderable->HasAccelerationStructure())
+1679:                    renderable->RefitAccelerationStructure(cmd_list);
+1680:                    renderable->SetNeedsBlasRefit(false);
+1687:            // freeing mid-burst would force a reallocation on next frame
+1694:            cmd_list->EndMarker();
+1705:            cmd_list->BeginMarker("tlas_build");
+1714:            static vector<RHI_AccelerationStructureInstance> instances; // static to avoid per-frame heap alloc
+1721:                Render* renderable = entity->GetComponent<Render>();
+1722:                Material* material = renderable->GetMaterial();
+1726:                uint64_t device_address = renderable->GetAccelerationStructureDeviceAddress();
+1730:                RHI_Buffer* vertex_buffer = renderable->GetVertexBuffer();
+1731:                RHI_Buffer* index_buffer  = renderable->GetIndexBuffer();
+1735:                RHI_CullMode cull_mode = static_cast<RHI_CullMode>(material->GetProperty(MaterialProperty::CullMode));
+1738:                instance.instance_custom_index                       = material->GetIndex(); // for hit shader material lookup
+1744:                // row-major 3x4 transform (transpose 3x3 because vulkan uses column vectors)
+1745:                const Matrix& m = renderable->GetEntity()->GetMatrix();
+1753:                geo_info.vertex_offset  = renderable->GetVertexOffset(0);
+1754:                geo_info.index_offset   = renderable->GetIndexOffset(0);
+1766:                m_tlas->BuildTopLevel(cmd_list, instances);
+1768:                GetBuffer(Renderer_Buffer::GeometryInfo)->Update(cmd_list, geometry_infos.data(), static_cast<uint32_t>(geometry_infos.size() * sizeof(Sb_GeometryInfo)));
+1777:            cmd_list->EndMarker();
+1783:        const uint32_t resolution_atlas = GetRenderTarget(Renderer_RenderTarget::shadow_atlas)->GetWidth();
+1791:            Light* light = entity->GetComponent<Light>();
+1792:            light->ClearAtlasRectangles();
+1793:            if (light->GetIndex() == numeric_limits<uint32_t>::max())
+1795:            for (uint32_t i = 0; i < light->GetSliceCount(); ++i)
+1803:        // row-based packing: lays out uniform-sized slices left-to-right, wrapping to the next row.
+1804:        // when rects is null it only tests whether the layout fits; when non-null it writes the rectangles.
+1805:        auto pack_row = [&](uint32_t slice_res, uint32_t num_slices, vector<ShadowSlice>* rects) -> bool
+1854:                    high = mid - 1;
+1865:            slice.light->SetAtlasRectangle(slice.slice_index, slice.rect);
+1872:        uint32_t width            = frame_output->GetWidth();
+1873:        uint32_t height           = frame_output->GetHeight();
+1874:        uint32_t bits_per_channel = frame_output->GetBitsPerChannel();
+1875:        uint32_t channel_count    = frame_output->GetChannelCount();
+1884:            cmd_list->CopyTextureToBuffer(frame_output, staging.get());
+1888:        void* mapped_data = staging->GetMappedData();

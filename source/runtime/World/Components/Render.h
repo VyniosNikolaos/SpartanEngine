@@ -64,6 +64,11 @@ namespace spartan
         uint32_t GetIndexCount(const uint32_t lod = 0) const;
         uint32_t GetVertexOffset(const uint32_t lod = 0) const;
         uint32_t GetVertexCount(const uint32_t lod = 0) const;
+        uint32_t GetMeshletOffset(const uint32_t lod = 0) const;
+        uint32_t GetMeshletCount(const uint32_t lod = 0) const;
+        uint32_t GetGlobalMeshletOffset() const;
+        Mesh* GetMesh() const { return m_mesh; }
+        uint32_t GetSubMeshIndex() const { return m_sub_mesh_index; }
         RHI_Buffer* GetIndexBuffer() const;
         RHI_Buffer* GetVertexBuffer() const;
         const std::string& GetMeshName() const;
@@ -91,9 +96,9 @@ namespace spartan
         Material* GetMaterial() const { return m_material; }
 
         // instancing
-        bool HasInstancing() const            { return !m_instances.empty(); }
-        RHI_Buffer* GetInstanceBuffer() const { return m_instance_buffer.get(); }
-        uint32_t GetInstanceCount()  const    { return m_instances.empty() ? 1 : static_cast<uint32_t>(m_instances.size()); }
+        bool HasInstancing() const                  { return !m_instances.empty(); }
+        uint32_t GetInstanceCount()  const          { return m_instances.empty() ? 1 : static_cast<uint32_t>(m_instances.size()); }
+        uint32_t GetGlobalInstanceOffset() const    { return m_global_instance_offset; }
         math::Matrix GetInstance(const uint32_t index, const bool to_world);
         void SetInstances(const std::vector<Instance>& instances);
         void SetInstances(const std::vector<math::Matrix>& transforms);
@@ -137,7 +142,7 @@ namespace spartan
 
         // instancing
         std::vector<Instance> m_instances;
-        std::shared_ptr<RHI_Buffer> m_instance_buffer;
+        uint32_t m_global_instance_offset = 0; // 0 means non-instanced reads identity from slot 0 of the global instance pool
 
         // blas refit
         bool m_needs_blas_refit  = false;

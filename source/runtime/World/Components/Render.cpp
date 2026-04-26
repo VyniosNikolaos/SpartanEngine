@@ -30,6 +30,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "../../Resource/ResourceCache.h"
 #include "../../Rendering/Renderer.h"
 #include "../../Rendering/Material.h"
+#include "../../Rendering/GeometryBuffer.h"
 SP_WARNINGS_OFF
 #include "../IO/pugixml.hpp"
 SP_WARNINGS_ON
@@ -53,7 +54,6 @@ namespace spartan
         SP_REGISTER_ATTRIBUTE_VALUE_VALUE(m_sub_mesh_index, uint32_t);
         SP_REGISTER_ATTRIBUTE_VALUE_VALUE(m_bounding_box_dirty, bool);
         SP_REGISTER_ATTRIBUTE_VALUE_VALUE(m_instances, vector<Instance>);
-        SP_REGISTER_ATTRIBUTE_VALUE_VALUE(m_instance_buffer, shared_ptr<RHI_Buffer>);
         SP_REGISTER_ATTRIBUTE_VALUE_VALUE(m_transform_previous, Matrix);
         SP_REGISTER_ATTRIBUTE_VALUE_VALUE(m_max_distance_render, float);
         SP_REGISTER_ATTRIBUTE_VALUE_VALUE(m_max_distance_shadow, float);
@@ -375,6 +375,21 @@ namespace spartan
         return m_mesh->GetSubMesh(m_sub_mesh_index).lods[lod].vertex_count;
     }
 
+    uint32_t Render::GetMeshletOffset(const uint32_t lod) const
+    {
+        return m_mesh->GetSubMesh(m_sub_mesh_index).lods[lod].meshlet_offset;
+    }
+
+    uint32_t Render::GetMeshletCount(const uint32_t lod) const
+    {
+        return m_mesh->GetSubMesh(m_sub_mesh_index).lods[lod].meshlet_count;
+    }
+
+    uint32_t Render::GetGlobalMeshletOffset() const
+    {
+        return m_mesh->GetGlobalMeshletOffset();
+    }
+
     RHI_Buffer* Render::GetIndexBuffer() const
 	{
         if (!m_mesh)
@@ -454,21 +469,15 @@ namespace spartan
         if (instances.empty())
         {
             m_instances.clear();
-            m_instance_buffer    = nullptr;
-            m_bounding_box_dirty = true;
+            m_global_instance_offset = 0;
+            m_bounding_box_dirty     = true;
             return;
         }
 
-        // store instance data
         m_instances = instances;
-        m_instance_buffer = make_shared<RHI_Buffer>(
-            RHI_Buffer_Type::Instance,
-            sizeof(Instance),
-            static_cast<uint32_t>(instances.size()),
-            static_cast<const void*>(instances.data()),
-            false,
-            ("instance_buffer_" + GetObjectName()).c_str()
-        );
+
+        // append into the global instance pool so the indirect path can read instance attrs by offset + sv_instanceid
+        m_global_instance_offset = GeometryBuffer::AppendInstances(m_instances.data(), static_cast<uint32_t>(m_instances.size()));
 
         m_bounding_box_dirty = true;
         Tick(); // update bounding boxes, frustum and distance culling

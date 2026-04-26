@@ -198,6 +198,7 @@ struct MaterialParameters
     bool has_texture_metalness() { return (flags & (1 << 4))  != 0; }
     bool has_texture_emissive()  { return (flags & (1 << 6))  != 0; }
     bool emissive_from_albedo()  { return (flags & (1 << 15)) != 0; }
+    bool is_alpha_tested()       { return (flags & (1 << 16)) != 0; }
 #endif
 };
 
@@ -245,14 +246,44 @@ struct IndirectDrawArgs
 };
 
 // per-draw data for gpu-driven rendering (indexed by draw_id in shaders)
+// flags bit 0: skip per-meshlet culling entirely (skinned, local sphere is not representative after deformation)
+// flags bit 1: per-instance culling (instanced, the cull shader translates the sphere by the per-instance position before testing)
 struct DrawData
 {
     SHARED_MATRIX transform;
     SHARED_MATRIX transform_previous;
-    SHARED_UINT   material_index SHARED_DEFAULT(0);
-    SHARED_UINT   is_transparent SHARED_DEFAULT(0);
-    SHARED_UINT   aabb_index     SHARED_DEFAULT(0);
-    SHARED_UINT   padding        SHARED_DEFAULT(0);
+    SHARED_UINT   material_index  SHARED_DEFAULT(0);
+    SHARED_UINT   is_transparent  SHARED_DEFAULT(0);
+    SHARED_UINT   aabb_index      SHARED_DEFAULT(0);
+    SHARED_UINT   meshlet_index   SHARED_DEFAULT(0); // index into the global meshlet bounds buffer
+    SHARED_UINT   flags           SHARED_DEFAULT(0);
+    SHARED_UINT   instance_offset SHARED_DEFAULT(0); // offset into the global instance buffer
+    SHARED_UINT   instance_index  SHARED_DEFAULT(0); // per-draw instance to fetch, vs uses this in place of sv_instanceid
+    SHARED_UINT   padding0        SHARED_DEFAULT(0);
+};
+
+// one cull task per (input draw, instance) pair, the cull pass dispatches over these instead of input draws
+// for non-instanced renderables one task is emitted per meshlet with instance_index 0
+// for instanced renderables one task is emitted per (meshlet, instance) pair
+struct CullTask
+{
+    SHARED_UINT draw_index     SHARED_DEFAULT(0);
+    SHARED_UINT instance_index SHARED_DEFAULT(0);
+};
+
+// per-meshlet bounding sphere and local index range (32 bytes)
+// center/radius are in mesh-local space, transformed to world by drawdata.transform at cull time
+// first_index/index_count are relative to the lod's index_offset within the global index buffer
+struct MeshletBounds
+{
+    SHARED_FLOAT3 center           SHARED_DEFAULT(spartan::math::Vector3::Zero);
+    SHARED_FLOAT  radius           SHARED_DEFAULT(0.0f);
+    SHARED_UINT   first_index      SHARED_DEFAULT(0);
+    SHARED_UINT   index_count      SHARED_DEFAULT(0);
+    // backface cone for meshlet backface culling, byte 0..2 axis_s8 xyz, byte 3 cutoff_s8, all signed snorm
+    // a cutoff of 127 means the cone is degenerate and the meshlet must not be backface culled
+    SHARED_UINT   cone_axis_cutoff SHARED_DEFAULT(0);
+    SHARED_UINT   padding0         SHARED_DEFAULT(0);
 };
 
 // vertex pulling - global geometry buffer exposed as a structured buffer
@@ -317,6 +348,8 @@ namespace spartan
     using Sb_GeometryInfo     = GeometryInfo;
     using Sb_IndirectDrawArgs = IndirectDrawArgs;
     using Sb_DrawData         = DrawData;
+    using Sb_MeshletBounds    = MeshletBounds;
+    using Sb_CullTask         = CullTask;
     using Sb_Particle         = Particle;
     using Sb_EmitterParams    = EmitterParams;
 }

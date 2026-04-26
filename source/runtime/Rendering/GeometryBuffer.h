@@ -26,6 +26,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <mutex>
 #include <memory>
 #include "../RHI/RHI_Vertex.h"
+#include "Renderer_Buffers.h"
+#include "Instance.h"
 //================================
 
 namespace spartan
@@ -45,6 +47,13 @@ namespace spartan
         // append indices to the global buffer, returns the base index offset
         static uint32_t AppendIndices(const uint32_t* data, uint32_t count);
 
+        // append meshlet bounds to the global buffer, returns the base meshlet offset
+        static uint32_t AppendMeshletBounds(const Sb_MeshletBounds* data, uint32_t count);
+
+        // append instances to the global instance buffer, returns the base instance offset
+        // index 0 is reserved for the identity instance used by non-instanced draws
+        static uint32_t AppendInstances(const Instance* data, uint32_t count);
+
         // update existing vertices in-place (cpu + gpu), used by deformable meshes like cloth
         static void UpdateVertices(const RHI_Vertex_PosTexNorTan* data, uint32_t offset, uint32_t count);
 
@@ -59,6 +68,8 @@ namespace spartan
 
         static RHI_Buffer* GetVertexBuffer();
         static RHI_Buffer* GetIndexBuffer();
+        static RHI_Buffer* GetMeshletBoundsBuffer();
+        static RHI_Buffer* GetInstanceBuffer();
 
         // returns true if a full buffer rebuild occurred this frame (capacity exceeded).
         // callers should use this to invalidate caches that depend on buffer addresses (e.g. acceleration structures).
@@ -69,16 +80,24 @@ namespace spartan
         // cpu-side accumulators
         static std::vector<RHI_Vertex_PosTexNorTan> m_vertices;
         static std::vector<uint32_t> m_indices;
+        static std::vector<Sb_MeshletBounds> m_meshlet_bounds;
+        static std::vector<Instance> m_instances;
 
         // gpu buffers
         static std::unique_ptr<RHI_Buffer> m_vertex_buffer;
         static std::unique_ptr<RHI_Buffer> m_index_buffer;
+        static std::unique_ptr<RHI_Buffer> m_meshlet_bounds_buffer;
+        static std::unique_ptr<RHI_Buffer> m_instance_buffer;
 
         // capacity tracking (element counts)
         static uint32_t m_vertex_count_committed; // elements uploaded to gpu
         static uint32_t m_index_count_committed;
+        static uint32_t m_meshlet_bounds_count_committed;
+        static uint32_t m_instance_count_committed;
         static uint32_t m_vertex_capacity;        // total gpu buffer capacity
         static uint32_t m_index_capacity;
+        static uint32_t m_meshlet_bounds_capacity;
+        static uint32_t m_instance_capacity;
 
         // state
         static bool m_dirty;

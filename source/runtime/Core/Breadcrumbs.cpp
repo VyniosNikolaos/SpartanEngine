@@ -27,6 +27,32 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 namespace spartan
 {
+    namespace
+    {
+        // maps a queue type to a fixed index into the per-queue arrays, returns -1 for unsupported types
+        int32_t queue_index_from_type(RHI_Queue_Type queue_type)
+        {
+            switch (queue_type)
+            {
+                case RHI_Queue_Type::Graphics: return 0;
+                case RHI_Queue_Type::Compute:  return 1;
+                case RHI_Queue_Type::Copy:     return 2;
+                default:                       return -1;
+            }
+        }
+
+        const char* queue_name_from_type(RHI_Queue_Type queue_type)
+        {
+            switch (queue_type)
+            {
+                case RHI_Queue_Type::Graphics: return "breadcrumb_gpu_graphics";
+                case RHI_Queue_Type::Compute:  return "breadcrumb_gpu_compute";
+                case RHI_Queue_Type::Copy:     return "breadcrumb_gpu_copy";
+                default:                       return "breadcrumb_gpu_unknown";
+            }
+        }
+    }
+
     void Breadcrumbs::Initialize()
     {
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -37,18 +63,24 @@ namespace spartan
         m_current_index = 0;
         m_current_depth = 0;
 
-        // gpu breadcrumb buffer - host visible and host coherent so the cpu can read it after a crash
-        m_gpu_buffer = new RHI_Buffer(
-            RHI_Buffer_Type::Storage,
-            sizeof(uint32_t),
-            max_gpu_markers,
-            nullptr,
-            true,
-            "breadcrumb_gpu"
-        );
+        // gpu breadcrumb buffers, one per queue type, host visible and coherent so the cpu can
+        // read them after a crash, separate vkbuffer per queue removes any cross-queue race
+        const RHI_Queue_Type queue_types[queue_count] = { RHI_Queue_Type::Graphics, RHI_Queue_Type::Compute, RHI_Queue_Type::Copy };
+        for (uint32_t i = 0; i < queue_count; i++)
+        {
+            m_gpu_buffers[i] = new RHI_Buffer(
+                RHI_Buffer_Type::Storage,
+                sizeof(uint32_t),
+                max_gpu_markers,
+                nullptr,
+                true,
+                queue_name_from_type(queue_types[i])
+            );
 
-        m_gpu_marker_count = 0;
-        m_gpu_marker_names.fill(nullptr);
+            m_gpu_marker_counts[i] = 0;
+            m_gpu_marker_names[i].fill(nullptr);
+        }
+
         m_gpu_marker_begin_to_slot.fill(-1);
 
         m_initialized = true;
@@ -60,30 +92,46 @@ namespace spartan
 
         m_markers.clear();
 
-        if (m_gpu_buffer)
+        for (uint32_t i = 0; i < queue_count; i++)
         {
-            delete m_gpu_buffer;
-            m_gpu_buffer = nullptr;
+            if (m_gpu_buffers[i])
+            {
+                delete m_gpu_buffers[i];
+                m_gpu_buffers[i] = nullptr;
+            }
+            m_gpu_marker_counts[i] = 0;
         }
 
-        m_gpu_marker_count = 0;
-        m_initialized      = false;
+        m_initialized = false;
     }
 
-    int32_t Breadcrumbs::GpuMarkerBegin(const char* name)
+    int32_t Breadcrumbs::GpuMarkerBegin(const char* name, RHI_Queue_Type queue_type)
     {
-        if (!m_initialized || !m_gpu_buffer || !name)
+        if (!m_initialized || !name)
+            return -1;
+
+        int32_t qi = queue_index_from_type(queue_type);
+        if (qi < 0 || !m_gpu_buffers[qi])
             return -1;
 
         std::lock_guard<std::mutex> lock(m_mutex);
 
-        if (m_gpu_marker_count >= max_gpu_markers)
+        if (m_gpu_marker_counts[qi] >= max_gpu_markers)
             return -1;
 
-        uint32_t slot            = m_gpu_marker_count++;
-        m_gpu_marker_names[slot] = name;
+        uint32_t slot                = m_gpu_marker_counts[qi]++;
+        m_gpu_marker_names[qi][slot] = name;
 
         return static_cast<int32_t>(slot);
+    }
+
+    RHI_Buffer* Breadcrumbs::GetGpuBuffer(RHI_Queue_Type queue_type)
+    {
+        int32_t qi = queue_index_from_type(queue_type);
+        if (qi < 0)
+            return nullptr;
+
+        return m_gpu_buffers[qi];
     }
 
     void Breadcrumbs::GpuMarkerEnd(int32_t marker_index)
@@ -96,18 +144,22 @@ namespace spartan
 
     void Breadcrumbs::ResetGpuMarkers()
     {
-        if (!m_gpu_buffer)
-            return;
-
-        m_gpu_marker_count = 0;
-        m_gpu_marker_names.fill(nullptr);
         m_gpu_marker_begin_to_slot.fill(-1);
 
-        // zero out the mapped buffer so all slots read as "not reached"
-        void* mapped = m_gpu_buffer->GetMappedData();
-        if (mapped)
+        for (uint32_t qi = 0; qi < queue_count; qi++)
         {
-            memset(mapped, 0, max_gpu_markers * sizeof(uint32_t));
+            if (!m_gpu_buffers[qi])
+                continue;
+
+            m_gpu_marker_counts[qi] = 0;
+            m_gpu_marker_names[qi].fill(nullptr);
+
+            // zero out the mapped buffer so all slots read as "not reached"
+            void* mapped = m_gpu_buffers[qi]->GetMappedData();
+            if (mapped)
+            {
+                memset(mapped, 0, max_gpu_markers * sizeof(uint32_t));
+            }
         }
     }
 
@@ -134,52 +186,54 @@ namespace spartan
                 return a->depth < b->depth;
             });
 
-        // collect gpu marker states
-        uint32_t* gpu_data                 = m_gpu_buffer ? static_cast<uint32_t*>(m_gpu_buffer->GetMappedData()) : nullptr;
+        // collect gpu marker states across all per-queue buffers
         std::string gpu_crash_marker_name;
         std::string last_completed_name;
         std::string first_incomplete_name;
-        bool has_any_gpu_marker            = false;
+        bool has_any_gpu_marker = false;
 
-        if (gpu_data)
+        const char* queue_label[queue_count] = { "graphics", "compute", "copy" };
+
+        for (uint32_t qi = 0; qi < queue_count; qi++)
         {
-            // gpu completed markers (these finished before the crash)
-            for (uint32_t i = 0; i < m_gpu_marker_count; i++)
+            uint32_t* gpu_data = m_gpu_buffers[qi] ? static_cast<uint32_t*>(m_gpu_buffers[qi]->GetMappedData()) : nullptr;
+            if (!gpu_data)
+                continue;
+
+            for (uint32_t i = 0; i < max_gpu_markers; i++)
             {
-                if (!m_gpu_marker_names[i])
+                if (!m_gpu_marker_names[qi][i])
                     continue;
 
                 if (gpu_data[i] == gpu_marker_completed)
                 {
-                    report += "  [completed]   " + std::string(m_gpu_marker_names[i]) + "\n";
-                    last_completed_name = m_gpu_marker_names[i];
+                    report += "  [completed]   [" + std::string(queue_label[qi]) + "] " + std::string(m_gpu_marker_names[qi][i]) + "\n";
+                    last_completed_name = m_gpu_marker_names[qi][i];
                     has_any_gpu_marker  = true;
                 }
             }
 
-            // gpu in-progress markers (where the gpu actually stopped mid-pass)
-            for (uint32_t i = 0; i < m_gpu_marker_count; i++)
+            for (uint32_t i = 0; i < max_gpu_markers; i++)
             {
-                if (!m_gpu_marker_names[i] || gpu_data[i] == 0 || gpu_data[i] == gpu_marker_completed)
+                if (!m_gpu_marker_names[qi][i] || gpu_data[i] == 0 || gpu_data[i] == gpu_marker_completed)
                     continue;
 
-                report += "  [gpu crash]   " + std::string(m_gpu_marker_names[i]) + "\n";
-                gpu_crash_marker_name = m_gpu_marker_names[i];
+                report += "  [gpu crash]   [" + std::string(queue_label[qi]) + "] " + std::string(m_gpu_marker_names[qi][i]) + "\n";
+                gpu_crash_marker_name = m_gpu_marker_names[qi][i];
                 has_any_gpu_marker    = true;
             }
 
-            // gpu not-reached markers (registered but the gpu never got to them)
-            for (uint32_t i = 0; i < m_gpu_marker_count; i++)
+            for (uint32_t i = 0; i < max_gpu_markers; i++)
             {
-                if (!m_gpu_marker_names[i] || gpu_data[i] != 0)
+                if (!m_gpu_marker_names[qi][i] || gpu_data[i] != 0)
                     continue;
 
-                report += "  [incomplete]  " + std::string(m_gpu_marker_names[i]) + "\n";
+                report += "  [incomplete]  [" + std::string(queue_label[qi]) + "] " + std::string(m_gpu_marker_names[qi][i]) + "\n";
                 has_any_gpu_marker = true;
 
                 if (first_incomplete_name.empty())
                 {
-                    first_incomplete_name = m_gpu_marker_names[i];
+                    first_incomplete_name = m_gpu_marker_names[qi][i];
                 }
             }
         }

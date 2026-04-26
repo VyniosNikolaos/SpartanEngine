@@ -25,10 +25,12 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //=================================
 
 #ifdef INDIRECT_DRAW
-gbuffer_vertex main_vs(uint vertex_id : SV_VertexID, uint instance_id : SV_InstanceID, [[vk::builtin("DrawIndex")]] uint draw_id : DRAW_INDEX, uint view_id : SV_ViewID)
+gbuffer_vertex main_vs(uint vertex_id : SV_VertexID, uint sv_instance_id : SV_InstanceID, [[vk::builtin("DrawIndex")]] uint draw_id : DRAW_INDEX, uint view_id : SV_ViewID)
 {
     _draw = indirect_draw_data_out[draw_id];
-    Vertex_PosUvNorTan input = pull_vertex(vertex_id);
+    // per-instance culled draws have instance_count=1 and instance_index set, hw-instanced have instance_count=N and instance_index=0
+    uint instance_id         = _draw.instance_index + sv_instance_id;
+    Vertex_PosUvNorTan input = pull_vertex(vertex_id, instance_id, _draw.instance_offset);
 #else
 gbuffer_vertex main_vs(Vertex_PosUvNorTan input, uint instance_id : SV_InstanceID, uint view_id : SV_ViewID)
 {
@@ -42,6 +44,26 @@ gbuffer_vertex main_vs(Vertex_PosUvNorTan input, uint instance_id : SV_InstanceI
     return transform_to_clip_space(vertex, position_world, position_world_previous, view_id);
 }
 
+#ifdef ALPHA_TEST_INDIRECT
+// indirect path discards based on material flags read from the bindless material parameters
+// non-alpha-tested materials early out so they only pay vertex cost in the prepass
+void main_ps(gbuffer_vertex vertex)
+{
+    pass_load_draw_data_from_vertex(vertex.material_index);
+
+    MaterialParameters material = GetMaterial();
+    if (!material.is_alpha_tested())
+        return;
+
+    const float2 screen_uv      = vertex.position.xy / (buffer_frame.resolution_render * buffer_frame.resolution_scale);
+    const float3 position_world = get_position_for_view(vertex.position.z, screen_uv, vertex.view_id);
+    const float alpha_threshold = get_alpha_threshold(position_world);
+
+    float a = GET_TEXTURE(material_texture_index_albedo).Sample(samplers[sampler_anisotropic_wrap], vertex.uv_misc.xy).a;
+    if (a <= alpha_threshold)
+        discard;
+}
+#else
 void main_ps(gbuffer_vertex vertex)
 {
     pass_load_draw_data_from_vertex(vertex.material_index);
@@ -58,3 +80,4 @@ void main_ps(gbuffer_vertex vertex)
     if (has_albedo && GET_TEXTURE(material_texture_index_albedo).Sample(samplers[sampler_anisotropic_wrap], vertex.uv_misc.xy).a <= alpha_threshold)
         discard;
 }
+#endif

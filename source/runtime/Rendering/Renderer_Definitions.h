@@ -31,6 +31,8 @@ namespace spartan
     const uint32_t renderer_max_draw_calls            = 20000;
     const uint32_t renderer_max_instance_count        = 1024;
     const uint32_t renderer_draw_data_buffer_count    = 4; // matches the command list pool size to avoid cpu-gpu memcpy races
+    const uint32_t renderer_max_indirect_draws        = 131072; // capacity for per-(renderable,meshlet) indirect draw inputs and cull shader outputs, the cull shader clamps writes to this
+    const uint32_t renderer_max_cull_tasks            = 524288; // capacity for per-instance cull tasks, drives the cull dispatch size
 
     enum class Renderer_Tonemapping : uint32_t
     {
@@ -134,6 +136,10 @@ namespace spartan
         compress_input         = 40,
         compress_output        = 41,
         compress_output_bc1    = 42,
+        // per-meshlet bounds for gpu-driven culling
+        meshlet_bounds         = 43,
+        // per-instance cull tasks for gpu-driven culling
+        cull_tasks             = 44,
     };
 
     enum class Renderer_Shader : uint8_t
@@ -144,6 +150,7 @@ namespace spartan
         gbuffer_p,
         depth_prepass_v,
         depth_prepass_alpha_test_p,
+        depth_prepass_indirect_alpha_test_p,
         depth_light_v,
         depth_light_alpha_color_p,
         fxaa_c,
@@ -214,6 +221,8 @@ namespace spartan
         gbuffer_indirect_v,
         gbuffer_indirect_p,
         depth_prepass_indirect_v,
+        meshlet_visualize_v,
+        meshlet_visualize_p,
         // gpu-driven particles
         particle_emit_c,
         particle_simulate_c,
@@ -324,6 +333,7 @@ namespace spartan
         IndirectDrawDataOut,
         IndirectDrawArgsOut,
         IndirectDrawCount,
+        CullTasks,                 // per-instance cull tasks consumed by the indirect cull compute shader
         DrawData,                  // bindless per-draw data (transforms, material index, etc.)
         // gpu-driven particles
         ParticleBufferA,

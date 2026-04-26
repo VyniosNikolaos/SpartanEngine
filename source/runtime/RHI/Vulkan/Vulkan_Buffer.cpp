@@ -117,13 +117,12 @@ namespace spartan
         }
         else if (m_type == RHI_Buffer_Type::Storage)
         {
-            // calculate required alignment based on minimum device offset alignment
-            size_t min_alignment = RHI_Device::PropertyGetMinStorageBufferOffsetAlignment();
-            if (min_alignment > 0 && min_alignment != m_stride)
-            {
-                m_stride      = static_cast<uint32_t>(static_cast<uint64_t>((m_stride + min_alignment - 1) & ~(min_alignment - 1)));
-                m_object_size = m_stride * m_element_count;
-            }
+            // note: do not pad m_stride to minStorageBufferOffsetAlignment, that limit applies to
+            // binding offsets when binding a sub-range of the buffer (e.g. dynamic storage with
+            // offset), not to per-element stride. element stride is dictated by the shader's
+            // struct layout (std430), padding it here breaks data alignment and wastes memory
+            // (e.g. an 8-byte struct would be padded to 16 bytes, doubling buffer size and
+            // reading 2x past the end of the cpu source array on bulk uploads)
 
             // create
             VkMemoryPropertyFlags flags_memory = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
@@ -248,8 +247,44 @@ namespace spartan
             m_offset += m_stride;
         }
 
-        // vkCmdUpdateBuffer and vkCmdPipelineBarrier
-        cmd_list->UpdateBuffer(this, m_offset, size != 0 ? size : m_stride, data_cpu);
+        // memcpy directly to the persistent host-coherent mapping and emit a single host->device
+        // barrier, this avoids vkCmdUpdateBuffer which records data inline into the command buffer
+        // and bloats it for large uploads (the cull tasks buffer can be several mb per frame)
+        const uint32_t upload_size = (size != 0) ? size : m_stride;
+        SP_ASSERT(static_cast<uint64_t>(m_offset) + upload_size <= m_object_size);
+
+        memcpy(static_cast<uint8_t*>(m_data_gpu) + m_offset, data_cpu, upload_size);
+
+        VkAccessFlags2 dst_access = 0;
+        switch (m_type)
+        {
+            case RHI_Buffer_Type::Vertex:
+            case RHI_Buffer_Type::Instance:           dst_access = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT; break;
+            case RHI_Buffer_Type::Index:              dst_access = VK_ACCESS_2_INDEX_READ_BIT;            break;
+            case RHI_Buffer_Type::Storage:            dst_access = VK_ACCESS_2_SHADER_READ_BIT;           break;
+            case RHI_Buffer_Type::Constant:           dst_access = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_UNIFORM_READ_BIT; break;
+            case RHI_Buffer_Type::ShaderBindingTable: dst_access = VK_ACCESS_2_SHADER_BINDING_TABLE_READ_BIT_KHR; break;
+            default: break;
+        }
+
+        VkBufferMemoryBarrier2 barrier = {};
+        barrier.sType                  = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        barrier.srcStageMask           = VK_PIPELINE_STAGE_2_HOST_BIT;
+        barrier.srcAccessMask          = VK_ACCESS_2_HOST_WRITE_BIT;
+        barrier.dstStageMask           = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        barrier.dstAccessMask          = dst_access;
+        barrier.srcQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED;
+        barrier.buffer                 = static_cast<VkBuffer>(m_rhi_resource);
+        barrier.offset                 = m_offset;
+        barrier.size                   = upload_size;
+
+        VkDependencyInfo dependency_info         = {};
+        dependency_info.sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dependency_info.bufferMemoryBarrierCount = 1;
+        dependency_info.pBufferMemoryBarriers    = &barrier;
+
+        vkCmdPipelineBarrier2(static_cast<VkCommandBuffer>(cmd_list->GetRhiResource()), &dependency_info);
     }
 
     RHI_StridedDeviceAddressRegion RHI_Buffer::GetRegion(const RHI_Shader_Type group_type, const uint32_t stride_extra /*= 0*/) const

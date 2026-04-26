@@ -2406,12 +2406,13 @@ namespace spartan
         {
             Breadcrumbs::BeginMarker(name);
 
-            int32_t gpu_slot = Breadcrumbs::GpuMarkerBegin(name);
+            RHI_Queue_Type queue_type = m_queue ? m_queue->GetType() : RHI_Queue_Type::Max;
+            int32_t gpu_slot          = Breadcrumbs::GpuMarkerBegin(name, queue_type);
             if (gpu_slot >= 0)
             {
                 m_breadcrumb_gpu_slots.push(gpu_slot);
 
-                RHI_Buffer* buffer = Breadcrumbs::GetGpuBuffer();
+                RHI_Buffer* buffer = Breadcrumbs::GetGpuBuffer(queue_type);
                 if (buffer)
                 {
                     WriteGpuBreadcrumb(buffer, static_cast<uint32_t>(gpu_slot), static_cast<uint32_t>(gpu_slot + 1));
@@ -2436,7 +2437,8 @@ namespace spartan
                 int32_t gpu_slot = m_breadcrumb_gpu_slots.top();
                 m_breadcrumb_gpu_slots.pop();
 
-                RHI_Buffer* buffer = Breadcrumbs::GetGpuBuffer();
+                RHI_Queue_Type queue_type = m_queue ? m_queue->GetType() : RHI_Queue_Type::Max;
+                RHI_Buffer* buffer        = Breadcrumbs::GetGpuBuffer(queue_type);
                 if (buffer && gpu_slot >= 0)
                 {
                     WriteGpuBreadcrumb(buffer, static_cast<uint32_t>(gpu_slot), Breadcrumbs::gpu_marker_completed);
@@ -2458,18 +2460,24 @@ namespace spartan
 
         VkCommandBuffer cmd = static_cast<VkCommandBuffer>(m_rhi_resource);
 
-        // synchronize with any prior breadcrumb fill to avoid write-after-write hazards
-        VkMemoryBarrier2 barrier = {};
-        barrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-        barrier.srcStageMask  = VK_PIPELINE_STAGE_2_CLEAR_BIT;
-        barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        barrier.dstStageMask  = VK_PIPELINE_STAGE_2_CLEAR_BIT;
-        barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        // scope the barrier to just this 4-byte slot, breadcrumb buffers are now dedicated per
+        // queue type so cross-queue conflicts cannot happen at the resource level
+        VkBufferMemoryBarrier2 barrier = {};
+        barrier.sType               = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        barrier.srcStageMask        = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+        barrier.srcAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        barrier.dstStageMask        = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+        barrier.dstAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.buffer              = static_cast<VkBuffer>(buffer->GetRhiResource());
+        barrier.offset              = static_cast<VkDeviceSize>(slot * sizeof(uint32_t));
+        barrier.size                = sizeof(uint32_t);
 
-        VkDependencyInfo dep    = {};
-        dep.sType               = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        dep.memoryBarrierCount  = 1;
-        dep.pMemoryBarriers     = &barrier;
+        VkDependencyInfo dep          = {};
+        dep.sType                     = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep.bufferMemoryBarrierCount  = 1;
+        dep.pBufferMemoryBarriers     = &barrier;
 
         vkCmdPipelineBarrier2(cmd, &dep);
 
@@ -2657,12 +2665,12 @@ namespace spartan
         {
             Breadcrumbs::BeginMarker(name);
 
-            int32_t gpu_slot = Breadcrumbs::GpuMarkerBegin(name);
+            int32_t gpu_slot = Breadcrumbs::GpuMarkerBegin(name, queue_type);
             if (gpu_slot >= 0)
             {
                 m_breadcrumb_gpu_slots.push(gpu_slot);
 
-                RHI_Buffer* buffer = Breadcrumbs::GetGpuBuffer();
+                RHI_Buffer* buffer = Breadcrumbs::GetGpuBuffer(queue_type);
                 if (buffer)
                 {
                     WriteGpuBreadcrumb(buffer, static_cast<uint32_t>(gpu_slot), static_cast<uint32_t>(gpu_slot + 1));
@@ -2695,7 +2703,8 @@ namespace spartan
                 int32_t gpu_slot = m_breadcrumb_gpu_slots.top();
                 m_breadcrumb_gpu_slots.pop();
 
-                RHI_Buffer* buffer = Breadcrumbs::GetGpuBuffer();
+                RHI_Queue_Type queue_type = m_queue ? m_queue->GetType() : RHI_Queue_Type::Max;
+                RHI_Buffer* buffer        = Breadcrumbs::GetGpuBuffer(queue_type);
                 if (buffer && gpu_slot >= 0)
                 {
                     WriteGpuBreadcrumb(buffer, static_cast<uint32_t>(gpu_slot), Breadcrumbs::gpu_marker_completed);

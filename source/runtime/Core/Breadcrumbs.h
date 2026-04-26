@@ -30,6 +30,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <chrono>
 #include <algorithm>
 #include "Definitions.h"
+#include "../RHI/RHI_Definitions.h"
 //======================
 
 namespace spartan
@@ -43,8 +44,13 @@ namespace spartan
         static constexpr uint32_t max_markers          = 256;
         static constexpr uint32_t max_marker_name_size = 128;
         static constexpr uint32_t max_history_frames   = 3;
-        static constexpr uint32_t max_gpu_markers      = 1024;
+        static constexpr uint32_t max_gpu_markers      = 512;
         static constexpr uint32_t gpu_marker_completed = 0xFFFFFFFF;
+
+        // per-queue dedicated buffer count, each queue type owns its own VkBuffer so the vulkan
+        // sync validator never sees two queues writing the same resource without synchronization
+        // which is what triggers WRITE_RACING_WRITE even when the byte ranges do not overlap
+        static constexpr uint32_t queue_count = 3;
 
         enum class MarkerState : uint8_t
         {
@@ -144,11 +150,14 @@ namespace spartan
             }
         }
 
-        // gpu-side breadcrumbs - allocates a slot and records the name, returns -1 if full
-        static int32_t GpuMarkerBegin(const char* name);
+        // gpu-side breadcrumbs - allocates a slot in the queue's dedicated buffer and records the
+        // name, returns -1 if full, the returned slot is local to the queue's own buffer
+        static int32_t GpuMarkerBegin(const char* name, RHI_Queue_Type queue_type);
         static void GpuMarkerEnd(int32_t marker_index);
 
-        static RHI_Buffer* GetGpuBuffer() { return m_gpu_buffer; }
+        // returns the dedicated breadcrumb buffer for the given queue type, may return nullptr
+        // if breadcrumbs were not initialized or the queue type is out of range
+        static RHI_Buffer* GetGpuBuffer(RHI_Queue_Type queue_type);
 
         static void OnDeviceLost()
         {
@@ -168,10 +177,11 @@ namespace spartan
         inline static uint32_t m_current_depth = 0;
         inline static bool m_initialized       = false;
 
-        // gpu-side markers
-        inline static RHI_Buffer* m_gpu_buffer                                        = nullptr;
-        inline static uint32_t m_gpu_marker_count                                     = 0;
-        inline static std::array<const char*, max_gpu_markers> m_gpu_marker_names     = {};
-        inline static std::array<int32_t, max_gpu_markers> m_gpu_marker_begin_to_slot = {};
+        // gpu-side markers, one buffer plus one name array plus one counter per queue type so
+        // graphics, compute and copy submissions never touch the same vkbuffer
+        inline static std::array<RHI_Buffer*, queue_count> m_gpu_buffers          = { nullptr, nullptr, nullptr };
+        inline static std::array<uint32_t, queue_count> m_gpu_marker_counts       = { 0, 0, 0 };
+        inline static std::array<std::array<const char*, max_gpu_markers>, queue_count> m_gpu_marker_names = {};
+        inline static std::array<int32_t, max_gpu_markers> m_gpu_marker_begin_to_slot                      = {};
     };
 }

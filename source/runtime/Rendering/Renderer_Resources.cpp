@@ -111,25 +111,27 @@ namespace spartan
 
             fr.indirect_draw_args = make_shared<RHI_Buffer>(
                 RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_IndirectDrawArgs)),
-                rhi_max_array_size, nullptr, true,
+                renderer_max_indirect_draws, nullptr, true,
                 (string("indirect_draw_args_") + to_string(i)).c_str()
             );
 
             fr.indirect_draw_data = make_shared<RHI_Buffer>(
                 RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_DrawData)),
-                rhi_max_array_size, nullptr, true,
+                renderer_max_indirect_draws, nullptr, true,
                 (string("indirect_draw_data_") + to_string(i)).c_str()
             );
 
+            // out buffers are written by the cull pass, one expanded draw per surviving cull task
+            // so they must be sized for renderer_max_cull_tasks, not renderer_max_indirect_draws
             fr.indirect_draw_args_out = make_shared<RHI_Buffer>(
                 RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_IndirectDrawArgs)),
-                rhi_max_array_size, nullptr, true,
+                renderer_max_cull_tasks, nullptr, true,
                 (string("indirect_draw_args_out_") + to_string(i)).c_str()
             );
 
             fr.indirect_draw_data_out = make_shared<RHI_Buffer>(
                 RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_DrawData)),
-                rhi_max_array_size, nullptr, true,
+                renderer_max_cull_tasks, nullptr, true,
                 (string("indirect_draw_data_out_") + to_string(i)).c_str()
             );
 
@@ -137,6 +139,12 @@ namespace spartan
                 RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(uint32_t)),
                 1, &draw_count_init, true,
                 (string("indirect_draw_count_") + to_string(i)).c_str()
+            );
+
+            fr.cull_tasks = make_shared<RHI_Buffer>(
+                RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_CullTask)),
+                renderer_max_cull_tasks, nullptr, true,
+                (string("cull_tasks_") + to_string(i)).c_str()
             );
         }
 
@@ -147,6 +155,7 @@ namespace spartan
         at(buffers, Renderer_Buffer::IndirectDrawArgsOut) = fr.indirect_draw_args_out;
         at(buffers, Renderer_Buffer::IndirectDrawDataOut) = fr.indirect_draw_data_out;
         at(buffers, Renderer_Buffer::IndirectDrawCount)   = fr.indirect_draw_count;
+        at(buffers, Renderer_Buffer::CullTasks)           = fr.cull_tasks;
 
         // particle buffers
         const uint32_t particle_max = 100000;
@@ -362,13 +371,13 @@ namespace spartan
                 at(render_targets, static_cast<Renderer_RenderTarget>(static_cast<uint32_t>(Renderer_RenderTarget::restir_reservoir0) + i)) = nullptr;
             at(render_targets, Renderer_RenderTarget::shading_rate)                 = nullptr;
             at(render_targets, Renderer_RenderTarget::shadow_atlas)                 = nullptr;
+            at(render_targets, Renderer_RenderTarget::debug_output)                 = nullptr;
         }
         if (create_output)
         {
             at(render_targets, Renderer_RenderTarget::frame_output)                = nullptr;
             at(render_targets, Renderer_RenderTarget::frame_output_2)              = nullptr;
             at(render_targets, Renderer_RenderTarget::frame_output_stereo)         = nullptr;
-            at(render_targets, Renderer_RenderTarget::debug_output)                = nullptr;
             at(render_targets, Renderer_RenderTarget::bloom)                       = nullptr;
             at(render_targets, Renderer_RenderTarget::outline)                     = nullptr;
             at(render_targets, Renderer_RenderTarget::gbuffer_depth_opaque_output) = nullptr;
@@ -394,7 +403,7 @@ namespace spartan
         // avoid combining uav + rtv on frequently accessed targets (forces suboptimal layouts on amd)
 
         // vr stereo uses 2-layer array textures for multiview rendering
-        bool xr_stereo          = Xr::IsSessionRunning() && Xr::GetStereoMode();
+        bool xr_stereo           = Xr::IsSessionRunning() && Xr::GetStereoMode();
         RHI_Texture_Type rt_type = xr_stereo ? RHI_Texture_Type::Type2DArray : RHI_Texture_Type::Type2D;
         uint32_t rt_layers       = xr_stereo ? Xr::eye_count : 1;
 
@@ -406,6 +415,9 @@ namespace spartan
                 at(render_targets, Renderer_RenderTarget::frame_render)        = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, width_render, height_render, 1, 1, RHI_Format::R16G16B16A16_Float, RHI_Texture_Uav | RHI_Texture_Srv | RHI_Texture_Rtv | RHI_Texture_ClearBlit, "frame_render");
                 at(render_targets, Renderer_RenderTarget::frame_render_opaque) = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, width_render, height_render, 1, 1, RHI_Format::R16G16B16A16_Float, RHI_Texture_Srv | RHI_Texture_Rtv | RHI_Texture_ClearBlit, "frame_render_opaque");
             }
+
+            // debug output sits at render resolution so debug raster passes can share gbuffer_depth for read-equal tests
+            at(render_targets, Renderer_RenderTarget::debug_output) = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, width_render, height_render, 1, 1, RHI_Format::R16G16B16A16_Float, RHI_Texture_Uav | RHI_Texture_Srv | RHI_Texture_Rtv | RHI_Texture_ClearBlit, "debug_output");
 
             // g-buffer (concurrent sharing: read by async compute for ssao/sss)
             {
@@ -480,8 +492,6 @@ namespace spartan
             {
                 at(render_targets, Renderer_RenderTarget::frame_output_stereo) = make_shared<RHI_Texture>(RHI_Texture_Type::Type2DArray, width_output, height_output, Xr::eye_count, 1, RHI_Format::R16G16B16A16_Float, RHI_Texture_Srv | RHI_Texture_Rtv | RHI_Texture_ClearBlit, "frame_output_stereo");
             }
-            at(render_targets, Renderer_RenderTarget::debug_output)   = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, width_output, height_output, 1, 1, RHI_Format::R16G16B16A16_Float, RHI_Texture_Uav | RHI_Texture_Srv | RHI_Texture_Rtv | RHI_Texture_ClearBlit, "debug_output");
-
             // misc
             at(render_targets, Renderer_RenderTarget::bloom)                       = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, width_output, height_output, 1, mip_count, RHI_Format::R16G16B16A16_Float, RHI_Texture_Uav | RHI_Texture_Srv | RHI_Texture_PerMipViews, "bloom");
             at(render_targets, Renderer_RenderTarget::outline)                     = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, width_output, height_output, 1, 1,         RHI_Format::R8G8B8A8_Unorm,     RHI_Texture_Uav | RHI_Texture_Srv | RHI_Texture_Rtv,         "outline");
@@ -608,7 +618,10 @@ namespace spartan
         compile_shader(Renderer_Shader::indirect_cull_c,         RHI_Shader_Type::Compute, sd + "indirect_cull.hlsl");
         compile_shader(Renderer_Shader::gbuffer_indirect_v,      RHI_Shader_Type::Vertex,  sd + "g_buffer.hlsl",      true, RHI_Vertex_Type::Max, "INDIRECT_DRAW");
         compile_shader(Renderer_Shader::gbuffer_indirect_p,      RHI_Shader_Type::Pixel,   sd + "g_buffer.hlsl",      true, RHI_Vertex_Type::Max, "INDIRECT_DRAW");
-        compile_shader(Renderer_Shader::depth_prepass_indirect_v, RHI_Shader_Type::Vertex,  sd + "depth_prepass.hlsl", true, RHI_Vertex_Type::Max, "INDIRECT_DRAW");
+        compile_shader(Renderer_Shader::depth_prepass_indirect_v,           RHI_Shader_Type::Vertex,  sd + "depth_prepass.hlsl", true, RHI_Vertex_Type::Max, "INDIRECT_DRAW");
+        compile_shader(Renderer_Shader::depth_prepass_indirect_alpha_test_p, RHI_Shader_Type::Pixel,   sd + "depth_prepass.hlsl", true, RHI_Vertex_Type::Max, "ALPHA_TEST_INDIRECT");
+        compile_shader(Renderer_Shader::meshlet_visualize_v,      RHI_Shader_Type::Vertex,  sd + "meshlet_visualize.hlsl");
+        compile_shader(Renderer_Shader::meshlet_visualize_p,      RHI_Shader_Type::Pixel,   sd + "meshlet_visualize.hlsl");
 
         // misc
         compile_shader(Renderer_Shader::icon_c,                                  RHI_Shader_Type::Compute, sd + "icon.hlsl");
@@ -837,6 +850,7 @@ namespace spartan
         buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawArgsOut)] = fr.indirect_draw_args_out;
         buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawDataOut)] = fr.indirect_draw_data_out;
         buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawCount)]   = fr.indirect_draw_count;
+        buffers[static_cast<uint8_t>(Renderer_Buffer::CullTasks)]           = fr.cull_tasks;
     }
 
     RHI_Texture* Renderer::GetStandardTexture(const Renderer_StandardTexture type)

@@ -41,21 +41,30 @@ struct Vertex_PosUvNorTan
     uint instance_scale            : INSTANCE_SCALE;
 };
 
-Vertex_PosUvNorTan pull_vertex(uint vertex_id)
+Vertex_PosUvNorTan pull_vertex(uint vertex_id, uint instance_id, uint instance_offset)
 {
     PulledVertex pulled = geometry_vertices[vertex_id];
+
+    // slot 0 of the global instance pool is seeded with an identity instance, non-instanced renderables pass instance_offset=0 and read it
+    PackedInstance pi = geometry_instances[instance_offset + instance_id];
+    uint pos_x_h      = pi.pos_xy & 0xFFFF;
+    uint pos_y_h      = (pi.pos_xy >> 16) & 0xFFFF;
+    uint pos_z_h      = pi.pos_z_norm & 0xFFFF;
+    uint nrm_oct      = (pi.pos_z_norm >> 16) & 0xFFFF;
+    uint yaw_p        = pi.yaw_scale & 0xFF;
+    uint scale_p      = (pi.yaw_scale >> 8) & 0xFF;
 
     Vertex_PosUvNorTan v;
     v.position            = float4(pulled.position, 1.0f);
     v.uv                  = pulled.uv;
     v.normal              = pulled.normal;
     v.tangent             = pulled.tangent;
-    v.instance_position_x = (min16float)0;
-    v.instance_position_y = (min16float)0;
-    v.instance_position_z = (min16float)0;
-    v.instance_normal_oct = 0;
-    v.instance_yaw        = 0;
-    v.instance_scale      = 0;
+    v.instance_position_x = (min16float)f16tof32(pos_x_h);
+    v.instance_position_y = (min16float)f16tof32(pos_y_h);
+    v.instance_position_z = (min16float)f16tof32(pos_z_h);
+    v.instance_normal_oct = nrm_oct;
+    v.instance_yaw        = yaw_p;
+    v.instance_scale      = scale_p;
 
     return v;
 }

@@ -37,7 +37,8 @@ namespace spartan
         uint16_t normal_oct;  // 2 bytes
         uint8_t yaw_packed;   // 1 byte
         uint8_t scale_packed; // 1 byte
-                              // total: 10 bytes
+        uint16_t padding;     // 2 bytes, keeps stride at 12 to match shader PackedInstance (3xu32)
+                              // total: 12 bytes
 
         math::Matrix GetMatrix() const
         {
@@ -75,6 +76,8 @@ namespace spartan
 
         void SetMatrix(const math::Matrix& matrix)
         {
+            padding = 0;
+
             // pack position
             math::Vector3 position = matrix.GetTranslation();
             position_x             = float_to_half(position.x);
@@ -122,6 +125,7 @@ namespace spartan
             instance.normal_oct   = 0;
             instance.yaw_packed   = 0;
             instance.scale_packed = 0;
+            instance.padding      = 0;
 
             return instance;
         }

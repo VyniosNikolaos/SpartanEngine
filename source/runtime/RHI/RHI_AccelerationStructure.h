@@ -74,6 +74,10 @@ namespace spartan
         RHI_AccelerationStructureType GetType() const { return m_type; }
         bool CanRefit() const                         { return m_allow_update && m_rhi_resource; }
 
+        // releases the global shared scratch buffer used by static blas builds
+        // call after a build burst completes to reclaim that memory
+        static void FreeSharedBlasScratch();
+
     private:
         void Destroy();
 
@@ -96,5 +100,10 @@ namespace spartan
         std::array<uint64_t, buffer_count> m_instance_buffer_size = {};
         std::array<void*, buffer_count> m_staging_buffer          = {};
         std::array<uint64_t, buffer_count> m_staging_buffer_size  = {};
+
+        // shared scratch across all blas builds, grows monotonically
+        // building 2148 blas with per-instance scratch oom'd the gpu, sharing one keeps it bounded
+        static void* s_blas_scratch_buffer;
+        static uint64_t s_blas_scratch_buffer_size;
     };
 }

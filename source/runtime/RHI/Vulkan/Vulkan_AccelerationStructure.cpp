@@ -41,6 +41,19 @@ namespace
 
 namespace spartan
 {
+    void* RHI_AccelerationStructure::s_blas_scratch_buffer         = nullptr;
+    uint64_t RHI_AccelerationStructure::s_blas_scratch_buffer_size = 0;
+
+    void RHI_AccelerationStructure::FreeSharedBlasScratch()
+    {
+        if (s_blas_scratch_buffer)
+        {
+            RHI_Device::DeletionQueueAdd(RHI_Resource_Type::Buffer, s_blas_scratch_buffer);
+            s_blas_scratch_buffer      = nullptr;
+            s_blas_scratch_buffer_size = 0;
+        }
+    }
+
     RHI_AccelerationStructure::RHI_AccelerationStructure(const RHI_AccelerationStructureType type, const char* name)
     {
         m_type        = type;
@@ -160,6 +173,13 @@ namespace spartan
         VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
         RHI_Device::MemoryBufferCreate(m_rhi_resource_results, size_info.accelerationStructureSize, usage, properties, nullptr, m_object_name.c_str());
 
+        // bail if alloc failed, calling as_create with a null buffer would crash the driver
+        if (!m_rhi_resource_results)
+        {
+            SP_LOG_WARNING("BLAS result buffer alloc failed (%llu bytes) for %s, skipping build", size_info.accelerationStructureSize, m_object_name.c_str());
+            return;
+        }
+
         // create acceleration structure
         VkAccelerationStructureCreateInfoKHR create_info = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR };
         create_info.buffer = static_cast<VkBuffer>(m_rhi_resource_results);
@@ -168,18 +188,41 @@ namespace spartan
         as_create(device, &create_info, nullptr, reinterpret_cast<VkAccelerationStructureKHR*>(&m_rhi_resource));
         RHI_Device::SetResourceName(m_rhi_resource, RHI_Resource_Type::AccelerationStructure, m_object_name.c_str());
 
-        // create scratch buffer - persistent when allow_update is set so refits can reuse it
+        // scratch buffer
+        // for static blas (no refit) all builds share a single global scratch buffer that grows monotonically
+        // building thousands of blas with per-instance scratch oom'd the gpu, sharing keeps it bounded
+        // overallocate by alignment so the device address can be aligned at use time, vma does not
+        // guarantee the base address satisfies minAccelerationStructureScratchOffsetAlignment
         const uint64_t alignment = RHI_Device::PropertyGetMinAccelerationBufferOffsetAlignment();
         uint64_t scratch_size    = max(size_info.buildScratchSize, size_info.updateScratchSize);
-        scratch_size             = (scratch_size + alignment - 1) & ~(alignment - 1);
+        scratch_size             = ((scratch_size + alignment - 1) & ~(alignment - 1)) + alignment;
         usage                    = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
         properties               = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-        RHI_Device::MemoryBufferCreate(m_scratch_buffer, scratch_size, usage, properties, nullptr, (m_object_name + "_scratch").c_str());
-        m_scratch_buffer_size = scratch_size;
 
-        // set up build
+        void** scratch_target = allow_update ? &m_scratch_buffer : &s_blas_scratch_buffer;
+        uint64_t* scratch_size_target = allow_update ? &m_scratch_buffer_size : &s_blas_scratch_buffer_size;
+        if (!*scratch_target || scratch_size > *scratch_size_target)
+        {
+            if (*scratch_target)
+            {
+                RHI_Device::DeletionQueueAdd(RHI_Resource_Type::Buffer, *scratch_target);
+                *scratch_target = nullptr;
+            }
+            RHI_Device::MemoryBufferCreate(*scratch_target, scratch_size, usage, properties, nullptr, (m_object_name + "_scratch").c_str());
+            if (!*scratch_target)
+            {
+                SP_LOG_WARNING("BLAS scratch buffer alloc failed (%llu bytes) for %s, skipping build", scratch_size, m_object_name.c_str());
+                *scratch_size_target = 0;
+                return;
+            }
+            *scratch_size_target = scratch_size;
+        }
+
+        // set up build with aligned scratch address
+        VkDeviceAddress scratch_base    = RHI_Device::GetBufferDeviceAddress(*scratch_target);
+        VkDeviceAddress scratch_aligned = (scratch_base + alignment - 1) & ~(alignment - 1);
         build_info.dstAccelerationStructure  = static_cast<VkAccelerationStructureKHR>(m_rhi_resource);
-        build_info.scratchData.deviceAddress = RHI_Device::GetBufferDeviceAddress(m_scratch_buffer);
+        build_info.scratchData.deviceAddress = scratch_aligned;
 
         // build
         vector<VkAccelerationStructureBuildRangeInfoKHR> range_infos(geometries.size());
@@ -198,14 +241,15 @@ namespace spartan
 
         as_build(static_cast<VkCommandBuffer>(cmd_list->GetRhiResource()), 1, &build_info, p_range_infos.data());
 
-        // barrier: ensure build completes before use
+        // barrier: ensure build completes before use, and allow next blas to reuse the shared scratch buffer
+        // dst must include ACCELERATION_STRUCTURE_WRITE so consecutive builds writing the shared scratch are ordered
         {
             VkMemoryBarrier2 memory_barrier = {};
             memory_barrier.sType            = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
             memory_barrier.srcStageMask     = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
             memory_barrier.srcAccessMask    = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
             memory_barrier.dstStageMask     = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
-            memory_barrier.dstAccessMask    = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_SHADER_READ_BIT;
+            memory_barrier.dstAccessMask    = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_2_SHADER_READ_BIT;
 
             VkDependencyInfo dependency_info   = {};
             dependency_info.sType              = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -215,10 +259,10 @@ namespace spartan
             vkCmdPipelineBarrier2(static_cast<VkCommandBuffer>(cmd_list->GetRhiResource()), &dependency_info);
         }
 
-        // for static meshes, the scratch buffer is only needed during the build, so release it
+        // for static blas the global shared scratch is reused, no per-instance teardown
+        // for refit-capable blas the per-instance scratch is kept alive
         if (!allow_update)
         {
-            RHI_Device::DeletionQueueAdd(RHI_Resource_Type::Buffer, m_scratch_buffer);
             m_scratch_buffer      = nullptr;
             m_scratch_buffer_size = 0;
         }
@@ -267,7 +311,10 @@ namespace spartan
         build_info.dstAccelerationStructure  = as_handle;
         build_info.geometryCount             = static_cast<uint32_t>(vk_geometries.size());
         build_info.pGeometries               = vk_geometries.data();
-        build_info.scratchData.deviceAddress = RHI_Device::GetBufferDeviceAddress(m_scratch_buffer);
+        // align scratch device address, the buffer was overallocated to allow this
+        const uint64_t scratch_alignment_refit = RHI_Device::PropertyGetMinAccelerationBufferOffsetAlignment();
+        VkDeviceAddress scratch_base_refit     = RHI_Device::GetBufferDeviceAddress(m_scratch_buffer);
+        build_info.scratchData.deviceAddress   = (scratch_base_refit + scratch_alignment_refit - 1) & ~(scratch_alignment_refit - 1);
 
         // build ranges
         vector<VkAccelerationStructureBuildRangeInfoKHR> range_infos(geometries.size());
@@ -438,9 +485,11 @@ namespace spartan
         build_info.dstAccelerationStructure = static_cast<VkAccelerationStructureKHR>(m_rhi_resource);
     
         // reuse or create scratch buffer
+        // overallocate by alignment so the device address can be aligned at use time, vma does not
+        // guarantee the base address satisfies minAccelerationStructureScratchOffsetAlignment
         const uint64_t scratch_alignment = RHI_Device::PropertyGetMinAccelerationBufferOffsetAlignment();
         uint64_t required_scratch_size   = size_info.buildScratchSize;
-        required_scratch_size            = (required_scratch_size + scratch_alignment - 1) & ~(scratch_alignment - 1);
+        required_scratch_size            = ((required_scratch_size + scratch_alignment - 1) & ~(scratch_alignment - 1)) + scratch_alignment;
         if (!m_scratch_buffer || required_scratch_size > m_scratch_buffer_size)
         {
             if (m_scratch_buffer)
@@ -453,8 +502,9 @@ namespace spartan
             m_scratch_buffer_size            = required_scratch_size;
         }
     
-        // set up build
-        build_info.scratchData.deviceAddress = RHI_Device::GetBufferDeviceAddress(m_scratch_buffer);
+        // set up build with aligned scratch address
+        VkDeviceAddress tlas_scratch_base    = RHI_Device::GetBufferDeviceAddress(m_scratch_buffer);
+        build_info.scratchData.deviceAddress = (tlas_scratch_base + scratch_alignment - 1) & ~(scratch_alignment - 1);
     
         // build
         VkAccelerationStructureBuildRangeInfoKHR range_info       = {};

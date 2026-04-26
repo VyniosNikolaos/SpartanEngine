@@ -66,6 +66,12 @@ namespace spartan
 
         m_vertices.clear();
         m_vertices.shrink_to_fit();
+
+        m_meshlets.clear();
+        m_meshlets.shrink_to_fit();
+
+        m_sub_meshes.clear();
+        m_sub_meshes.shrink_to_fit();
     }
 
     void Mesh::SaveToFile(const string& file_path)
@@ -77,7 +83,7 @@ namespace spartan
             return;
         }
 
-        uint32_t version = 1;
+        uint32_t version = 2; // meshlet bounds struct size unchanged when cone data was added (replaced an existing padding slot)
         outfile.write(reinterpret_cast<const char*>(&version), sizeof(uint32_t));
 
         uint32_t type = static_cast<uint32_t>(m_type);
@@ -105,6 +111,8 @@ namespace spartan
                 outfile.write(reinterpret_cast<const char*>(&lod.vertex_count), sizeof(uint32_t));
                 outfile.write(reinterpret_cast<const char*>(&lod.index_offset), sizeof(uint32_t));
                 outfile.write(reinterpret_cast<const char*>(&lod.index_count), sizeof(uint32_t));
+                outfile.write(reinterpret_cast<const char*>(&lod.meshlet_offset), sizeof(uint32_t));
+                outfile.write(reinterpret_cast<const char*>(&lod.meshlet_count), sizeof(uint32_t));
 
                 Vector3 min = lod.aabb.GetMin();
                 Vector3 max = lod.aabb.GetMax();
@@ -124,6 +132,10 @@ namespace spartan
         uint32_t index_count = static_cast<uint32_t>(m_indices.size());
         outfile.write(reinterpret_cast<const char*>(&index_count), sizeof(uint32_t));
         outfile.write(reinterpret_cast<const char*>(m_indices.data()), index_count * sizeof(uint32_t));
+
+        uint32_t meshlet_count = static_cast<uint32_t>(m_meshlets.size());
+        outfile.write(reinterpret_cast<const char*>(&meshlet_count), sizeof(uint32_t));
+        outfile.write(reinterpret_cast<const char*>(m_meshlets.data()), meshlet_count * sizeof(Sb_MeshletBounds));
 
         outfile.close();
     }
@@ -150,9 +162,9 @@ namespace spartan
 
             uint32_t version;
             infile.read(reinterpret_cast<char*>(&version), sizeof(uint32_t));
-            if (version != 1)
+            if (version != 2)
             {
-                SP_LOG_ERROR("Version mismatch for file: %s", file_path.c_str());
+                SP_LOG_ERROR("Version mismatch for file: %s (expected 2, got %u, please re-import the source asset)", file_path.c_str(), version);
                 return;
             }
 
@@ -184,6 +196,8 @@ namespace spartan
                     infile.read(reinterpret_cast<char*>(&lod.vertex_count), sizeof(uint32_t));
                     infile.read(reinterpret_cast<char*>(&lod.index_offset), sizeof(uint32_t));
                     infile.read(reinterpret_cast<char*>(&lod.index_count), sizeof(uint32_t));
+                    infile.read(reinterpret_cast<char*>(&lod.meshlet_offset), sizeof(uint32_t));
+                    infile.read(reinterpret_cast<char*>(&lod.meshlet_count), sizeof(uint32_t));
 
                     float min_x, min_y, min_z, max_x, max_y, max_z;
                     infile.read(reinterpret_cast<char*>(&min_x), sizeof(float));
@@ -206,6 +220,11 @@ namespace spartan
             infile.read(reinterpret_cast<char*>(&index_count), sizeof(uint32_t));
             m_indices.resize(index_count);
             infile.read(reinterpret_cast<char*>(m_indices.data()), index_count * sizeof(uint32_t));
+
+            uint32_t meshlet_count;
+            infile.read(reinterpret_cast<char*>(&meshlet_count), sizeof(uint32_t));
+            m_meshlets.resize(meshlet_count);
+            infile.read(reinterpret_cast<char*>(m_meshlets.data()), meshlet_count * sizeof(Sb_MeshletBounds));
 
             infile.close();
 
@@ -276,13 +295,19 @@ namespace spartan
 
     void Mesh::AddLod(vector<RHI_Vertex_PosTexNorTan>& vertices, vector<uint32_t>& indices, const uint32_t sub_mesh_index)
     {
+        // build per-lod meshlets, this also repacks indices into meshlet-contiguous order
+        vector<Sb_MeshletBounds> lod_meshlets;
+        geometry_processing::build_meshlets(vertices, indices, lod_meshlets);
+
         // build lod
         MeshLod lod;
-        lod.vertex_offset = static_cast<uint32_t>(m_vertices.size());
-        lod.vertex_count  = static_cast<uint32_t>(vertices.size());
-        lod.index_offset  = static_cast<uint32_t>(m_indices.size());
-        lod.index_count   = static_cast<uint32_t>(indices.size());
-        lod.aabb          = BoundingBox(vertices.data(), static_cast<uint32_t>(vertices.size()));
+        lod.vertex_offset  = static_cast<uint32_t>(m_vertices.size());
+        lod.vertex_count   = static_cast<uint32_t>(vertices.size());
+        lod.index_offset   = static_cast<uint32_t>(m_indices.size());
+        lod.index_count    = static_cast<uint32_t>(indices.size());
+        lod.aabb           = BoundingBox(vertices.data(), static_cast<uint32_t>(vertices.size()));
+        lod.meshlet_offset = static_cast<uint32_t>(m_meshlets.size());
+        lod.meshlet_count  = static_cast<uint32_t>(lod_meshlets.size());
 
         // append geometry
         {
@@ -291,6 +316,7 @@ namespace spartan
             // append geometry to mesh buffers
             m_vertices.insert(m_vertices.end(), vertices.begin(), vertices.end());
             m_indices.insert(m_indices.end(), indices.begin(), indices.end());
+            m_meshlets.insert(m_meshlets.end(), lod_meshlets.begin(), lod_meshlets.end());
 
             // add lod to the specified sub-mesh
             m_sub_meshes[sub_mesh_index].lods.push_back(lod);
@@ -408,9 +434,10 @@ namespace spartan
 
     void Mesh::CreateGpuBuffers()
     {
-        // append this mesh's geometry into the global vertex/index buffers
-        m_global_vertex_offset = GeometryBuffer::AppendVertices(m_vertices.data(), static_cast<uint32_t>(m_vertices.size()));
-        m_global_index_offset  = GeometryBuffer::AppendIndices(m_indices.data(), static_cast<uint32_t>(m_indices.size()));
+        // append this mesh's geometry into the global vertex/index/meshlet buffers
+        m_global_vertex_offset  = GeometryBuffer::AppendVertices(m_vertices.data(), static_cast<uint32_t>(m_vertices.size()));
+        m_global_index_offset   = GeometryBuffer::AppendIndices(m_indices.data(), static_cast<uint32_t>(m_indices.size()));
+        m_global_meshlet_offset = GeometryBuffer::AppendMeshletBounds(m_meshlets.data(), static_cast<uint32_t>(m_meshlets.size()));
 
         // normalize scale
         if (m_flags & static_cast<uint32_t>(MeshFlags::PostProcessNormalizeScale))
@@ -463,6 +490,14 @@ namespace spartan
                 continue;
 
             const auto& lod = m_sub_meshes[i].lods[0]; // use lod 0 for blas
+
+            // skip degenerate sub-meshes, passing zero counts to vkGetAccelerationStructureBuildSizesKHR
+            // can produce garbage build sizes and crash the driver mid-burst
+            if (lod.vertex_count == 0 || lod.index_count == 0 || (lod.index_count % 3) != 0)
+            {
+                SP_LOG_WARNING("Skipping degenerate sub-mesh blas: mesh=%s sub=%u verts=%u indices=%u", m_object_name.c_str(), i, lod.vertex_count, lod.index_count);
+                continue;
+            }
 
             // compute global offsets: mesh base offset + lod-relative offset
             uint32_t global_vertex_offset = m_global_vertex_offset + lod.vertex_offset;

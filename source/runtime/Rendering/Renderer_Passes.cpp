@@ -57,9 +57,12 @@ namespace spartan
     uint32_t Renderer::m_draw_call_count;
     array<Renderer_DrawCall, renderer_max_draw_calls> Renderer::m_draw_calls_prepass;
     uint32_t Renderer::m_draw_calls_prepass_count;
-    array<Sb_IndirectDrawArgs, rhi_max_array_size> Renderer::m_indirect_draw_args;
-    array<Sb_DrawData, rhi_max_array_size> Renderer::m_indirect_draw_data;
-    uint32_t Renderer::m_indirect_draw_count = 0;
+    array<Sb_IndirectDrawArgs, renderer_max_indirect_draws> Renderer::m_indirect_draw_args;
+    array<Sb_DrawData, renderer_max_indirect_draws> Renderer::m_indirect_draw_data;
+    uint32_t Renderer::m_indirect_draw_count       = 0;
+    uint32_t Renderer::m_indirect_renderable_count = 0;
+    array<Sb_CullTask, renderer_max_cull_tasks> Renderer::m_cull_tasks;
+    uint32_t Renderer::m_cull_task_count = 0;
 
     void Renderer::SetStandardResources(RHI_CommandList* cmd_list)
     {
@@ -147,6 +150,7 @@ namespace spartan
                 Pass_IndirectCull(cmd_list_graphics_present);
                 Pass_Depth_Prepass(cmd_list_graphics_present);
                 Pass_GBuffer(cmd_list_graphics_present, is_transparent);
+                Pass_MeshletVisualize(cmd_list_graphics_present);
             }
 
             // transition g-buffer to shader-readable before submit
@@ -383,7 +387,8 @@ namespace spartan
 
                         {
                             cmd_list->SetCullMode(static_cast<RHI_CullMode>(material->GetProperty(MaterialProperty::CullMode)));
-                            cmd_list->SetBufferVertex(renderable->GetVertexBuffer(), renderable->GetInstanceBuffer());
+                            RHI_Buffer* instance_buffer = GeometryBuffer::GetInstanceBuffer() ? GeometryBuffer::GetInstanceBuffer() : GetBuffer(Renderer_Buffer::DummyInstance);
+                            cmd_list->SetBufferVertex(renderable->GetVertexBuffer(), instance_buffer);
                             cmd_list->SetBufferIndex(renderable->GetIndexBuffer());
 
                             // compute lod index
@@ -396,7 +401,7 @@ namespace spartan
                                 renderable->GetIndexCount(lod_index),
                                 renderable->GetIndexOffset(lod_index),
                                 renderable->GetVertexOffset(lod_index),
-                                draw_call.instance_index,
+                                renderable->GetGlobalInstanceOffset() + draw_call.instance_index,
                                 draw_call.instance_count
                             );
                         }
@@ -477,7 +482,7 @@ namespace spartan
 
     void Renderer::Pass_IndirectCull(RHI_CommandList* cmd_list)
     {
-        if (m_indirect_draw_count == 0)
+        if (m_indirect_draw_count == 0 || m_cull_task_count == 0)
             return;
 
         cmd_list->BeginTimeblock("indirect_cull");
@@ -494,16 +499,18 @@ namespace spartan
             // input
             cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_args, GetBuffer(Renderer_Buffer::IndirectDrawArgs));
             cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_data, GetBuffer(Renderer_Buffer::IndirectDrawData));
+            cmd_list->SetBuffer(Renderer_BindingsUav::meshlet_bounds,     GeometryBuffer::GetMeshletBoundsBuffer());
+            cmd_list->SetBuffer(Renderer_BindingsUav::cull_tasks,         GetBuffer(Renderer_Buffer::CullTasks));
 
             // output
             cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_args_out, GetBuffer(Renderer_Buffer::IndirectDrawArgsOut));
             cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_data_out, GetBuffer(Renderer_Buffer::IndirectDrawDataOut));
             cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_count,    GetBuffer(Renderer_Buffer::IndirectDrawCount));
 
-            m_pcb_pass_cpu.set_f4_value(static_cast<float>(m_indirect_draw_count), static_cast<float>(tex_occluders_hiz->GetMipCount() - 1), 0.0f, 0.0f);
+            m_pcb_pass_cpu.set_f4_value(static_cast<float>(m_cull_task_count), static_cast<float>(tex_occluders_hiz->GetMipCount() - 1), 0.0f, 0.0f);
             cmd_list->PushConstants(m_pcb_pass_cpu);
 
-            uint32_t thread_group_count = (m_indirect_draw_count + 255) / 256;
+            uint32_t thread_group_count = (m_cull_task_count + 255) / 256;
             cmd_list->Dispatch(thread_group_count, 1, 1);
 
             // barrier: compute write -> vertex/indirect read
@@ -527,11 +534,14 @@ namespace spartan
         cmd_list->BeginTimeblock("depth_prepass");
         {
             // indirect prepass (must match g-buffer indirect path)
+            // alpha-test pixel shader runs for all indirect draws, opaque materials with full-alpha albedo
+            // pass through without discard so single bucket is fine
             if (m_indirect_draw_count > 0)
             {
                 RHI_PipelineState pso;
                 pso.name                             = "depth_prepass_indirect";
                 pso.shaders[RHI_Shader_Type::Vertex] = GetShader(Renderer_Shader::depth_prepass_indirect_v);
+                pso.shaders[RHI_Shader_Type::Pixel]  = GetShader(Renderer_Shader::depth_prepass_indirect_alpha_test_p);
                 pso.rasterizer_state                 = rasterizer_state;
                 pso.blend_state                      = GetBlendState(Renderer_BlendState::Off);
                 pso.depth_stencil_state              = GetDepthStencilState(Renderer_DepthStencilState::ReadWrite);
@@ -544,22 +554,25 @@ namespace spartan
 
                 cmd_list->SetBufferIndex(GeometryBuffer::GetIndexBuffer());
                 cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_data_out, GetBuffer(Renderer_Buffer::IndirectDrawDataOut));
-                cmd_list->SetCullMode(RHI_CullMode::None);
+                // hw backface culling, cone culling only removes whole back-facing meshlets, per-triangle culling is still needed
+                cmd_list->SetCullMode(RHI_CullMode::Back);
 
                 cmd_list->DrawIndexedIndirectCount(
                     GetBuffer(Renderer_Buffer::IndirectDrawArgsOut),
                     0,
                     GetBuffer(Renderer_Buffer::IndirectDrawCount),
                     0,
-                    m_indirect_draw_count
+                    min(m_cull_task_count, renderer_max_cull_tasks)
                 );
             }
 
-            // cpu-driven path for remaining draws (tessellated, instanced, alpha-tested)
+            // cpu-driven tessellated path (only tessellated still uses cpu draws, indirect path covers everything else)
             {
                 RHI_PipelineState pso;
-                pso.name                             = "depth_prepass";
+                pso.name                             = "depth_prepass_tessellated";
                 pso.shaders[RHI_Shader_Type::Vertex] = GetShader(Renderer_Shader::depth_prepass_v);
+                pso.shaders[RHI_Shader_Type::Hull]   = GetShader(Renderer_Shader::tessellation_h);
+                pso.shaders[RHI_Shader_Type::Domain] = GetShader(Renderer_Shader::tessellation_d);
                 pso.rasterizer_state                 = rasterizer_state;
                 pso.blend_state                      = GetBlendState(Renderer_BlendState::Off);
                 pso.depth_stencil_state              = GetDepthStencilState(Renderer_DepthStencilState::ReadWrite);
@@ -567,64 +580,47 @@ namespace spartan
                 pso.render_target_depth_texture      = tex_depth;
                 pso.resolution_scale                 = true;
                 pso.is_multiview                     = xr_multiview;
-                pso.clear_depth                      = rhi_depth_load; // load since indirect already wrote depth
+                pso.clear_depth                      = rhi_depth_load;
 
                 bool pipeline_set = false;
 
                 for (uint32_t i = 0; i < m_draw_calls_prepass_count; i++)
                 {
                     const Renderer_DrawCall& draw_call = m_draw_calls_prepass[i];
-                    Render* renderable             = draw_call.renderable;
+                    Render* renderable                 = draw_call.renderable;
                     Material* material                 = renderable->GetMaterial();
                     if (!material || material->IsTransparent() || !draw_call.camera_visible)
                         continue;
-
-                    // skip indirect-path draws
-                    if (!IsCpuDrivenDraw(draw_call, material))
+                    if (material->GetProperty(MaterialProperty::Tessellation) <= 0.0f)
                         continue;
-                    {
-                        bool is_alpha_tested = material->IsAlphaTested();
-                        bool is_tessellated  = material->GetProperty(MaterialProperty::Tessellation) > 0.0f;
-                        RHI_Shader* ps       = is_alpha_tested ? GetShader(Renderer_Shader::depth_prepass_alpha_test_p) : nullptr;
-                        RHI_Shader* hs       = is_tessellated ? GetShader(Renderer_Shader::tessellation_h) : nullptr;
-                        RHI_Shader* ds       = is_tessellated ? GetShader(Renderer_Shader::tessellation_d) : nullptr;
 
-                        if (!pipeline_set || pso.shaders[RHI_Shader_Type::Pixel] != ps || pso.shaders[RHI_Shader_Type::Hull] != hs || pso.shaders[RHI_Shader_Type::Domain] != ds)
-                        {
-                            pso.shaders[RHI_Shader_Type::Pixel]  = ps;
-                            pso.shaders[RHI_Shader_Type::Hull]   = hs;
-                            pso.shaders[RHI_Shader_Type::Domain] = ds;
-                            cmd_list->SetPipelineState(pso);
-                            pipeline_set = true;
-                        }
+                    if (!pipeline_set)
+                    {
+                        cmd_list->SetPipelineState(pso);
+                        pipeline_set = true;
                     }
 
-                    {
-                        bool has_color_texture = material->HasTextureOfType(MaterialTextureType::Color);
-                        m_pcb_pass_cpu.draw_index = draw_call.draw_data_index;
-                        m_pcb_pass_cpu.is_transparent = 0;
-                        m_pcb_pass_cpu.material_index = material->GetIndex();
-                        m_pcb_pass_cpu.set_f3_value(0.0f, has_color_texture ? 1.0f : 0.0f, static_cast<float>(i));
-                        cmd_list->PushConstants(m_pcb_pass_cpu);
-                    }
+                    bool has_color_texture        = material->HasTextureOfType(MaterialTextureType::Color);
+                    m_pcb_pass_cpu.draw_index     = draw_call.draw_data_index;
+                    m_pcb_pass_cpu.is_transparent = 0;
+                    m_pcb_pass_cpu.material_index = material->GetIndex();
+                    m_pcb_pass_cpu.set_f3_value(0.0f, has_color_texture ? 1.0f : 0.0f, static_cast<float>(i));
+                    cmd_list->PushConstants(m_pcb_pass_cpu);
 
-                    {
-                        RHI_CullMode cull_mode = static_cast<RHI_CullMode>(material->GetProperty(MaterialProperty::CullMode));
-                        cull_mode              = (pso.rasterizer_state->GetPolygonMode() == RHI_PolygonMode::Wireframe) ? RHI_CullMode::None : cull_mode;
-                        cmd_list->SetCullMode(cull_mode);
-                        cmd_list->SetBufferVertex(renderable->GetVertexBuffer(), renderable->GetInstanceBuffer());
-                        cmd_list->SetBufferIndex(renderable->GetIndexBuffer());
+                    RHI_CullMode cull_mode = static_cast<RHI_CullMode>(material->GetProperty(MaterialProperty::CullMode));
+                    cull_mode              = (pso.rasterizer_state->GetPolygonMode() == RHI_PolygonMode::Wireframe) ? RHI_CullMode::None : cull_mode;
+                    cmd_list->SetCullMode(cull_mode);
+                    RHI_Buffer* instance_buffer = GeometryBuffer::GetInstanceBuffer() ? GeometryBuffer::GetInstanceBuffer() : GetBuffer(Renderer_Buffer::DummyInstance);
+                    cmd_list->SetBufferVertex(renderable->GetVertexBuffer(), instance_buffer);
+                    cmd_list->SetBufferIndex(renderable->GetIndexBuffer());
 
-                        cmd_list->DrawIndexed(
-                            renderable->GetIndexCount(draw_call.lod_index),
-                            renderable->GetIndexOffset(draw_call.lod_index),
-                            renderable->GetVertexOffset(draw_call.lod_index),
-                            draw_call.instance_index,
-                            draw_call.instance_count
-                        );
-
-                        pso.clear_depth = rhi_depth_load;
-                    }
+                    cmd_list->DrawIndexed(
+                        renderable->GetIndexCount(draw_call.lod_index),
+                        renderable->GetIndexOffset(draw_call.lod_index),
+                        renderable->GetVertexOffset(draw_call.lod_index),
+                        renderable->GetGlobalInstanceOffset() + draw_call.instance_index,
+                        draw_call.instance_count
+                    );
                 }
             }
 
@@ -676,14 +672,15 @@ namespace spartan
 
                 cmd_list->SetBufferIndex(GeometryBuffer::GetIndexBuffer());
                 cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_data_out, GetBuffer(Renderer_Buffer::IndirectDrawDataOut));
-                cmd_list->SetCullMode(RHI_CullMode::None);
+                // hw backface culling, cone culling only removes whole back-facing meshlets, per-triangle culling is still needed
+                cmd_list->SetCullMode(RHI_CullMode::Back);
 
                 cmd_list->DrawIndexedIndirectCount(
                     GetBuffer(Renderer_Buffer::IndirectDrawArgsOut),
                     0,
                     GetBuffer(Renderer_Buffer::IndirectDrawCount),
                     0,
-                    m_indirect_draw_count
+                    min(m_cull_task_count, renderer_max_cull_tasks)
                 );
 
                 // update previous transforms for motion vectors
@@ -724,11 +721,12 @@ namespace spartan
                 for (uint32_t i = 0; i < m_draw_call_count; i++)
                 {
                     const Renderer_DrawCall& draw_call = m_draw_calls[i];
-                    Render* renderable             = draw_call.renderable;
+                    Render* renderable                 = draw_call.renderable;
                     Material* material                 = renderable->GetMaterial();
                     if (!material || !draw_call.camera_visible)
                         continue;
 
+                    bool is_tessellated = material->GetProperty(MaterialProperty::Tessellation) > 0.0f;
                     if (is_transparent_pass)
                     {
                         if (!material->IsTransparent())
@@ -738,16 +736,14 @@ namespace spartan
                     {
                         if (material->IsTransparent())
                             continue;
-
-                        if (!IsCpuDrivenDraw(draw_call, material))
+                        if (!is_tessellated)
                             continue;
                     }
 
                     {
-                        bool is_tessellated = material->GetProperty(MaterialProperty::Tessellation) > 0.0f;
-                        RHI_Shader* hull    = is_tessellated ? GetShader(Renderer_Shader::tessellation_h) : nullptr;
-                        RHI_Shader* domain  = is_tessellated ? GetShader(Renderer_Shader::tessellation_d) : nullptr;
-                    
+                        RHI_Shader* hull   = is_tessellated ? GetShader(Renderer_Shader::tessellation_h) : nullptr;
+                        RHI_Shader* domain = is_tessellated ? GetShader(Renderer_Shader::tessellation_d) : nullptr;
+
                         if (!pipeline_set || pso.shaders[RHI_Shader_Type::Hull] != hull || pso.shaders[RHI_Shader_Type::Domain] != domain)
                         {
                             pso.shaders[RHI_Shader_Type::Hull]   = hull;
@@ -769,14 +765,15 @@ namespace spartan
 
                     {
                         cmd_list->SetCullMode(cvar_wireframe.GetValueAs<bool>() ? RHI_CullMode::None : static_cast<RHI_CullMode>(material->GetProperty(MaterialProperty::CullMode)));
-                        cmd_list->SetBufferVertex(renderable->GetVertexBuffer(), renderable->GetInstanceBuffer());
+                        RHI_Buffer* instance_buffer = GeometryBuffer::GetInstanceBuffer() ? GeometryBuffer::GetInstanceBuffer() : GetBuffer(Renderer_Buffer::DummyInstance);
+                        cmd_list->SetBufferVertex(renderable->GetVertexBuffer(), instance_buffer);
                         cmd_list->SetBufferIndex(renderable->GetIndexBuffer());
 
                         cmd_list->DrawIndexed(
                             renderable->GetIndexCount(draw_call.lod_index),
                             renderable->GetIndexOffset(draw_call.lod_index),
                             renderable->GetVertexOffset(draw_call.lod_index),
-                            draw_call.instance_index,
+                            renderable->GetGlobalInstanceOffset() + draw_call.instance_index,
                             draw_call.instance_count
                         );
 
@@ -790,6 +787,72 @@ namespace spartan
             tex_normal->SetLayout(RHI_Image_Layout::General, cmd_list);
             tex_material->SetLayout(RHI_Image_Layout::General, cmd_list);
             tex_velocity->SetLayout(RHI_Image_Layout::General, cmd_list);
+            tex_depth->SetLayout(RHI_Image_Layout::Shader_Read, cmd_list);
+        }
+        cmd_list->EndTimeblock();
+    }
+
+    void Renderer::Pass_MeshletVisualize(RHI_CommandList* cmd_list)
+    {
+        RHI_Texture* tex_debug = GetRenderTarget(Renderer_RenderTarget::debug_output);
+        if (!tex_debug)
+            return;
+
+        uint32_t mode = cvar_meshlet_visualize.GetValueAs<uint32_t>();
+
+        // when off, force debug_output to a known cleared state so the texture viewer never shows undefined memory
+        if (mode == 0)
+        {
+            cmd_list->ClearTexture(tex_debug, Color::standard_black);
+            return;
+        }
+
+        RHI_Texture* tex_depth = GetRenderTarget(Renderer_RenderTarget::gbuffer_depth);
+        if (!tex_depth || m_indirect_draw_count == 0)
+        {
+            cmd_list->ClearTexture(tex_debug, Color::standard_black);
+            return;
+        }
+
+        bool xr_multiview = Xr::IsSessionRunning() && Xr::GetStereoMode();
+
+        cmd_list->BeginTimeblock("meshlet_visualize");
+        {
+            // gbuffer left depth in Shader_Read; promote it back to an attachment so we can do a read-only depth test
+            tex_depth->SetLayout(RHI_Image_Layout::Attachment, cmd_list);
+
+            RHI_PipelineState pso;
+            pso.name                             = "meshlet_visualize";
+            pso.shaders[RHI_Shader_Type::Vertex] = GetShader(Renderer_Shader::meshlet_visualize_v);
+            pso.shaders[RHI_Shader_Type::Pixel]  = GetShader(Renderer_Shader::meshlet_visualize_p);
+            pso.blend_state                      = GetBlendState(Renderer_BlendState::Off);
+            pso.rasterizer_state                 = GetRasterizerState(Renderer_RasterizerState::Solid);
+            // greater_equal mirrors the gbuffer test instead of equal which is fragile under fp drift between two vertex paths
+            pso.depth_stencil_state              = GetDepthStencilState(Renderer_DepthStencilState::ReadGreaterEqual);
+            pso.resolution_scale                 = true;
+            pso.render_target_color_textures[0]  = tex_debug;
+            pso.render_target_depth_texture      = tex_depth;
+            pso.is_multiview                     = xr_multiview;
+            pso.clear_color[0]                   = Color::standard_black;
+            cmd_list->SetPipelineState(pso);
+
+            cmd_list->SetBufferIndex(GeometryBuffer::GetIndexBuffer());
+            cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_data_out, GetBuffer(Renderer_Buffer::IndirectDrawDataOut));
+            cmd_list->SetCullMode(RHI_CullMode::Back);
+
+            // f3.x: 0 = color by global meshlet index, 1 = color by post-cull draw id
+            m_pcb_pass_cpu.set_f3_value(mode == 2 ? 1.0f : 0.0f, 0.0f, 0.0f);
+            cmd_list->PushConstants(m_pcb_pass_cpu);
+
+            cmd_list->DrawIndexedIndirectCount(
+                GetBuffer(Renderer_Buffer::IndirectDrawArgsOut),
+                0,
+                GetBuffer(Renderer_Buffer::IndirectDrawCount),
+                0,
+                min(m_cull_task_count, renderer_max_cull_tasks)
+            );
+
+            // restore the layout the rest of the frame expects
             tex_depth->SetLayout(RHI_Image_Layout::Shader_Read, cmd_list);
         }
         cmd_list->EndTimeblock();
@@ -813,6 +876,8 @@ namespace spartan
             cmd_list->SetPipelineState(pso);
             SetCommonTextures(cmd_list);
             cmd_list->SetTexture(Renderer_BindingsUav::tex, tex_ssao);
+            // shader statically references buffer_pass via common accessors so push constants must be set
+            cmd_list->PushConstants(m_pcb_pass_cpu);
             cmd_list->Dispatch(tex_ssao, Renderer::GetResolutionScale());
         }
         cmd_list->EndTimeblock();
@@ -1028,7 +1093,9 @@ namespace spartan
             SetCommonTextures(cmd_list);
             cmd_list->SetAccelerationStructure(Renderer_BindingsSrv::tlas, tlas);
             cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsUav::tex), tex_shadows, rhi_all_mips, 0, true);
-            
+            // raygen shader statically references buffer_pass via common accessors so push constants must be set
+            cmd_list->PushConstants(m_pcb_pass_cpu);
+
             uint32_t width  = tex_shadows->GetWidth();
             uint32_t height = tex_shadows->GetHeight();
             cmd_list->TraceRays(width, height);
