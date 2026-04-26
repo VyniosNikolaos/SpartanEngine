@@ -1342,10 +1342,14 @@ namespace spartan
 
     void Renderer::UpdateDrawCalls(RHI_CommandList* cmd_list)
     {
-        m_draw_call_count          = 0;
-        m_draw_calls_prepass_count = 0;
-        m_draw_data_count          = 0;
-        m_transparents_present     = false;
+        // reset every counter before the loading early out so indirect passes never read stale bindless geometry
+        m_draw_call_count           = 0;
+        m_draw_calls_prepass_count  = 0;
+        m_draw_data_count           = 0;
+        m_indirect_draw_count       = 0;
+        m_indirect_renderable_count = 0;
+        m_cull_task_count           = 0;
+        m_transparents_present      = false;
         if (ProgressTracker::IsLoading())
             return;
 
