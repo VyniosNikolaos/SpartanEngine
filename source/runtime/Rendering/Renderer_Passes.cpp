@@ -820,20 +820,12 @@ namespace spartan
             return;
 
         uint32_t mode = cvar_meshlet_visualize.GetValueAs<uint32_t>();
-
-        // when off, force debug_output to a known cleared state so the texture viewer never shows undefined memory
         if (mode == 0)
-        {
-            cmd_list->ClearTexture(tex_debug, Color::standard_black);
             return;
-        }
 
         RHI_Texture* tex_depth = GetRenderTarget(Renderer_RenderTarget::gbuffer_depth);
         if (!tex_depth || m_indirect_draw_count == 0)
-        {
-            cmd_list->ClearTexture(tex_debug, Color::standard_black);
             return;
-        }
 
         bool xr_multiview = Xr::IsSessionRunning() && Xr::GetStereoMode();
 

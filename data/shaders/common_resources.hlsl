@@ -105,18 +105,17 @@ float2 unpack_vertex_uv(uint packed)
 
 float3 unpack_vertex_oct(uint packed)
 {
-    int sx  = (int)(packed << 16) >> 16;       // sign-extend low 16 bits
-    int sy  = (int)packed >> 16;               // sign-extend high 16 bits
-    float x = max(-1.0f, (float)sx / 32767.0f);
-    float y = max(-1.0f, (float)sy / 32767.0f);
-    float z = 1.0f - abs(x) - abs(y);
-    if (z < 0.0f)
-    {
-        float tx = x;
-        x = (1.0f - abs(y))  * (x  >= 0.0f ? 1.0f : -1.0f);
-        y = (1.0f - abs(tx)) * (y  >= 0.0f ? 1.0f : -1.0f);
-    }
-    return normalize(float3(x, y, z));
+    // sign-extend snorm16 lanes into [-1, 1]
+    int sx   = (int)(packed << 16) >> 16;
+    int sy   = (int)packed >> 16;
+    float2 f = max(float2(sx, sy) * (1.0f / 32767.0f), -1.0f);
+
+    // branchless octahedral wrap (rune stubbe form)
+    float3 n = float3(f, 1.0f - abs(f.x) - abs(f.y));
+    float t  = max(-n.z, 0.0f);
+    n.x     += n.x >= 0.0f ? -t : t;
+    n.y     += n.y >= 0.0f ? -t : t;
+    return normalize(n);
 }
 
 // gpu-driven indirect drawing uav bindings
