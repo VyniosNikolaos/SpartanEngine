@@ -139,6 +139,7 @@ namespace audio_device
             {
                 SP_LOG_ERROR("%s", SDL_GetError());
             }
+            SP_LOG_INFO("audio_device::acquire opened id=%u freq=%d format=0x%x channels=%d", id, spec.freq, spec.format, spec.channels);
         }
         ++references;
     }
@@ -214,6 +215,7 @@ namespace spartan
 
     void AudioSource::Start()
     {
+        SP_LOG_INFO("AudioSource::Start name=%s play_on_start=%d clip=%p", m_name.c_str(), (int)m_play_on_start, m_clip.get());
         if (m_play_on_start)
         {
             PlayClip();
@@ -234,11 +236,21 @@ namespace spartan
 
     void AudioSource::Tick()
     {
+        const bool in_play_mode = Engine::IsFlagSet(EngineMode::Playing) && !Engine::IsFlagSet(EngineMode::Paused);
+
+        if (!m_first_tick_logged)
+        {
+            SP_LOG_INFO("AudioSource::Tick first name=%s in_play=%d play_on_start=%d is_playing=%d consumed=%d synth=%d clip=%p",
+                m_name.c_str(), (int)in_play_mode, (int)m_play_on_start, (int)m_is_playing,
+                (int)m_auto_play_consumed, (int)m_synthesis_mode, m_clip.get());
+            m_first_tick_logged = true;
+        }
+
         // auto start playback when entering play mode, covers cases where Start was missed
         // due to async world load timing or entities arriving after the play transition
-        const bool in_play_mode = Engine::IsFlagSet(EngineMode::Playing) && !Engine::IsFlagSet(EngineMode::Paused);
         if (in_play_mode && m_play_on_start && !m_is_playing && !m_auto_play_consumed && !m_synthesis_mode && m_clip)
         {
+            SP_LOG_INFO("AudioSource::Tick auto-start name=%s clip=%p", m_name.c_str(), m_clip.get());
             PlayClip();
             m_auto_play_consumed = true;
         }
@@ -511,7 +523,9 @@ namespace spartan
         m_reverb_decay     = node.attribute("reverb_decay").as_float(0.5f);
         m_reverb_wet       = node.attribute("reverb_wet").as_float(0.3f);
 
+        SP_LOG_INFO("AudioSource::Load path=%s play_on_start=%d volume=%f", m_file_path.c_str(), (int)m_play_on_start, m_volume);
         SetAudioClip(m_file_path);
+        SP_LOG_INFO("AudioSource::Load after SetAudioClip clip=%p", m_clip.get());
     }
 
     sol::reference AudioSource::AsLua(sol::state_view state)
@@ -533,6 +547,9 @@ namespace spartan
 
     void AudioSource::PlayClip()
     {
+        SP_LOG_INFO("AudioSource::PlayClip name=%s device_id=%u clip_freq=%d clip_len=%u",
+            m_name.c_str(), audio_device::id, m_clip ? m_clip->spec->freq : 0, m_clip ? m_clip->length : 0);
+
         if (!m_clip || m_clip->length == 0)
         {
             SP_LOG_ERROR("No valid audio clip set");
@@ -550,6 +567,9 @@ namespace spartan
             SP_LOG_ERROR("%s", SDL_GetError());
             return;
         }
+
+        SP_LOG_INFO("AudioSource::PlayClip stream created device_spec freq=%d format=0x%x channels=%d",
+            audio_device::spec.freq, audio_device::spec.format, audio_device::spec.channels);
 
         CHECK_SDL_ERROR(SDL_BindAudioStream(audio_device::id, m_stream));
 

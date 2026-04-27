@@ -71,10 +71,61 @@ float sample_ray_traced_shadow(float2 uv)
     return shadow;
 }
 
-// inline ray traced shadow for any light type, 1 spp temporally jittered
-// the per pixel jitter feeds taa which accumulates softness across frames
+// inline ray traced shadow for any light type
+// uses a stationary halton(2,3) sample set rotated by a per pixel hash
+// the pattern never changes per frame so the residual noise does not crawl
 // requires the tlas descriptor to be bound by the caller pass
 #ifdef RAY_TRACING_ENABLED
+static const uint k_inline_shadow_spp = 16;
+
+// halton (2,3) low discrepancy sequence, 16 points
+static const float2 k_halton_2_3[16] =
+{
+    float2(0.500000f, 0.333333f),
+    float2(0.250000f, 0.666667f),
+    float2(0.750000f, 0.111111f),
+    float2(0.125000f, 0.444444f),
+    float2(0.625000f, 0.777778f),
+    float2(0.375000f, 0.222222f),
+    float2(0.875000f, 0.555556f),
+    float2(0.062500f, 0.888889f),
+    float2(0.562500f, 0.037037f),
+    float2(0.312500f, 0.370370f),
+    float2(0.812500f, 0.703704f),
+    float2(0.187500f, 0.148148f),
+    float2(0.687500f, 0.481481f),
+    float2(0.437500f, 0.814815f),
+    float2(0.937500f, 0.259259f),
+    float2(0.031250f, 0.592593f)
+};
+
+// stationary per pixel hash (does not change per frame), used to rotate the halton disk
+float spatial_hash_unit(float2 pixel_xy)
+{
+    return frac(52.9829189f * frac(pixel_xy.x * 0.06711056f + pixel_xy.y * 0.00583715f));
+}
+
+// concentric mapping from [-1,1]^2 square to unit disk
+float2 concentric_disk(float2 u)
+{
+    if (u.x == 0.0f && u.y == 0.0f)
+        return float2(0.0f, 0.0f);
+
+    float r;
+    float theta;
+    if (abs(u.x) > abs(u.y))
+    {
+        r     = u.x;
+        theta = (PI * 0.25f) * (u.y / u.x);
+    }
+    else
+    {
+        r     = u.y;
+        theta = (PI * 0.5f) - (PI * 0.25f) * (u.x / u.y);
+    }
+    return r * float2(cos(theta), sin(theta));
+}
+
 float trace_inline_shadow_ray(Light light, Surface surface, float2 pixel_xy)
 {
     // self intersection bias scaled by camera distance
@@ -82,100 +133,114 @@ float trace_inline_shadow_ray(Light light, Surface surface, float2 pixel_xy)
     float bias           = 0.005f + dist_to_camera * 0.0001f;
     float3 origin        = surface.position + surface.normal * bias;
 
-    // two decorrelated [0,1) jitters via interleaved gradient noise plus a golden ratio shift
-    float jitter_a = noise_interleaved_gradient(pixel_xy, true);
-    float jitter_b = frac(jitter_a + 0.6180339887f);
+    // stationary per pixel rotation to break stratification banding without temporal motion
+    float rot_angle = spatial_hash_unit(pixel_xy) * PI2;
+    float cos_r     = cos(rot_angle);
+    float sin_r     = sin(rot_angle);
 
-    // concentric disk sample in [-1,1]^2
-    float2 disk;
+    // precompute area light basis once across samples
+    float3 area_right = 0.0f;
+    float3 area_up    = 0.0f;
+    if (light.is_area())
     {
-        float2 u = float2(jitter_a, jitter_b) * 2.0f - 1.0f;
-        if (u.x == 0.0f && u.y == 0.0f)
+        light.compute_area_light_basis(area_right, area_up);
+    }
+
+    // precompute a tangent frame for point/spot/directional source jitter
+    float3 to_light_center = light.position - origin;
+    float  center_dist     = length(to_light_center);
+    float3 light_dir_unit  = light.is_directional() ? normalize(-light.forward) : (center_dist > 0.0001f ? to_light_center / center_dist : float3(0.0f, 1.0f, 0.0f));
+    float3 up_axis         = abs(light_dir_unit.y) < 0.999f ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
+    float3 tangent         = normalize(cross(up_axis, light_dir_unit));
+    float3 bitangent       = cross(light_dir_unit, tangent);
+
+    // safety margin for area lights so rays don't hit the emitter's own visible mesh
+    // we approximate the emitter mesh radius from the smaller of the two area dims
+    float emitter_safety = 0.0f;
+    if (light.is_area())
+    {
+        emitter_safety = min(light.area_width, light.area_height) * 0.5f + 0.005f;
+    }
+
+    float visibility_sum = 0.0f;
+    float valid_samples  = 0.0f;
+
+    [unroll]
+    for (uint s = 0; s < k_inline_shadow_spp; s++)
+    {
+        // halton point in [0,1)^2 mapped to disk in [-1,1]^2
+        float2 u    = k_halton_2_3[s] * 2.0f - 1.0f;
+        float2 disk = concentric_disk(u);
+
+        // rotate by stationary per pixel angle
+        float2 disk_r = float2(disk.x * cos_r - disk.y * sin_r,
+                               disk.x * sin_r + disk.y * cos_r);
+
+        float3 direction;
+        float  t_max;
+
+        if (light.is_directional())
         {
-            disk = float2(0.0f, 0.0f);
+            // jittered cone around the sun direction, half angle around 0.5 degrees
+            const float angular_radius = 0.0093f;
+            direction                  = normalize(light_dir_unit + (tangent * disk_r.x + bitangent * disk_r.y) * angular_radius);
+            t_max                      = 10000.0f;
+        }
+        else if (light.is_area())
+        {
+            // sample a deterministic point inside the rectangle for soft area shadows
+            float3 sample_point = light.position
+                                + area_right * disk_r.x * (light.area_width  * 0.5f)
+                                + area_up    * disk_r.y * (light.area_height * 0.5f);
+            float3 to_light = sample_point - origin;
+            float  dist     = length(to_light);
+            if (dist < 0.0001f)
+            {
+                visibility_sum += 1.0f;
+                valid_samples  += 1.0f;
+                continue;
+            }
+            direction = to_light / dist;
+            t_max     = max(dist - emitter_safety, bias);
         }
         else
         {
-            float r;
-            float theta;
-            if (abs(u.x) > abs(u.y))
+            // point or spot, jitter inside a small spherical source for soft penumbra
+            if (center_dist < 0.0001f)
             {
-                r     = u.x;
-                theta = (PI * 0.25f) * (u.y / u.x);
+                visibility_sum += 1.0f;
+                valid_samples  += 1.0f;
+                continue;
             }
-            else
-            {
-                r     = u.y;
-                theta = (PI * 0.5f) - (PI * 0.25f) * (u.x / u.y);
-            }
-            disk = r * float2(cos(theta), sin(theta));
+            const float light_radius = 0.05f;
+            float3 jittered_target   = light.position + (tangent * disk_r.x + bitangent * disk_r.y) * light_radius;
+            float3 to_jit            = jittered_target - origin;
+            float  dist              = length(to_jit);
+            direction                = to_jit / dist;
+            t_max                    = max(dist - bias * 2.0f, bias);
         }
+
+        // back facing samples carry no light energy, ignore them entirely from the average
+        if (dot(surface.normal, direction) <= 0.0f)
+            continue;
+
+        valid_samples += 1.0f;
+
+        RayDesc ray;
+        ray.Origin    = origin;
+        ray.Direction = direction;
+        ray.TMin      = 0.001f;
+        ray.TMax      = max(t_max, 0.001f);
+
+        RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> query;
+        query.TraceRayInline(tlas, RAY_FLAG_NONE, 0xFF, ray);
+        query.Proceed();
+
+        visibility_sum += query.CommittedStatus() == COMMITTED_NOTHING ? 1.0f : 0.0f;
     }
 
-    float3 direction;
-    float  t_max;
-
-    if (light.is_directional())
-    {
-        // jittered cone around the sun direction, half angle around 0.5 degrees
-        float3 light_dir           = normalize(-light.forward);
-        float3 up                  = abs(light_dir.y) < 0.999f ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
-        float3 tangent             = normalize(cross(up, light_dir));
-        float3 bitangent           = cross(light_dir, tangent);
-        const float angular_radius = 0.0093f;
-        direction                  = normalize(light_dir + (tangent * disk.x + bitangent * disk.y) * angular_radius);
-        t_max                      = 10000.0f;
-    }
-    else if (light.is_area())
-    {
-        // sample a random point inside the rectangle for soft area shadows
-        float3 light_right;
-        float3 light_up;
-        light.compute_area_light_basis(light_right, light_up);
-        float3 sample_point = light.position
-                            + light_right * disk.x * (light.area_width  * 0.5f)
-                            + light_up    * disk.y * (light.area_height * 0.5f);
-        float3 to_light = sample_point - origin;
-        float  dist     = length(to_light);
-        if (dist < 0.0001f)
-            return 1.0f;
-        direction = to_light / dist;
-        t_max     = max(dist - bias * 2.0f, bias);
-    }
-    else
-    {
-        // point or spot, jitter inside a small spherical source for soft penumbra
-        float3 to_light = light.position - origin;
-        float  dist     = length(to_light);
-        if (dist < 0.0001f)
-            return 1.0f;
-        float3 light_dir         = to_light / dist;
-        float3 up                = abs(light_dir.y) < 0.999f ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
-        float3 tangent           = normalize(cross(up, light_dir));
-        float3 bitangent         = cross(light_dir, tangent);
-        const float light_radius = 0.05f;
-        float3 jittered_target   = light.position + (tangent * disk.x + bitangent * disk.y) * light_radius;
-        float3 to_jit            = jittered_target - origin;
-        dist                     = length(to_jit);
-        direction                = to_jit / dist;
-        t_max                    = max(dist - bias * 2.0f, bias);
-    }
-
-    // skip if the surface is back facing the light
-    if (dot(surface.normal, direction) <= 0.0f)
-        return 0.0f;
-
-    RayDesc ray;
-    ray.Origin    = origin;
-    ray.Direction = direction;
-    ray.TMin      = 0.001f;
-    ray.TMax      = max(t_max, 0.001f);
-
-    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> query;
-    query.TraceRayInline(tlas, RAY_FLAG_NONE, 0xFF, ray);
-    query.Proceed();
-
-    return query.CommittedStatus() == COMMITTED_NOTHING ? 1.0f : 0.0f;
+    // divide by valid samples so glancing surfaces aren't artificially darkened
+    return valid_samples > 0.0f ? (visibility_sum / valid_samples) : 1.0f;
 }
 #endif
 

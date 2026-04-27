@@ -127,6 +127,7 @@ namespace spartan
         float m_pan                                    = 0.0f; // -1.0 (left) to 1.0 (right)
         bool m_is_playing                              = false;
         bool m_auto_play_consumed                      = false; // gates play_on_start so it fires once per play session
+        bool m_first_tick_logged                       = false; // diagnostic gate to dump state once per component
         uint32_t m_position                            = 0; // in bytes
         SDL_AudioStream* m_stream                      = nullptr;
         float m_doppler_ratio                          = 1.0f;

@@ -223,7 +223,9 @@ gbuffer main_ps(gbuffer_vertex vertex, bool is_front_face : SV_IsFrontFace)
         albedo.rgb     += emissive;
         emission        = luminance(emissive);
     }
-    emission += luminance(albedo.rgb) * (float)material.emissive_from_albedo();
+    // saturate emission flag so dark albedos still bloom at full strength
+    if (material.emissive_from_albedo())
+        emission = 1.0f;
     
     // normal mapping
     float distance_fade = 1.0f;

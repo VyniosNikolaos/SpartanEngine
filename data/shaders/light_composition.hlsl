@@ -115,7 +115,12 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
     {
         light_diffuse        = tex3.SampleLevel(samplers[sampler_point_clamp], surface.uv, 0).rgb;
         light_specular       = tex4.SampleLevel(samplers[sampler_point_clamp], surface.uv, 0).rgb;
-        light_emissive       = surface.emissive * surface.albedo;
+        // hdr boost so emission crosses the bloom threshold, gbuffer stores emission in [0,1]
+        // emissive from albedo gets a much stronger boost so plain colored materials with no
+        // emissive texture still glow visibly at default bloom intensity
+        bool        is_emissive_from_albedo = (surface.flags & uint(1U << 15)) != 0;
+        const float emission_strength       = is_emissive_from_albedo ? 250.0f : 25.0f;
+        light_emissive       = surface.emissive * surface.albedo * emission_strength;
         alpha                = surface.alpha;
         distance_from_camera = surface.camera_to_pixel_length;
 

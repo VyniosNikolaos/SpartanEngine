@@ -410,18 +410,12 @@ struct Light
         right                            = light.direction_right.xyz;
         distance_to_pixel                = length(surface.position - position);
         
-        // for area lights, use representative point for accurate specular reflections
-        // this makes rectangular area lights produce elongated reflections instead of circular ones
-        if (is_area())
-        {
-            float3 view_direction       = normalize(-surface.camera_to_pixel);
-            float3 representative_point = compute_representative_point_on_area(surface.position, surface.normal, view_direction);
-            to_pixel                    = normalize(surface.position - representative_point);
-        }
-        else
-        {
-            to_pixel = compute_direction(position, surface.position);
-        }
+        // for area lights, point the brdf direction at the rectangle centroid so it stays
+        // camera independent and produces a valid lambertian cosine even when the closest
+        // point on the rectangle is coplanar with the surface (eg floor under a tall tube)
+        // distance attenuation in compute_attenuation_area still uses the closest point
+        // and the specular lobe is widened by compute_area_roughness_modification
+        to_pixel = compute_direction(position, surface.position);
         
         n_dot_l = saturate(dot(surface.normal, -to_pixel));
         
