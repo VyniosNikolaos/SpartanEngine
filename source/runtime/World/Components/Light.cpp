@@ -600,74 +600,33 @@ namespace spartan
         UpdateMatrices();
     }
 
-    bool Light::FitToMesh(Entity* source)
+    bool Light::FitToMesh()
     {
         // only meaningful for area lights (rectangular emitter)
-        if (m_light_type != LightType::Area || !source)
+        if (m_light_type != LightType::Area)
             return false;
 
-        Render* renderable = source->GetComponent<Render>();
+        Render* renderable = GetEntity()->GetComponent<Render>();
         if (!renderable || !renderable->GetMesh())
             return false;
 
-        // use the mesh local bbox so we capture the true geometry extents regardless of world rotation
         const BoundingBox& bbox_local = renderable->GetBoundingBoxMesh();
-        const Vector3 bbox_min = bbox_local.GetMin();
-        const Vector3 bbox_max = bbox_local.GetMax();
-        if (bbox_max == bbox_min)
+        const Vector3 bbox_extent     = bbox_local.GetMax() - bbox_local.GetMin();
+        if (bbox_extent == Vector3::Zero)
             return false;
-        const Vector3 bbox_extent  = bbox_max - bbox_min;
-        const Matrix& source_world = source->GetMatrix();
-        const Quaternion source_rotation = source_world.GetRotation();
 
-        // pick the dominant local axis as the long edge of the rectangle
-        Vector3 long_axis_local = Vector3::Right;
-        if (bbox_extent.y >= bbox_extent.x && bbox_extent.y >= bbox_extent.z) long_axis_local = Vector3::Up;
-        else if (bbox_extent.z >= bbox_extent.x && bbox_extent.z >= bbox_extent.y) long_axis_local = Vector3::Forward;
-        const Vector3 long_axis_world = (source_rotation * long_axis_local).Normalized();
+        // bbox is in mesh local space, scale by the entity's world scale to get the world footprint
+        const Vector3 world_scale     = GetEntity()->GetScale();
+        const Vector3 scaled_extent(bbox_extent.x * world_scale.x, bbox_extent.y * world_scale.y, bbox_extent.z * world_scale.z);
 
-        // align the light so right tracks the mesh long axis, keeping the existing forward when possible
-        Vector3 forward = GetEntity()->GetForward();
-        Vector3 right   = long_axis_world - forward * Vector3::Dot(forward, long_axis_world);
-        if (right.LengthSquared() < 1e-6f)
-        {
-            // long axis is parallel to forward, pick any perpendicular as the right
-            const Vector3 ref = abs(Vector3::Dot(forward, Vector3::Up)) < 0.9f ? Vector3::Up : Vector3::Forward;
-            right = ref - forward * Vector3::Dot(forward, ref);
-        }
-        right            = right.Normalized();
-        const Vector3 up = Vector3::Cross(forward, right).Normalized();
-        Quaternion rotation;
-        rotation.FromAxes(right, up, forward);
-        GetEntity()->SetRotation(rotation);
+        // pick the two largest extents so the rectangle matches the tube regardless of which local axis it was authored along
+        float e[3] = { scaled_extent.x, scaled_extent.y, scaled_extent.z };
+        if (e[0] < e[1]) swap(e[0], e[1]);
+        if (e[1] < e[2]) swap(e[1], e[2]);
+        if (e[0] < e[1]) swap(e[0], e[1]);
 
-        // center the emitter on the mesh so the rectangle sits over the geometry, not the parent pivot
-        const Vector3 bbox_center_local = (bbox_min + bbox_max) * 0.5f;
-        const Vector3 light_position    = source_world * bbox_center_local;
-        GetEntity()->SetPosition(light_position);
-
-        // project all 8 mesh corners onto the new right/up axes and track extents
-        float min_r = numeric_limits<float>::max();
-        float max_r = numeric_limits<float>::lowest();
-        float min_u = numeric_limits<float>::max();
-        float max_u = numeric_limits<float>::lowest();
-        for (int i = 0; i < 8; ++i)
-        {
-            const Vector3 corner_local(
-                (i & 1) ? bbox_max.x : bbox_min.x,
-                (i & 2) ? bbox_max.y : bbox_min.y,
-                (i & 4) ? bbox_max.z : bbox_min.z
-            );
-            const Vector3 corner_world = source_world * corner_local;
-            const Vector3 to_corner    = corner_world - light_position;
-            const float r              = Vector3::Dot(to_corner, right);
-            const float u              = Vector3::Dot(to_corner, up);
-            min_r = min(min_r, r); max_r = max(max_r, r);
-            min_u = min(min_u, u); max_u = max(max_u, u);
-        }
-
-        SetAreaWidth(max_r - min_r);
-        SetAreaHeight(max_u - min_u);
+        SetAreaWidth(e[0]);
+        SetAreaHeight(e[1]);
         return true;
     }
 

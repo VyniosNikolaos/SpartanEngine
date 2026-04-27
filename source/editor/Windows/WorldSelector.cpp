@@ -52,7 +52,6 @@ namespace
 
     const DefaultWorldEntry default_worlds[] =
     {
-        { "Car Showroom",      "Showcase world for YouTubers/Press. Does not use experimental tech", "Complete" , "Light",          2100 },
         { "Open World Forest", "256 million of Ghost of Tsushima grass blades",                      "Prototype", "Very demanding", 5600 },
         { "Sponza 4K",         "High-resolution textures & meshes",                                  "Complete" , "Demanding",      2600 },
         { "Light Test",        "Cornell box, material ball, light, camera, floor",                   "Complete" , "Light",          2100 },

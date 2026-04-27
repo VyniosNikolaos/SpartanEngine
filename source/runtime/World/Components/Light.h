@@ -140,8 +140,8 @@ namespace spartan
         float GetAreaWidth() const { return m_area_width; }
         void SetAreaHeight(float height);
         float GetAreaHeight() const { return m_area_height; }
-        // sizes the area emitter rectangle to match the given entity's mesh, projected onto the light's plane
-        bool FitToMesh(Entity* source);
+        // sizes the area emitter rectangle to match the entity's own mesh extents along its right and up axes
+        bool FitToMesh();
 
         // matrices
         const math::Matrix GetViewProjectionMatrix(uint32_t index) const { return m_matrix_view[index] * m_matrix_projection[index]; }

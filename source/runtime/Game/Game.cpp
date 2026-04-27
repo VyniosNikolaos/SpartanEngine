@@ -39,7 +39,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "../Resource/ResourceCache.h"
 #include "../Geometry/GeometryGeneration.h"
 #include "../Geometry/GeometryProcessing.h"
-#include "../../editor/ImGui/Source/imgui.h"
 //==========================================
 
 //= NAMESPACES ===============
@@ -52,7 +51,6 @@ namespace spartan
     //= FORWARD DECLARATIONS (world functions) =============
     namespace worlds
     {
-        namespace showroom   { void create(); void tick(); }
         namespace forest     { void create(); void tick(); }
         namespace sponza     { void create(); }
         namespace light_test { void create(); }
@@ -88,7 +86,6 @@ namespace spartan
         // indexed by DefaultWorld enum - add new worlds here
         constexpr create_fn world_create[] =
         {
-            worlds::showroom::create,
             worlds::forest::create,
             worlds::sponza::create,
             worlds::light_test::create,
@@ -97,7 +94,6 @@ namespace spartan
 
         constexpr tick_fn world_tick[] =
         {
-            worlds::showroom::tick,
             worlds::forest::tick,
             nullptr,
             nullptr,
@@ -960,195 +956,6 @@ namespace spartan
         }
         //====================================================================================
 
-        //= SHOWROOM =========================================================================
-        namespace showroom
-        {
-            shared_ptr<RHI_Texture> texture_brand_logo;
-            Entity* turn_table = nullptr;
-
-            void create()
-            {
-                entities::music("project/music/gran_turismo_4.wav");
-
-                // textures
-                texture_brand_logo = make_shared<RHI_Texture>("project/models/ferrari_laferrari/logo.png");
-
-                // create display car (non-drivable)
-                Car::Config car_config;
-                car_config.position       = Vector3(0.0f, 0.08f, 0.0f);
-                car_config.drivable       = false;
-                car_config.static_physics = false;
-                Car::Create(car_config);
-
-                // camera looking at car
-                {
-                    Vector3 camera_position = Vector3(0.2745f, 0.91f, 4.9059f);
-                    entities::camera(true, camera_position);
-                    Vector3 direction = (default_car->GetPosition() - camera_position).Normalized();
-                    default_camera->GetChildByIndex(0)->SetRotationLocal(Quaternion::FromLookRotation(direction, Vector3::Up));
-                    default_camera->GetChildByIndex(0)->GetComponent<Camera>()->SetFlag(CameraFlags::Flashlight, false);
-                }
-
-                // environment: tube lights and floor
-                {
-                    uint32_t mesh_flags  = Mesh::GetDefaultFlags();
-                    mesh_flags          &= static_cast<uint32_t>(MeshFlags::ImportLights);
-                    mesh_flags          &= static_cast<uint32_t>(MeshFlags::ImportCombineMeshes);
-                    mesh_flags          &= ~static_cast<uint32_t>(MeshFlags::PostProcessOptimize);
-                    mesh_flags          &= ~static_cast<uint32_t>(MeshFlags::PostProcessGenerateLods);
-                    if (shared_ptr<Mesh> mesh = ResourceCache::Load<Mesh>("project/models/ferrari_laferrari/SpartanLaFerrariV2/LaFerrariV2.gltf", mesh_flags))
-                    {
-                        Entity* floor_tube_lights = mesh->GetRootEntity();
-                        floor_tube_lights->SetObjectName("tube_lights_and_floor");
-                        floor_tube_lights->SetScale(1.0f);
-
-                        // tube light setup helper
-                        auto setup_tube_light = [floor_tube_lights](const char* descendant_name, Color color)
-                        {
-                            if (Entity* entity_tube_light = floor_tube_lights->GetDescendantByName(descendant_name))
-                            {
-                                Render* renderable = entity_tube_light->GetComponent<Render>();
-                                renderable->SetFlag(RenderableFlags::CastsShadows, false);
-                                if (Material* material = renderable->GetMaterial())
-                                {
-                                    material->SetColor(color);
-                                    material->SetProperty(MaterialProperty::EmissiveFromAlbedo, 1.0f);
-
-                                    // area light matching the tube mesh
-                                    Entity* entity = World::CreateEntity();
-                                    entity->SetObjectName("light_area");
-                                    entity->SetParent(entity_tube_light);
-
-                                    // aim the emitter in world space so mirrored tube meshes still emit downward
-                                    entity->SetRotation(Quaternion::FromLookRotation(Vector3::Down, Vector3::Forward));
-
-                                    Light* light = entity->AddComponent<Light>();
-                                    light->SetLightType(LightType::Area);
-                                    light->SetColor(color);
-                                    light->SetRange(80.0f);
-                                    light->SetIntensity(4000.0f);
-                                    light->SetFlag(LightFlags::Shadows,            true);
-                                    light->SetFlag(LightFlags::ShadowsScreenSpace, false);
-                                    light->SetFlag(LightFlags::Volumetric,         false);
-
-                                    // size the rectangle to match the tube mesh
-                                    light->FitToMesh(entity_tube_light);
-                                }
-                            }
-                        };
-
-                        setup_tube_light("SM_TubeLight.007_1", Color(1.0f, 0.4f, 0.4f, 1.0f)); // red
-                        setup_tube_light("SM_TubeLight.004_1", Color(0.4f, 0.8f, 1.0f, 1.0f)); // cyan
-                        setup_tube_light("SM_TubeLight.006_1", Color(1.0f, 1.0f, 0.9f, 1.0f)); // warm white
-
-                        // physics for all
-                        vector<Entity*> descendants;
-                        floor_tube_lights->GetDescendants(&descendants);
-                        for (Entity* descendant : descendants)
-                        {
-                            if (descendant->GetComponent<Render>())
-                            {
-                                descendant->AddComponent<Physics>()->SetBodyType(BodyType::Mesh);
-                            }
-                        }
-
-                        // floor setup
-                        if (Entity* entity_floor = floor_tube_lights->GetDescendantByName("Floor"))
-                        {
-                            const float scale = 100.0f;
-                            entity_floor->SetScale(scale);
-                            if (Material* material = entity_floor->GetComponent<Render>()->GetMaterial())
-                            {
-                                material->SetProperty(MaterialProperty::TextureTilingX, scale);
-                                material->SetProperty(MaterialProperty::TextureTilingY, scale);
-                                material->SetProperty(MaterialProperty::Metalness, 0.0f);
-                            }
-                            entity_floor->GetComponent<Physics>()->SetBodyType(BodyType::Plane);
-                        }
-
-                        // turntable
-                        if (turn_table = floor_tube_lights->GetDescendantByName("TurnTable"))
-                        {
-                            default_car->SetParent(turn_table);
-                            default_car->SetScaleLocal(1.0f);
-                            turn_table->SetPositionLocal(0.0f);
-                            turn_table->SetRotation(Quaternion::FromEulerAngles(0.0f, 142.9024f, 0.0f));
-                            if (Material* material = turn_table->GetComponent<Render>()->GetMaterial())
-                            {
-                                material->SetColor(Color::standard_black);
-                            }
-                            turn_table->GetComponent<Physics>()->SetKinematic(true);
-                        }
-                    }
-                }
-
-                // renderer options
-                ConsoleRegistry::Get().SetValueFromString("r.performance_metrics", "0");
-                ConsoleRegistry::Get().SetValueFromString("r.lights",              "0");
-                ConsoleRegistry::Get().SetValueFromString("r.dithering",           "0");
-            }
-
-            void tick()
-            {
-                // rotate turntable
-                float rotation_speed = 0.15f;
-                float delta_time     = static_cast<float>(Timer::GetDeltaTimeSec());
-                float angle          = rotation_speed * delta_time;
-                Quaternion rotation  = Quaternion::FromAxisAngle(Vector3::Up, angle);
-                turn_table->Rotate(rotation);
-
-                // car specs window
-                if (Engine::IsFlagSet(EngineMode::EditorVisible))
-                {
-                    ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - 420, 40), ImGuiCond_FirstUseEver);
-                    ImGui::SetNextWindowSize(ImVec2(400, 0), ImGuiCond_FirstUseEver);
-                    ImGui::SetNextWindowBgAlpha(0.85f);
-                    if (ImGui::Begin("Ferrari LaFerrari", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize))
-                    {
-                        // specs table
-                        if (ImGui::BeginTable("specs", 2, ImGuiTableFlags_None))
-                        {
-                            ImGui::TableSetupColumn("Spec", ImGuiTableColumnFlags_WidthFixed, 120);
-                            ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
-
-                            auto spec_row = [](const char* label, const char* value)
-                            {
-                                ImGui::TableNextRow();
-                                ImGui::TableNextColumn(); ImGui::TextDisabled("%s", label);
-                                ImGui::TableNextColumn(); ImGui::Text("%s", value);
-                            };
-
-                            spec_row("Engine", "6.3L V12 + HY-KERS");
-                            spec_row("Power", "708 kW (950 hp)");
-                            spec_row("Torque", "900 Nm");
-                            spec_row("Weight", "1585 kg");
-                            spec_row("Drivetrain", "RWD");
-                            spec_row("Top Speed", "350 km/h");
-                            spec_row("0-100 km/h", "2.6 s");
-                            spec_row("Power/Weight", "446.7 kW/ton");
-                            spec_row("Production", "2013-2018");
-
-                            ImGui::EndTable();
-                        }
-
-                        ImGui::Separator();
-                        ImGui::TextDisabled("Flagship Hypercar");
-                        ImGui::Spacing();
-                        ImGui::PushTextWrapPos(380);
-                        ImGui::TextWrapped("The LaFerrari is Ferrari's first hybrid hypercar, blending a 6.3L V12 with "
-                                           "an electric motor via its HY-KERS system. It delivers extreme performance "
-                                           "and razor-sharp dynamics, wrapped in a design that embodies pure "
-                                           "Ferrari DNA. A limited-production icon of modern automotive engineering.");
-                        ImGui::PopTextWrapPos();
-                    }
-                    ImGui::End();
-                }
-
-                Renderer::DrawIcon(texture_brand_logo.get(), Vector2(400.0f, 300.0f));
-            }
-        }
-        //====================================================================================
-
         //= LIGHT TEST =======================================================================
         namespace light_test
         {
@@ -1236,7 +1043,6 @@ namespace spartan
         default_metal_cube        = nullptr;
 
         // reset world-specific state
-        worlds::showroom::texture_brand_logo = nullptr;
         Car::ShutdownAll();
         meshes.clear();
     }

@@ -25,7 +25,6 @@ namespace spartan
 {
     enum class DefaultWorld
     {
-        Showroom,
         Forest,
         Sponza,
         Test,

@@ -78,7 +78,7 @@ namespace spartan
         void Tick();
 
         // entity access
-        Entity* GetRootEntity() const  { return m_vehicle_entity; }
+        Entity* GetRootEntity() const  { return m_vehicle_entity ? m_vehicle_entity : m_body_entity; }
         Entity* GetBodyEntity() const  { return m_body_entity; }
         Entity* GetWindowEntity() const { return m_window_entity; }
 

@@ -71,6 +71,114 @@ float sample_ray_traced_shadow(float2 uv)
     return shadow;
 }
 
+// inline ray traced shadow for any light type, 1 spp temporally jittered
+// the per pixel jitter feeds taa which accumulates softness across frames
+// requires the tlas descriptor to be bound by the caller pass
+#ifdef RAY_TRACING_ENABLED
+float trace_inline_shadow_ray(Light light, Surface surface, float2 pixel_xy)
+{
+    // self intersection bias scaled by camera distance
+    float dist_to_camera = length(surface.position - get_camera_position());
+    float bias           = 0.005f + dist_to_camera * 0.0001f;
+    float3 origin        = surface.position + surface.normal * bias;
+
+    // two decorrelated [0,1) jitters via interleaved gradient noise plus a golden ratio shift
+    float jitter_a = noise_interleaved_gradient(pixel_xy, true);
+    float jitter_b = frac(jitter_a + 0.6180339887f);
+
+    // concentric disk sample in [-1,1]^2
+    float2 disk;
+    {
+        float2 u = float2(jitter_a, jitter_b) * 2.0f - 1.0f;
+        if (u.x == 0.0f && u.y == 0.0f)
+        {
+            disk = float2(0.0f, 0.0f);
+        }
+        else
+        {
+            float r;
+            float theta;
+            if (abs(u.x) > abs(u.y))
+            {
+                r     = u.x;
+                theta = (PI * 0.25f) * (u.y / u.x);
+            }
+            else
+            {
+                r     = u.y;
+                theta = (PI * 0.5f) - (PI * 0.25f) * (u.x / u.y);
+            }
+            disk = r * float2(cos(theta), sin(theta));
+        }
+    }
+
+    float3 direction;
+    float  t_max;
+
+    if (light.is_directional())
+    {
+        // jittered cone around the sun direction, half angle around 0.5 degrees
+        float3 light_dir           = normalize(-light.forward);
+        float3 up                  = abs(light_dir.y) < 0.999f ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
+        float3 tangent             = normalize(cross(up, light_dir));
+        float3 bitangent           = cross(light_dir, tangent);
+        const float angular_radius = 0.0093f;
+        direction                  = normalize(light_dir + (tangent * disk.x + bitangent * disk.y) * angular_radius);
+        t_max                      = 10000.0f;
+    }
+    else if (light.is_area())
+    {
+        // sample a random point inside the rectangle for soft area shadows
+        float3 light_right;
+        float3 light_up;
+        light.compute_area_light_basis(light_right, light_up);
+        float3 sample_point = light.position
+                            + light_right * disk.x * (light.area_width  * 0.5f)
+                            + light_up    * disk.y * (light.area_height * 0.5f);
+        float3 to_light = sample_point - origin;
+        float  dist     = length(to_light);
+        if (dist < 0.0001f)
+            return 1.0f;
+        direction = to_light / dist;
+        t_max     = max(dist - bias * 2.0f, bias);
+    }
+    else
+    {
+        // point or spot, jitter inside a small spherical source for soft penumbra
+        float3 to_light = light.position - origin;
+        float  dist     = length(to_light);
+        if (dist < 0.0001f)
+            return 1.0f;
+        float3 light_dir         = to_light / dist;
+        float3 up                = abs(light_dir.y) < 0.999f ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
+        float3 tangent           = normalize(cross(up, light_dir));
+        float3 bitangent         = cross(light_dir, tangent);
+        const float light_radius = 0.05f;
+        float3 jittered_target   = light.position + (tangent * disk.x + bitangent * disk.y) * light_radius;
+        float3 to_jit            = jittered_target - origin;
+        dist                     = length(to_jit);
+        direction                = to_jit / dist;
+        t_max                    = max(dist - bias * 2.0f, bias);
+    }
+
+    // skip if the surface is back facing the light
+    if (dot(surface.normal, direction) <= 0.0f)
+        return 0.0f;
+
+    RayDesc ray;
+    ray.Origin    = origin;
+    ray.Direction = direction;
+    ray.TMin      = 0.001f;
+    ray.TMax      = max(t_max, 0.001f);
+
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> query;
+    query.TraceRayInline(tlas, RAY_FLAG_NONE, 0xFF, ray);
+    query.Proceed();
+
+    return query.CommittedStatus() == COMMITTED_NOTHING ? 1.0f : 0.0f;
+}
+#endif
+
 // Subsurface scattering with wrapped diffuse and thickness estimation
 float3 subsurface_scattering(Surface surface, Light light, AngularInfo angular_info)
 {
@@ -170,18 +278,26 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
         if (!surface.is_sky() && !skip_surface_lighting)
         {
             // compute shadow term
-            // for directional lights: ray traced shadows are mutually exclusive with rasterized/screen-space shadows
-            bool use_ray_traced_shadow = light.is_directional() && light.has_shadows() && is_ray_traced_shadows_enabled();
-            
-            if (use_ray_traced_shadow)
+            // ray traced shadows are mutually exclusive with rasterized/screen-space shadows
+            bool can_use_rt_shadows = light.has_shadows() && is_ray_traced_shadows_enabled();
+
+            if (can_use_rt_shadows && light.is_directional())
             {
-                // ray traced shadows for directional light
-                L_shadow = sample_ray_traced_shadow(surface.uv);
+                // dedicated screen space pass produces high quality multi sample sun shadows
+                L_shadow        = sample_ray_traced_shadow(surface.uv);
                 light.radiance *= L_shadow;
             }
+        #ifdef RAY_TRACING_ENABLED
+            else if (can_use_rt_shadows)
+            {
+                // inline ray traced shadow for point spot and area lights, 1 spp jittered for taa
+                L_shadow        = trace_inline_shadow_ray(light, surface, float2(thread_id.xy));
+                light.radiance *= L_shadow;
+            }
+        #endif
             else if (light.has_shadows())
             {
-                // rasterized shadow mapping
+                // rasterized shadow mapping fallback
                 L_shadow = compute_shadow(surface, light);
 
                 // combine with screen-space shadows if available

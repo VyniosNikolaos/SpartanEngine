@@ -822,10 +822,12 @@ namespace spartan
         m_cb_frame_cpu.restir_pt_light_count = static_cast<float>(m_count_active_lights);
         m_cb_frame_cpu.wind           = World::GetWind();
         // feature bits (must match common_resources.hlsl)
-        m_cb_frame_cpu.set_bit(cvar_ray_traced_reflections.GetValueAs<bool>(), 1 << 0);
-        m_cb_frame_cpu.set_bit(cvar_ssao.GetValueAs<bool>(),                   1 << 1);
-        m_cb_frame_cpu.set_bit(cvar_ray_traced_shadows.GetValueAs<bool>(),     1 << 2);
-        m_cb_frame_cpu.set_bit(cvar_restir_pt.GetValueAs<bool>(),              1 << 3);
+        // ray traced shadows require a valid tlas so the shader's inline ray query has something to trace against
+        bool tlas_available = RHI_Device::IsSupportedRayTracing() && GetTopLevelAccelerationStructure() != nullptr;
+        m_cb_frame_cpu.set_bit(cvar_ray_traced_reflections.GetValueAs<bool>(),                    1 << 0);
+        m_cb_frame_cpu.set_bit(cvar_ssao.GetValueAs<bool>(),                                      1 << 1);
+        m_cb_frame_cpu.set_bit(cvar_ray_traced_shadows.GetValueAs<bool>() && tlas_available,      1 << 2);
+        m_cb_frame_cpu.set_bit(cvar_restir_pt.GetValueAs<bool>(),                                 1 << 3);
 
         // vr stereo: override primary matrices with the left eye and populate the right eye
         // so that every shader helper can pick the correct per-eye matrices via eye_index

@@ -565,7 +565,7 @@ namespace spartan
                 {
                     if (Material* material = car_entity->GetDescendantByName(part)->GetComponent<Render>()->GetMaterial())
                     {
-                        material->SetProperty(MaterialProperty::Roughness, 0.7f);
+                        material->SetProperty(MaterialProperty::Roughness, 0.9f);
                     }
                 }
             }

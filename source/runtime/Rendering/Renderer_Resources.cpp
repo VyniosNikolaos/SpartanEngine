@@ -574,7 +574,7 @@ namespace spartan
         // light
         compile_shader(Renderer_Shader::light_integration_brdf_specular_lut_c,  RHI_Shader_Type::Compute, sd + "light_integration.hlsl", false, RHI_Vertex_Type::Max, "BRDF_SPECULAR_LUT");
         compile_shader(Renderer_Shader::light_integration_environment_filter_c, RHI_Shader_Type::Compute, sd + "light_integration.hlsl", true,  RHI_Vertex_Type::Max, "ENVIRONMENT_FILTER");
-        compile_shader(Renderer_Shader::light_c,                                RHI_Shader_Type::Compute, sd + "light.hlsl");
+        compile_shader(Renderer_Shader::light_c,                                RHI_Shader_Type::Compute, sd + "light.hlsl", true, RHI_Vertex_Type::Max, RHI_Device::IsSupportedRayTracing() ? "RAY_TRACING_ENABLED" : nullptr);
         compile_shader(Renderer_Shader::light_composition_c,                    RHI_Shader_Type::Compute, sd + "light_composition.hlsl");
         compile_shader(Renderer_Shader::light_image_based_c,                    RHI_Shader_Type::Compute, sd + "light_image_based.hlsl");
 

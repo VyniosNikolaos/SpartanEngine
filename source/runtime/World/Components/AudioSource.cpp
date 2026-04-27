@@ -26,6 +26,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "Volume.h"
 #include "../Entity.h"
 #include "../World.h"
+#include "../../Core/Engine.h"
 SP_WARNINGS_OFF
 #include <SDL3/SDL_audio.h>
 #include "../IO/pugixml.hpp"
@@ -216,12 +217,14 @@ namespace spartan
         if (m_play_on_start)
         {
             PlayClip();
+            m_auto_play_consumed = true;
         }
     }
 
     void AudioSource::Stop()
     {
         StopClip();
+        m_auto_play_consumed = false;
     }
 
     void AudioSource::Remove()
@@ -231,6 +234,15 @@ namespace spartan
 
     void AudioSource::Tick()
     {
+        // auto start playback when entering play mode, covers cases where Start was missed
+        // due to async world load timing or entities arriving after the play transition
+        const bool in_play_mode = Engine::IsFlagSet(EngineMode::Playing) && !Engine::IsFlagSet(EngineMode::Paused);
+        if (in_play_mode && m_play_on_start && !m_is_playing && !m_auto_play_consumed && !m_synthesis_mode && m_clip)
+        {
+            PlayClip();
+            m_auto_play_consumed = true;
+        }
+
         if (!m_is_playing)
             return;
 

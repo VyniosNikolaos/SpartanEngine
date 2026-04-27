@@ -1639,6 +1639,18 @@ namespace spartan
             cmd_list->SetTexture(Renderer_BindingsUav::tex,     light_diffuse);
             cmd_list->SetTexture(Renderer_BindingsUav::tex2,    light_specular);
             cmd_list->SetTexture(Renderer_BindingsUav::tex3,    light_volumetric);
+
+            // bind tlas for inline ray traced shadows when ray tracing is supported and the world has geometry
+            if (RHI_Device::IsSupportedRayTracing())
+            {
+                if (RHI_AccelerationStructure* tlas = GetTopLevelAccelerationStructure())
+                {
+                    if (tlas->GetRhiResource())
+                    {
+                        cmd_list->SetAccelerationStructure(Renderer_BindingsSrv::tlas, tlas);
+                    }
+                }
+            }
     
             m_pcb_pass_cpu.is_transparent = is_transparent_pass ? 1 : 0;
             m_pcb_pass_cpu.set_f3_value(static_cast<float>(m_count_active_lights), cvar_fog.GetValue());

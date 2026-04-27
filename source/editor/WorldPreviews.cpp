@@ -134,7 +134,6 @@ namespace
     {
         switch (default_world)
         {
-            case spartan::DefaultWorld::Showroom: return "showroom";
             case spartan::DefaultWorld::Forest:   return "forest";
             case spartan::DefaultWorld::Sponza:   return "sponza";
             case spartan::DefaultWorld::Test:     return "test";
