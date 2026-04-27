@@ -125,11 +125,6 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     combined.sample      = current.sample;
     combined.target_pdf  = target_cur;
 
-    // generalized balance heuristic with m_i = M_i / sum_j M_j
-    // stream weight contribution: w_i = p_hat_dst(T(X_i)) * W_i * |J_i| * M_i
-    // final: W_out = weight_sum / (M_total * p_hat_dst(Y))
-    float M_total = max(current.M, 0.0f);
-
     float linear_depth = linearize_depth(depth);
     float2 prev_uv     = reproject_to_previous_frame(uv);
     float  temporal_confidence = 0.0f;
@@ -186,27 +181,46 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
         }
     }
 
-    // decay temporal M by confidence and staleness to shed stale history faster
+    // soft scale temporal M by reprojection confidence to fade out near surface
+    // boundaries, plus a small constant decay to adapt to lighting changes; the M cap
+    // bounds stale sample influence and the validity gate above already drops temporal
+    // entirely for hard surface mismatches, so no time-based staleness is needed
     if (have_temporal)
     {
-        float staleness = saturate(1.0f - temporal.age / 64.0f);
-        float M_scale   = RESTIR_TEMPORAL_DECAY * temporal_confidence * staleness;
-        temporal.M          = max(temporal.M * M_scale, 0.0f);
-        temporal.weight_sum = temporal.weight_sum * M_scale;
-        float cap = max(1.0f, RESTIR_M_CAP * temporal_confidence * staleness);
-        clamp_reservoir_M(temporal, cap);
-        M_total += temporal.M;
+        float M_scale = RESTIR_TEMPORAL_DECAY * temporal_confidence;
+        temporal.M    = max(temporal.M * M_scale, 0.0f);
+        clamp_reservoir_M(temporal, RESTIR_M_CAP);
     }
 
-    // stream merge: current first (self-shift, jacobian = 1)
-    float weight_cur = target_cur * current.W * current.M;
-    combined.weight_sum += max(weight_cur, 0.0f);
+    // generalized balance heuristic for two streams (lin 2022 eq. 25):
+    //   m_i = (M_i * p_hat_dst(T_i(X_i))) / sum_j (M_j * p_hat_dst(T_j(X_j)))
+    //   w_i = m_i * p_hat_dst(T_i(X_i)) * W_i_src * |J_i|
+    //   W_out = sum_i w_i / p_hat_dst(Y), no extra /M_total since m_i absorbs normalization
+    float denom = current.M * target_cur;
+    if (have_temporal)
+        denom += temporal.M * target_temp;
 
-    // temporal next (reservoir merge pick)
+    float weight_cur = 0.0f;
+    if (denom > 0.0f && target_cur > 0.0f)
+    {
+        float m_cur = (current.M * target_cur) / denom;
+        weight_cur  = m_cur * target_cur * current.W;
+    }
+
+    float weight_tmp = 0.0f;
+    if (have_temporal && denom > 0.0f && target_temp > 0.0f)
+    {
+        float m_temp = (temporal.M * target_temp) / denom;
+        weight_tmp   = m_temp * target_temp * jacobian_temp * temporal.W;
+    }
+
+    combined.weight_sum = max(weight_cur, 0.0f);
+    combined.M          = current.M;
+
     if (have_temporal)
     {
-        float weight_tmp = target_temp * jacobian_temp * temporal.W * temporal.M;
         combined.weight_sum += max(weight_tmp, 0.0f);
+        combined.M          += temporal.M;
 
         if (combined.weight_sum > 0.0f && random_float(seed) * combined.weight_sum < weight_tmp)
         {
@@ -215,17 +229,12 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
         }
     }
 
-    combined.M = M_total;
     clamp_reservoir_M(combined, RESTIR_M_CAP);
 
-    // evaluate the selected sample's target_pdf at the shading pixel one more time to finalize W
+    // finalize: W = weight_sum / p_hat_dst(Y) (no /M, m_i factors already normalized)
     float final_target = target_pdf_self(combined.sample, pos_ws, normal_ws, view_dir, albedo, roughness, metallic);
     combined.target_pdf = final_target;
-
-    if (final_target > 0.0f && combined.M > 0.0f)
-        combined.W = combined.weight_sum / (final_target * combined.M);
-    else
-        combined.W = 0.0f;
+    combined.W          = (final_target > 0.0f) ? (combined.weight_sum / final_target) : 0.0f;
 
     float w_clamp = get_w_clamp_for_sample(combined.sample);
     combined.W    = min(combined.W, w_clamp);

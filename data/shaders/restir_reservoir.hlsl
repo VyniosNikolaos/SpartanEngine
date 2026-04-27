@@ -49,6 +49,9 @@ static const float RESTIR_W_CLAMP_DEFAULT    = 50.0f;
 // firefly suppression (applied once at storage time to rc_radiance)
 static const float RESTIR_FIREFLY_LUMA       = 150.0f;
 
+// nee
+static const float MIN_AREA_LIGHT_SOLID_ANGLE = 1e-4f;
+
 // path flags
 static const uint PATH_FLAG_SKY      = 1 << 0;  // rc is the sky dome, rc_pos stores a unit direction
 static const uint PATH_FLAG_HAS_RC   = 1 << 1;  // reconnection vertex is valid for reconnection shift
@@ -237,17 +240,13 @@ bool update_reservoir(inout Reservoir reservoir, PathSample new_sample, float we
     return false;
 }
 
+// caps M without touching weight_sum or W in the paper-form W = weight_sum / target_pdf
+// the cap only affects future m_i = M_i / sum ratios used during stream combining, the
+// unbiased estimator is preserved (scaling weight_sum here would darken the estimate by max_M/M)
 void clamp_reservoir_M(inout Reservoir reservoir, float max_M)
 {
     if (reservoir.M > max_M)
-    {
-        float scale = max_M / reservoir.M;
-        reservoir.weight_sum *= scale;
         reservoir.M = max_M;
-
-        if (reservoir.target_pdf > 0 && reservoir.M > 0)
-            reservoir.W = reservoir.weight_sum / (reservoir.target_pdf * reservoir.M);
-    }
 }
 
 // rng
@@ -724,6 +723,174 @@ float target_pdf_self(
 
     float lum = dot(r.f_dst, float3(0.299f, 0.587f, 0.114f));
     return max(lum, 0.0f);
+}
+
+// inline ray-traced shadow ray, returns true if the segment is unoccluded
+// requires tlas to be bound in the caller (raygen or compute with inline ray tracing)
+bool trace_shadow_ray(float3 origin, float3 direction, float max_dist)
+{
+    float epsilon = max(RESTIR_RAY_T_MIN, compute_ray_offset(origin));
+
+    RayDesc ray;
+    ray.Origin    = origin;
+    ray.Direction = direction;
+    ray.TMin      = epsilon;
+    ray.TMax      = max(max_dist - epsilon, epsilon);
+
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> query;
+    query.TraceRayInline(tlas, RAY_FLAG_NONE, 0xFF, ray);
+    query.Proceed();
+
+    return query.CommittedStatus() == COMMITTED_NOTHING;
+}
+
+// computes direct lighting at a surface vertex from analytical lights with ray-traced visibility
+// every shadow comes from a tlas ray query, so the cube under an area light or under a directional
+// gets a real path-traced shadow instead of a shadow map. env probe / sky / emissive geometry are
+// excluded since ibl handles primary sky and indirect bounces handle emissive geometry naturally.
+// intended to be called at the primary vertex during the spatial pass, in addition to gi
+float3 direct_lighting_at_primary_analytical(
+    float3 shading_pos,
+    float3 shading_normal,
+    float3 geometric_normal,
+    float3 view_dir,
+    float3 albedo,
+    float roughness,
+    float metallic,
+    inout uint seed)
+{
+    float3 total = float3(0, 0, 0);
+    uint light_count = (uint)buffer_frame.restir_pt_light_count;
+    float shading_offset = compute_ray_offset(shading_pos);
+    float3 ray_origin_light = shading_pos + geometric_normal * shading_offset;
+
+    for (uint light_idx = 0; light_idx < light_count; light_idx++)
+    {
+        LightParameters light = light_parameters[light_idx];
+
+        if (light.intensity <= 0.0f)
+            continue;
+
+        uint light_flags    = light.flags;
+        bool is_directional = (light_flags & (1u << 0)) != 0;
+        bool is_point       = (light_flags & (1u << 1)) != 0;
+        bool is_spot        = (light_flags & (1u << 2)) != 0;
+        bool is_area        = (light_flags & (1u << 6)) != 0;
+
+        float3 light_color = light.color.rgb;
+        float3 light_dir;
+        float  light_dist;
+        float  light_pdf   = 1.0f;
+        float  attenuation = 1.0f;
+
+        if (is_directional)
+        {
+            // single ray to the sun for now, no disc sampling
+            // disc sampling could be added by jittering inside the SUN_CONE_HALF_ANGLE for true penumbra
+            light_dir  = -light.direction;
+            light_dist = 1000.0f;
+            light_pdf  = 1.0f;
+        }
+        else if (is_area && light.area_width > 0.0f && light.area_height > 0.0f)
+        {
+            float3 light_normal = light.direction;
+            float3 light_right, light_up;
+            build_orthonormal_basis_fast(light_normal, light_right, light_up);
+
+            float3 light_center = light.position;
+            float3 p0 = light_center - light_right * light.area_width * 0.5f - light_up * light.area_height * 0.5f;
+            float3 p1 = light_center + light_right * light.area_width * 0.5f - light_up * light.area_height * 0.5f;
+            float3 p2 = light_center + light_right * light.area_width * 0.5f + light_up * light.area_height * 0.5f;
+            float3 p3 = light_center - light_right * light.area_width * 0.5f + light_up * light.area_height * 0.5f;
+
+            float3 v0 = normalize(p0 - shading_pos);
+            float3 v1 = normalize(p1 - shading_pos);
+            float3 v2 = normalize(p2 - shading_pos);
+            float3 v3 = normalize(p3 - shading_pos);
+
+            float solid_angle_approx = 0.0f;
+            {
+                float a1 = acos(clamp(dot(v0, v1), -1.0f, 1.0f));
+                float a2 = acos(clamp(dot(v1, v2), -1.0f, 1.0f));
+                float a3 = acos(clamp(dot(v2, v0), -1.0f, 1.0f));
+                float s  = (a1 + a2 + a3) * 0.5f;
+                float excess1 = 4.0f * atan(sqrt(max(0.0f, tan(s * 0.5f) * tan((s - a1) * 0.5f) * tan((s - a2) * 0.5f) * tan((s - a3) * 0.5f))));
+
+                float b1 = acos(clamp(dot(v0, v2), -1.0f, 1.0f));
+                float b2 = acos(clamp(dot(v2, v3), -1.0f, 1.0f));
+                float b3 = acos(clamp(dot(v3, v0), -1.0f, 1.0f));
+                float t  = (b1 + b2 + b3) * 0.5f;
+                float excess2 = 4.0f * atan(sqrt(max(0.0f, tan(t * 0.5f) * tan((t - b1) * 0.5f) * tan((t - b2) * 0.5f) * tan((t - b3) * 0.5f))));
+
+                solid_angle_approx = excess1 + excess2;
+            }
+
+            float2 xi = random_float2(seed);
+            float3 light_sample_pos = light_center
+                + light_right * (xi.x - 0.5f) * light.area_width
+                + light_up * (xi.y - 0.5f) * light.area_height;
+
+            float3 to_light = light_sample_pos - shading_pos;
+            light_dist      = length(to_light);
+            light_dir       = to_light / light_dist;
+
+            float cos_light = dot(-light_dir, light_normal);
+            if (cos_light <= 0.0f)
+                continue;
+
+            float area = light.area_width * light.area_height;
+            if (solid_angle_approx > MIN_AREA_LIGHT_SOLID_ANGLE)
+            {
+                light_pdf = 1.0f / solid_angle_approx;
+            }
+            else
+            {
+                float solid_angle = (area * cos_light) / (light_dist * light_dist);
+                solid_angle       = max(solid_angle, MIN_AREA_LIGHT_SOLID_ANGLE);
+                light_pdf         = 1.0f / solid_angle;
+            }
+            // 1/d^2 already baked into the solid-angle pdf
+            attenuation = 1.0f;
+        }
+        else if (is_point || is_spot)
+        {
+            float3 to_light = light.position - shading_pos;
+            light_dist      = length(to_light);
+            light_dir       = to_light / light_dist;
+            light_pdf       = 1.0f;
+
+            float range_factor = saturate(1.0f - light_dist / max(light.range, 0.01f));
+            attenuation = range_factor * range_factor / max(light_dist * light_dist, 0.01f);
+
+            if (is_spot)
+            {
+                float cos_angle = dot(-light_dir, light.direction);
+                float cos_outer = cos(light.angle);
+                float cos_inner = cos(light.angle * 0.8f);
+                attenuation *= saturate((cos_angle - cos_outer) / (cos_inner - cos_outer));
+            }
+        }
+        else
+        {
+            continue;
+        }
+
+        float n_dot_l = dot(shading_normal, light_dir);
+        if (n_dot_l <= 0.0f)
+            continue;
+
+        if (!trace_shadow_ray(ray_origin_light, light_dir, light_dist))
+            continue;
+
+        float  brdf_pdf;
+        float3 brdf = evaluate_brdf(albedo, roughness, metallic, shading_normal, view_dir, light_dir, brdf_pdf);
+
+        float mis_weight = is_area ? power_heuristic(light_pdf, brdf_pdf) : 1.0f;
+        float3 Li = light_color * light.intensity * attenuation;
+        total += brdf * Li * mis_weight / max(light_pdf, 1e-6f);
+    }
+
+    return total;
 }
 
 // shades the reservoir's sample at the current pixel (self-shift, jacobian == 1)

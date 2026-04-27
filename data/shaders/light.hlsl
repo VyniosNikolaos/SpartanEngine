@@ -154,6 +154,12 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
         Light light;
         light.Build(i, surface);
 
+        // when restir pt is enabled, all analytical lights are evaluated via nee inside the
+        // restir spatial pass with ray-traced visibility, so skip the brdf / shadow path here to
+        // avoid double counting and let real path-traced shadows emerge from the rays themselves
+        // volumetric fog still runs below since it does not feed the surface brdf
+        bool skip_surface_lighting = is_restir_pt_enabled();
+
         // per-light accumulators
         float  L_shadow        = 1.0f;
         float3 L_specular_sum  = 0.0f;
@@ -161,7 +167,7 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
         float3 L_subsurface    = 0.0f;
         float3 L_volumetric    = 0.0f;
 
-        if (!surface.is_sky())
+        if (!surface.is_sky() && !skip_surface_lighting)
         {
             // compute shadow term
             // for directional lights: ray traced shadows are mutually exclusive with rasterized/screen-space shadows

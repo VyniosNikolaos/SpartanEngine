@@ -168,21 +168,25 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
 
     float target_cur = target_pdf_self(center.sample, pos_ws, normal_ws, view_dir, albedo, roughness, metallic);
 
-    // combined reservoir with the center stream as seed sample
+    // generalized balance heuristic at the canonical's domain (lin 2022 sec 5.2):
+    //   m_i(Y) = M_i * p_hat_canon(T_i(X_i)) / sum_j (M_j * p_hat_canon(T_j(X_j)))
+    //   per-stream contribution = m_i * p_hat_canon(T_i(X_i)) * W_i * |J_i|
+    // streaming form: insert with weight_stream_i = M_i * t_i^2 * W_i * |J_i| where
+    //   t_i = p_hat_canon(T_i(X_i)). the /denom factor cancels in the streaming reservoir
+    //   selection, and we post-scale weight_sum by 1/denom at the end so the stored W
+    //   matches the paper form W = weight_sum / target_pdf_y
     Reservoir combined  = create_empty_reservoir();
     combined.sample     = center.sample;
     combined.target_pdf = target_cur;
 
-    // generalized balance heuristic with m_i = M_i / sum_j M_j (confidence-weighted approximation)
-    // stream contribution: w_i = p_hat_dst(T_i(X_i)) * W_i * |J_i| * M_i
-    // final W_out = weight_sum / (M_total * p_hat_dst(Y))
-    float M_total = max(center.M, 0.0f);
+    // canonical first (jacobian = 1 by self-shift)
+    float center_M  = max(center.M, 0.0f);
+    float denom     = center_M * target_cur;
+    float M_total   = center_M;
+    float weight_c  = center_M * target_cur * target_cur * center.W;
+    combined.weight_sum = max(weight_c, 0.0f);
 
     float base_angle = random_float(seed) * 2.0f * PI;
-
-    // seed the combined with the center stream (self-shift: jacobian = 1)
-    float weight_center = target_cur * center.W * center.M;
-    combined.weight_sum = max(weight_center, 0.0f);
 
     for (uint i = 0; i < spatial_sample_count; i++)
     {
@@ -221,6 +225,7 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
         float2 neighbor_uv     = (neighbor_pixel + 0.5f) / resolution;
         float3 neighbor_pos_ws = get_position(neighbor_uv);
 
+        // forward shift (neighbor's path evaluated at this pixel)
         ShiftResult shift = try_reconnection_shift(
             neighbor.sample,
             neighbor_pos_ws,
@@ -238,36 +243,36 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
         if (!trace_shift_visibility(neighbor.sample, pos_ws, normal_ws))
             continue;
 
-        float target_neighbor = max(dot(shift.f_dst, float3(0.299f, 0.587f, 0.114f)), 0.0f);
-        if (target_neighbor <= 0.0f)
+        float target_j_at_c = max(dot(shift.f_dst, float3(0.299f, 0.587f, 0.114f)), 0.0f);
+        if (target_j_at_c <= 0.0f)
             continue;
 
-        // paper-form confidence weights: m_i = M_i / sum(M_j), stream weight
-        // w_i = m_i * p_hat_dst(T_i(X_i)) * W_i_src * |J_i|, aggregated form
-        // stores M_i * p_hat * W_src * J so the final division by M_total normalizes m_i
-        M_total += neighbor.M;
-        float weight = target_neighbor * shift.jacobian * neighbor.W * neighbor.M;
+        float jacobian = shift.jacobian;
 
-        combined.weight_sum += max(weight, 0.0f);
+        denom    += neighbor.M * target_j_at_c;
+        M_total  += neighbor.M;
 
-        if (combined.weight_sum > 0.0f && random_float(seed) * combined.weight_sum < weight)
+        float weight_j = neighbor.M * target_j_at_c * target_j_at_c * neighbor.W * jacobian;
+        combined.weight_sum += max(weight_j, 0.0f);
+
+        if (combined.weight_sum > 0.0f && random_float(seed) * combined.weight_sum < weight_j)
         {
             combined.sample     = neighbor.sample;
-            combined.target_pdf = target_neighbor;
+            combined.target_pdf = target_j_at_c;
         }
     }
+
+    // post-scale weight_sum by 1/denom to recover the paper form sum_i (m_i * t_i * W_i * J_i)
+    if (denom > 0.0f)
+        combined.weight_sum /= denom;
 
     combined.M = M_total;
     clamp_reservoir_M(combined, RESTIR_M_CAP);
 
-    // finalize W against the destination's target_pdf
+    // finalize: W = weight_sum / p_hat_dst(Y) (no /M, m_i factors already normalized)
     float final_target = target_pdf_self(combined.sample, pos_ws, normal_ws, view_dir, albedo, roughness, metallic);
     combined.target_pdf = final_target;
-
-    if (final_target > 0.0f && combined.M > 0.0f)
-        combined.W = combined.weight_sum / (final_target * combined.M);
-    else
-        combined.W = 0.0f;
+    combined.W          = (final_target > 0.0f) ? (combined.weight_sum / final_target) : 0.0f;
 
     float w_clamp = get_w_clamp_for_sample(combined.sample);
     combined.W    = min(combined.W, w_clamp);
@@ -287,5 +292,16 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     if (any(isnan(gi)) || any(isinf(gi)))
         gi = float3(0, 0, 0);
 
-    tex_uav[pixel] = float4(gi, saturate(combined.confidence));
+    // primary direct from all analytical lights with ray-traced visibility
+    // light.hlsl skips analytical lights entirely when restir_pt is enabled, so this is the only
+    // path that adds direct contribution from the sun, area, point, and spot lights to the gi buffer
+    // ibl / sky / emissive geometry remain handled by light_image_based.hlsl and indirect bounces
+    uint direct_seed = create_seed_for_pass(pixel, buffer_frame.frame, 6 + spatial_pass_index);
+    float3 geometric_normal = normal_ws;
+    float3 direct = direct_lighting_at_primary_analytical(
+        pos_ws, normal_ws, geometric_normal, view_dir, albedo, roughness, metallic, direct_seed);
+    if (any(isnan(direct)) || any(isinf(direct)))
+        direct = float3(0, 0, 0);
+
+    tex_uav[pixel] = float4(gi + direct, saturate(combined.confidence));
 }

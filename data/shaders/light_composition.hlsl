@@ -24,6 +24,67 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "fog.hlsl"
 //====================
 
+// edge-aware bilateral upsample of the half-res restir gi texture (tex6)
+// destination depth and normal come from the full-res g-buffer via Surface
+// source depth and normal are read at gi texel centers from the same g-buffer
+// weights combine bilinear, depth similarity, normal similarity to avoid edge bleed
+float3 sample_gi_bilateral(float2 uv_dst, float depth_dst_lin, float3 normal_dst)
+{
+    float2 gi_size; tex6.GetDimensions(gi_size.x, gi_size.y);
+    float2 gi_inv = 1.0f / gi_size;
+
+    float2 ctr  = uv_dst * gi_size - 0.5f;
+    float2 base = floor(ctr);
+    float2 frac_uv = ctr - base;
+
+    int2 corners[4];
+    corners[0] = int2(base) + int2(0, 0);
+    corners[1] = int2(base) + int2(1, 0);
+    corners[2] = int2(base) + int2(0, 1);
+    corners[3] = int2(base) + int2(1, 1);
+
+    float w_bilin[4];
+    w_bilin[0] = (1.0f - frac_uv.x) * (1.0f - frac_uv.y);
+    w_bilin[1] = frac_uv.x          * (1.0f - frac_uv.y);
+    w_bilin[2] = (1.0f - frac_uv.x) * frac_uv.y;
+    w_bilin[3] = frac_uv.x          * frac_uv.y;
+
+    float3 sum  = 0.0f;
+    float  norm = 0.0f;
+
+    int2 gi_max = int2(gi_size) - 1;
+    [unroll]
+    for (int i = 0; i < 4; i++)
+    {
+        int2 c = clamp(corners[i], int2(0, 0), gi_max);
+        float2 src_uv = (float2(c) + 0.5f) * gi_inv;
+
+        float d_raw = tex_depth.SampleLevel(samplers[sampler_point_clamp], src_uv, 0).r;
+        if (d_raw <= 0.0f) continue;
+
+        float d_lin = linearize_depth(d_raw);
+        float3 n_src = get_normal(src_uv);
+
+        float depth_diff = abs(d_lin - depth_dst_lin) / max(depth_dst_lin, 1e-3f);
+        float w_depth    = exp(-depth_diff * 64.0f);
+
+        float ndot     = saturate(dot(normal_dst, n_src));
+        float w_normal = pow(ndot, 16.0f);
+
+        float w = w_bilin[i] * w_depth * w_normal;
+
+        float3 src = tex6.Load(int3(c, 0)).rgb;
+        sum  += src * w;
+        norm += w;
+    }
+
+    if (norm > 1e-5f)
+        return sum / norm;
+
+    // all neighbors disagree on geometry, fall back to nearest texel to avoid halos
+    return tex6.SampleLevel(samplers[sampler_point_clamp], uv_dst, 0).rgb;
+}
+
 [numthreads(THREAD_GROUP_COUNT_X, THREAD_GROUP_COUNT_Y, 1)]
 void main_cs(uint3 thread_id : SV_DispatchThreadID)
 {
@@ -60,9 +121,15 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
 
         // restir_pt outputs pre-shaded gi (diffuse_brdf * cos * radiance * W),
         // so it bypasses the *albedo multiply below and is added directly
+        // gi is at restir_pt_scale of render resolution, so use a join-bilateral
+        // upsample (depth + normal aware) to avoid bleeding across edges
+        // also multiply by surface.occlusion to recover contact shadows that
+        // restir's spatial reuse and denoiser smear away at small scales
         if (is_restir_pt_enabled())
         {
-            light_gi = tex6.SampleLevel(samplers[sampler_bilinear_clamp], surface.uv, 0).rgb;
+            float depth_dst_lin = linearize_depth(surface.depth);
+            light_gi = sample_gi_bilateral(surface.uv, depth_dst_lin, surface.normal);
+            light_gi *= surface.occlusion;
         }
     }
     

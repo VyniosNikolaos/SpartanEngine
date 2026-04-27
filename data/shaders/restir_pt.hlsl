@@ -28,10 +28,10 @@ static const uint  INITIAL_CANDIDATE_SAMPLES   = 16;
 static const float MIN_COS_AT_PRIMARY          = 1e-3f;
 static const float RUSSIAN_ROULETTE_PROB       = 0.85f;
 static const uint  RUSSIAN_ROULETTE_START      = 2;
-static const float MIN_AREA_LIGHT_SOLID_ANGLE  = 1e-4f;
 static const float SKY_MIP_LEVEL               = 2.0f;
 static const float SUN_CONE_HALF_ANGLE         = 0.015f;
 static const float SUN_SAMPLE_PROBABILITY      = 0.5f;
+// MIN_AREA_LIGHT_SOLID_ANGLE moved to restir_reservoir.hlsl since it is shared with the spatial pass nee
 
 struct [raypayload] PathPayload
 {
@@ -46,22 +46,7 @@ struct [raypayload] PathPayload
     bool   hit              : read(caller) : write(closesthit, miss);
 };
 
-bool trace_shadow_ray(float3 origin, float3 direction, float max_dist)
-{
-    float epsilon = max(RESTIR_RAY_T_MIN, compute_ray_offset(origin));
-
-    RayDesc ray;
-    ray.Origin    = origin;
-    ray.Direction = direction;
-    ray.TMin      = epsilon;
-    ray.TMax      = max(max_dist - epsilon, epsilon);
-
-    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> query;
-    query.TraceRayInline(tlas, RAY_FLAG_NONE, 0xFF, ray);
-    query.Proceed();
-
-    return query.CommittedStatus() == COMMITTED_NOTHING;
-}
+// trace_shadow_ray moved to restir_reservoir.hlsl so it is callable from spatial / temporal passes too
 
 float3 probe_emission_estimate(MaterialParameters mat)
 {
@@ -539,32 +524,39 @@ void ray_gen()
 
     // ris streaming over N brdf-sampled candidate paths
     // source pdf matches the primary brdf lobe (diffuse+ggx) so specular hits don't explode
+    // every iteration calls update_reservoir so M counts every trial (paper-form unbiased ris)
     for (uint i = 0; i < INITIAL_CANDIDATE_SAMPLES; i++)
     {
         float2 xi = random_float2(seed);
         float  source_pdf;
         float3 dir = sample_brdf(albedo, roughness, metallic, normal_ws, view_dir, xi, source_pdf);
 
-        if (source_pdf < RESTIR_MIN_PDF || dot(dir, normal_ws) < MIN_COS_AT_PRIMARY || any(isnan(dir)))
-            continue;
+        bool dir_valid = (source_pdf >= RESTIR_MIN_PDF) &&
+                         (dot(dir, normal_ws) >= MIN_COS_AT_PRIMARY) &&
+                         !any(isnan(dir));
 
-        PathSample candidate = trace_path_from_primary(pos_ws, normal_ws, roughness, dir, seed);
+        PathSample candidate = (PathSample)0;
+        float weight = 0.0f;
 
-        float target_pdf = target_pdf_self(candidate, pos_ws, normal_ws, view_dir, albedo, roughness, metallic);
-        if (target_pdf <= 0.0f)
-            continue;
+        if (dir_valid)
+        {
+            candidate = trace_path_from_primary(pos_ws, normal_ws, roughness, dir, seed);
+            float target_pdf = target_pdf_self(candidate, pos_ws, normal_ws, view_dir, albedo, roughness, metallic);
+            if (target_pdf > 0.0f)
+                weight = target_pdf / source_pdf;
+        }
 
-        float weight = target_pdf / source_pdf;
         update_reservoir(reservoir, candidate, weight, random_float(seed));
     }
 
-    // finalize: target_pdf at the shading pixel, then W = weight_sum / (p_hat * M)
+    // finalize: m_i = 1/M for the initial pass, so weight_sum becomes (1/M) * sum(p_hat/p)
+    // and W = weight_sum / p_hat_y matches the paper-form output used by downstream merges
+    if (reservoir.M > 0.0f)
+        reservoir.weight_sum /= reservoir.M;
+
     float final_target = target_pdf_self(reservoir.sample, pos_ws, normal_ws, view_dir, albedo, roughness, metallic);
     reservoir.target_pdf = final_target;
-    if (final_target > 0.0f && reservoir.M > 0.0f)
-        reservoir.W = reservoir.weight_sum / (final_target * reservoir.M);
-    else
-        reservoir.W = 0.0f;
+    reservoir.W = (final_target > 0.0f) ? (reservoir.weight_sum / final_target) : 0.0f;
 
     float w_clamp = get_w_clamp_for_sample(reservoir.sample);
     reservoir.W = min(reservoir.W, w_clamp);
@@ -581,13 +573,9 @@ void ray_gen()
     tex_reservoir3[launch_id] = t3;
     tex_reservoir4[launch_id] = t4;
 
-    // pre-shaded gi (full primary brdf * rc_radiance * W); consumed by light_composition
-    // rc_radiance was already soft-clamped at storage so no second clamp is applied here
-    float3 gi = shade_reservoir_path(reservoir, pos_ws, normal_ws, view_dir, albedo, roughness, metallic);
-    if (any(isnan(gi)) || any(isinf(gi)))
-        gi = float3(0, 0, 0);
-
-    tex_uav[launch_id] = float4(gi, saturate(reservoir.confidence));
+    // tex_uav is overwritten by temporal/spatial passes so no shading is needed here
+    // confidence is forwarded so passes that early-out can read a sane value
+    tex_uav[launch_id] = float4(0, 0, 0, saturate(reservoir.confidence));
 }
 
 [shader("closesthit")]

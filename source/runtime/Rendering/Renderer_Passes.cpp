@@ -1069,7 +1069,10 @@ namespace spartan
 
         if (tex_shadows && (tex_shadows->GetWidth() < min_rt_dimension || tex_shadows->GetHeight() < min_rt_dimension))
             return;
-        if (!cvar_ray_traced_shadows.GetValueAs<bool>())
+        // restir pt traces its own per-light shadow rays inline in the spatial pass, so this pass would
+        // be redundant work whose output texture nobody reads, skip it and clear to white once
+        bool restir_pt_owns_shadows = cvar_restir_pt.GetValueAs<bool>() && RHI_Device::IsSupportedRayTracing();
+        if (!cvar_ray_traced_shadows.GetValueAs<bool>() || restir_pt_owns_shadows)
         {
             if (!m_pass_state.cleared_rt_shadows)
             {
