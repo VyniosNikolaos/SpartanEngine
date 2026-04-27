@@ -1192,6 +1192,7 @@ namespace spartan
             light_buffer_entry.color                             = light_component->GetColor();
             light_buffer_entry.position                          = light_component->GetEntity()->GetPosition();
             light_buffer_entry.direction                         = light_component->GetEntity()->GetForward();
+            light_buffer_entry.direction_right                   = light_component->GetEntity()->GetRight();
             light_buffer_entry.area_width                        = light_component->GetAreaWidth();
             light_buffer_entry.area_height                       = light_component->GetAreaHeight();
             light_buffer_entry.flags                             = 0;

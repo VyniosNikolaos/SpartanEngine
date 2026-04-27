@@ -1014,10 +1014,6 @@ namespace spartan
                                     material->SetColor(color);
                                     material->SetProperty(MaterialProperty::EmissiveFromAlbedo, 1.0f);
 
-                                    // get tube mesh dimensions from bounding box
-                                    const math::BoundingBox& bbox = renderable->GetBoundingBox();
-                                    Vector3 size = bbox.GetSize();
-
                                     // area light matching the tube mesh
                                     Entity* entity = World::CreateEntity();
                                     entity->SetObjectName("light_area");
@@ -1035,12 +1031,8 @@ namespace spartan
                                     light->SetFlag(LightFlags::ShadowsScreenSpace, false);
                                     light->SetFlag(LightFlags::Volumetric,         false);
 
-                                    // set area light dimensions from the tube's bounding box
-                                    // tube is oriented horizontally, so use x/z for width and y for height
-                                    float area_width  = max(size.x, size.z); // length of the tube
-                                    float area_height = min(size.x, size.z); // diameter of the tube
-                                    light->SetAreaWidth(area_width);
-                                    light->SetAreaHeight(area_height);
+                                    // size the rectangle to match the tube mesh
+                                    light->FitToMesh(entity_tube_light);
                                 }
                             }
                         };

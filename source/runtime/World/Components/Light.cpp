@@ -23,6 +23,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "pch.h"
 #include "Light.h"
 #include "Camera.h"
+#include "Render.h"
 #include "../World.h"
 #include "../Entity.h"
 #include "../../Rendering/Renderer.h"
@@ -279,6 +280,7 @@ namespace spartan
             "GetAreaWidth",                 &Light::GetAreaWidth,
             "SetAreaHeight",                &Light::SetAreaHeight,
             "GetAreaHeight",                &Light::GetAreaHeight,
+            "FitToMesh",                    &Light::FitToMesh,
 
             "IsInViewFrustrum",             &Light::IsInViewFrustum,
 
@@ -598,6 +600,77 @@ namespace spartan
         UpdateMatrices();
     }
 
+    bool Light::FitToMesh(Entity* source)
+    {
+        // only meaningful for area lights (rectangular emitter)
+        if (m_light_type != LightType::Area || !source)
+            return false;
+
+        Render* renderable = source->GetComponent<Render>();
+        if (!renderable || !renderable->GetMesh())
+            return false;
+
+        // use the mesh local bbox so we capture the true geometry extents regardless of world rotation
+        const BoundingBox& bbox_local = renderable->GetBoundingBoxMesh();
+        const Vector3 bbox_min = bbox_local.GetMin();
+        const Vector3 bbox_max = bbox_local.GetMax();
+        if (bbox_max == bbox_min)
+            return false;
+        const Vector3 bbox_extent  = bbox_max - bbox_min;
+        const Matrix& source_world = source->GetMatrix();
+        const Quaternion source_rotation = source_world.GetRotation();
+
+        // pick the dominant local axis as the long edge of the rectangle
+        Vector3 long_axis_local = Vector3::Right;
+        if (bbox_extent.y >= bbox_extent.x && bbox_extent.y >= bbox_extent.z) long_axis_local = Vector3::Up;
+        else if (bbox_extent.z >= bbox_extent.x && bbox_extent.z >= bbox_extent.y) long_axis_local = Vector3::Forward;
+        const Vector3 long_axis_world = (source_rotation * long_axis_local).Normalized();
+
+        // align the light so right tracks the mesh long axis, keeping the existing forward when possible
+        Vector3 forward = GetEntity()->GetForward();
+        Vector3 right   = long_axis_world - forward * Vector3::Dot(forward, long_axis_world);
+        if (right.LengthSquared() < 1e-6f)
+        {
+            // long axis is parallel to forward, pick any perpendicular as the right
+            const Vector3 ref = abs(Vector3::Dot(forward, Vector3::Up)) < 0.9f ? Vector3::Up : Vector3::Forward;
+            right = ref - forward * Vector3::Dot(forward, ref);
+        }
+        right            = right.Normalized();
+        const Vector3 up = Vector3::Cross(forward, right).Normalized();
+        Quaternion rotation;
+        rotation.FromAxes(right, up, forward);
+        GetEntity()->SetRotation(rotation);
+
+        // center the emitter on the mesh so the rectangle sits over the geometry, not the parent pivot
+        const Vector3 bbox_center_local = (bbox_min + bbox_max) * 0.5f;
+        const Vector3 light_position    = source_world * bbox_center_local;
+        GetEntity()->SetPosition(light_position);
+
+        // project all 8 mesh corners onto the new right/up axes and track extents
+        float min_r = numeric_limits<float>::max();
+        float max_r = numeric_limits<float>::lowest();
+        float min_u = numeric_limits<float>::max();
+        float max_u = numeric_limits<float>::lowest();
+        for (int i = 0; i < 8; ++i)
+        {
+            const Vector3 corner_local(
+                (i & 1) ? bbox_max.x : bbox_min.x,
+                (i & 2) ? bbox_max.y : bbox_min.y,
+                (i & 4) ? bbox_max.z : bbox_min.z
+            );
+            const Vector3 corner_world = source_world * corner_local;
+            const Vector3 to_corner    = corner_world - light_position;
+            const float r              = Vector3::Dot(to_corner, right);
+            const float u              = Vector3::Dot(to_corner, up);
+            min_r = min(min_r, r); max_r = max(max_r, r);
+            min_u = min(min_u, u); max_u = max(max_u, u);
+        }
+
+        SetAreaWidth(max_r - min_r);
+        SetAreaHeight(max_u - min_u);
+        return true;
+    }
+
     bool Light::NeedsSkysphereUpdate() const
     {
         if (m_light_type != LightType::Directional)
@@ -692,12 +765,13 @@ namespace spartan
         }
         else if (m_light_type == LightType::Spot)
         {
-            m_matrix_view[0] = Matrix::CreateLookAtLH(position, position + GetEntity()->GetForward(), Vector3::Up);
+            // use the entity's own up vector so a forward of world up or down does not collapse the cross product
+            m_matrix_view[0] = Matrix::CreateLookAtLH(position, position + GetEntity()->GetForward(), GetEntity()->GetUp());
         }
         else if (m_light_type == LightType::Area)
         {
-            // area light looks along its forward direction
-            m_matrix_view[0] = Matrix::CreateLookAtLH(position, position + GetEntity()->GetForward(), Vector3::Up);
+            // use the entity's own up vector so a forward of world up or down does not collapse the cross product
+            m_matrix_view[0] = Matrix::CreateLookAtLH(position, position + GetEntity()->GetForward(), GetEntity()->GetUp());
         }
         else if (m_light_type == LightType::Point)
         {
@@ -739,16 +813,13 @@ namespace spartan
         }
         else if (m_light_type == LightType::Area)
         {
-            // area lights use orthographic projection based on their dimensions
-            float half_width  = m_area_width * 0.5f;
-            float half_height = m_area_height * 0.5f;
-
-            m_matrix_projection[0] = Matrix::CreateOrthoOffCenterLH(
-                -half_width, half_width,
-                -half_height, half_height,
-                m_range, 0.05f
-            );
-            m_frustums[0] = Frustum(m_matrix_view[0], m_matrix_projection[0]);
+            // wide perspective from the rectangle center so the shadow map captures occluders
+            // across the front hemisphere, an orthographic at the rectangle size only covers
+            // a narrow column directly under the emitter and misses anything outside it
+            const float fov_y_radians = math::deg_to_rad * 120.0f;
+            const float aspect_ratio  = 1.0f;
+            m_matrix_projection[0]    = Matrix::CreatePerspectiveFieldOfViewLH(fov_y_radians, aspect_ratio, m_range, 0.05f);
+            m_frustums[0]             = Frustum(m_matrix_view[0], m_matrix_projection[0]);
         }
         else // spot/point
         {

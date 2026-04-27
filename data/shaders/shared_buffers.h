@@ -209,6 +209,7 @@ struct LightParameters
     SHARED_FLOAT  intensity;
     SHARED_FLOAT3 direction;
     SHARED_FLOAT  range;
+    SHARED_FLOAT3 direction_right;
     SHARED_FLOAT  angle;
     SHARED_UINT   flags;
     SHARED_UINT   screen_space_shadow_slice_index;

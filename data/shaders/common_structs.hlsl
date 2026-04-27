@@ -140,6 +140,7 @@ struct Light
     float  intensity;
     float3 to_pixel;
     float3 forward;
+    float3 right;
     float  distance_to_pixel;
     float  angle;
     float  near;
@@ -199,13 +200,11 @@ struct Light
         return 1.0f / atlas_texel_size[0]; // assuming all slices are the same resolution
     }
 
-    // builds an orthonormal basis for the area light, handling all orientations including straight up/down
+    // builds an orthonormal basis for the area light using the entity's authored right vector
+    // so the rectangle aligns with the gizmo and any explicit rotation around the forward axis
     void compute_area_light_basis(out float3 light_right, out float3 light_up)
     {
-        // choose a reference vector that's not parallel to forward
-        float3 ref = abs(forward.y) < 0.999f ? float3(0, 1, 0) : float3(1, 0, 0);
-        
-        light_right = normalize(cross(ref, forward));
+        light_right = normalize(right);
         light_up    = normalize(cross(forward, light_right));
     }
 
@@ -408,6 +407,7 @@ struct Light
         area_width                       = light.area_width;
         area_height                      = light.area_height;
         forward                          = (is_point() && !is_area()) ? float3(0.0f, 0.0f, 1.0f) : light.direction.xyz;
+        right                            = light.direction_right.xyz;
         distance_to_pixel                = length(surface.position - position);
         
         // for area lights, use representative point for accurate specular reflections
