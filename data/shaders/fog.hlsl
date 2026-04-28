@@ -62,232 +62,231 @@ float get_fog_atmospheric(const float camera_to_pixel_length, const float pixel_
     return saturate(fog_factor);
 }
 
-// Check if position is visible from light (not in shadow), returns 1.0 if lit, 0.0 if shadowed
+// returns 1.0 if the world space position is lit by the given light, 0.0 if it is occluded by a shadow caster
+// the shadow lookup is per light type, area lights reuse the spot path since they render a single 120 fov slice
 float visible(float3 position, Light light, uint2 pixel_pos)
 {
-    bool is_visible = false;
-    float dot_result = dot(light.forward, light.to_pixel);
-    uint slice_index = light.is_point() * step(0.0f, -dot_result);
-
     if (light.is_point())
     {
-        // Point light: use cube map shadow atlas
+        // pick the cube face whose axis dominates the light to point vector
         float3 light_to_pixel = position - light.position;
-        float3 abs_dir = abs(light_to_pixel);
-        
-        // Determine which cube map face to sample based on dominant axis
+        float3 abs_dir        = abs(light_to_pixel);
         uint face_index = (abs_dir.x >= abs_dir.y && abs_dir.x >= abs_dir.z) ? (light_to_pixel.x > 0.0f ? 0u : 1u) :
                           (abs_dir.y >= abs_dir.z)                           ? (light_to_pixel.y > 0.0f ? 2u : 3u) :
                                                                                (light_to_pixel.z > 0.0f ? 4u : 5u);
-        
-        // Transform to shadow space and compute shadow
-        float4 clip_pos = mul(float4(position, 1.0f), light.transform[face_index]);
-        float3 ndc = clip_pos.xyz / clip_pos.w;
-        float2 projected_uv = ndc_to_uv(ndc.xy);
+
+        float4 clip_pos      = mul(float4(position, 1.0f), light.transform[face_index]);
+        if (clip_pos.w <= 0.0f)
+            return 1.0f;
+
+        float3 ndc           = clip_pos.xyz / clip_pos.w;
+        float2 projected_uv  = ndc_to_uv(ndc.xy);
         float3 sample_coords = float3(projected_uv, (float)face_index);
-        float shadow_depth = light.sample_depth(sample_coords);
-        is_visible = ndc.z > shadow_depth;
+        float  shadow_depth  = light.sample_depth(sample_coords);
+        return ndc.z > shadow_depth ? 1.0f : 0.0f;
     }
-    else if (light.is_directional())
+
+    if (light.is_directional())
     {
-        // Directional lights use cascaded shadow maps - check both near and far cascades
+        // cascaded shadow maps, lerp between near and far based on distance from the near cascade edge
         const uint near_cascade = 0;
-        const uint far_cascade = 1;
-        
-        // Check near cascade
+        const uint far_cascade  = 1;
+
         float3 projected_pos_near = world_to_ndc(position, light.transform[near_cascade]);
-        float2 projected_uv_near = ndc_to_uv(projected_pos_near);
-        float shadow_near = 1.0f; // Default to lit if out of bounds
-        
+        float2 projected_uv_near  = ndc_to_uv(projected_pos_near);
+        float  shadow_near        = 1.0f;
         if (is_valid_uv(projected_uv_near))
         {
             float3 sample_coords_near = float3(projected_uv_near.x, projected_uv_near.y, near_cascade);
-            float shadow_depth_near = light.sample_depth(sample_coords_near);
-            shadow_near = (projected_pos_near.z > shadow_depth_near) ? 1.0f : 0.0f;
+            float  shadow_depth_near  = light.sample_depth(sample_coords_near);
+            shadow_near               = (projected_pos_near.z > shadow_depth_near) ? 1.0f : 0.0f;
         }
-        
-        // Check far cascade
+
         float3 projected_pos_far = world_to_ndc(position, light.transform[far_cascade]);
-        float2 projected_uv_far = ndc_to_uv(projected_pos_far);
-        float shadow_far = 1.0f; // Default to lit if out of bounds
-        
+        float2 projected_uv_far  = ndc_to_uv(projected_pos_far);
+        float  shadow_far        = 1.0f;
         if (is_valid_uv(projected_uv_far))
         {
             float3 sample_coords_far = float3(projected_uv_far.x, projected_uv_far.y, far_cascade);
-            float shadow_depth_far = light.sample_depth(sample_coords_far);
-            shadow_far = (projected_pos_far.z > shadow_depth_far) ? 1.0f : 0.0f;
+            float  shadow_depth_far  = light.sample_depth(sample_coords_far);
+            shadow_far               = (projected_pos_far.z > shadow_depth_far) ? 1.0f : 0.0f;
         }
-        
-        // Blend between cascades based on distance from cascade edge (same as shadow_mapping.hlsl)
-        float edge_dist = max(abs(projected_pos_near.x), abs(projected_pos_near.y));
+
+        float edge_dist    = max(abs(projected_pos_near.x), abs(projected_pos_near.y));
         float blend_factor = smoothstep(0.7f, 1.0f, edge_dist);
-        float shadow = lerp(shadow_near, shadow_far, blend_factor);
-        
-        is_visible = shadow > 0.5f;
-    }
-    else
-    {
-        // Spot light: use single cascade
-        float3 projected_pos = world_to_ndc(position, light.transform[slice_index]);
-        float2 projected_uv  = ndc_to_uv(projected_pos);
-        if (is_valid_uv(projected_uv))
-        {
-            float3 sample_coords = float3(projected_uv.x, projected_uv.y, slice_index);
-            float shadow_depth   = light.sample_depth(sample_coords);
-            is_visible           = projected_pos.z > shadow_depth;
-        }
-        else
-        {
-            is_visible = true; // Out of bounds, assume lit
-        }
+        return lerp(shadow_near, shadow_far, blend_factor);
     }
 
-    return is_visible ? 1.0f : 0.0f;
+    // spot or area light, both render a single perspective slice into the atlas
+    // area lights use a 120 fov slice from the rectangle origin so points inside the front hemisphere are covered
+    float4 clip_pos = mul(float4(position, 1.0f), light.transform[0]);
+    if (clip_pos.w <= 0.0f)
+        return 1.0f;
+
+    float3 projected_pos = clip_pos.xyz / clip_pos.w;
+    float2 projected_uv  = ndc_to_uv(projected_pos.xy);
+    if (!is_valid_uv(projected_uv))
+        return 1.0f; // outside the cone, the volumetric attenuation already culls back hemisphere contribution
+
+    float3 sample_coords = float3(projected_uv.x, projected_uv.y, 0.0f);
+    float  shadow_depth  = light.sample_depth(sample_coords);
+    return projected_pos.z > shadow_depth ? 1.0f : 0.0f;
 }
 
-// Henyey-Greenstein phase function for volumetric scattering (g: -1=backscatter, 0=isotropic, 1=forward scatter)
+// henyey greenstein phase function, g = 0 isotropic, g positive forward scatter, g negative back scatter
+// returned in 1/sr, the scattering coefficient sigma_s controls the overall brightness
 float henyey_greenstein_phase(float cos_theta, float g)
 {
-    cos_theta = clamp(cos_theta, -1.0f, 1.0f);
-    float g2 = g * g;
+    cos_theta   = clamp(cos_theta, -1.0f, 1.0f);
+    float g2    = g * g;
     float denom = 1.0f + g2 - 2.0f * g * cos_theta;
-    float phase = (1.0f - g2) / (4.0f * PI * pow(max(denom, 0.0001f), 1.5f));
-    // Heavily normalize phase function to prevent unrealistic bright halo around sun
-    return min(phase * 0.001f, 0.01f);
+    return (1.0f - g2) / (4.0f * PI * pow(max(denom, 1e-4f), 1.5f));
 }
 
-// Compute volumetric fog using raymarching with phase function and shadow mapping
+// computes the local light direction and the volumetric attenuation at a sample inside the medium
+// area lights use the closest point on the rectangle so tube emitters illuminate the volume along their full length
+// instead of only near the centroid, point and spot use the centroid with a soft minimum distance to avoid singularities
+void compute_volumetric_light_sample(Light light, float3 sample_pos, out float3 light_dir, out float local_atten)
+{
+    if (light.is_directional())
+    {
+        light_dir   = normalize(-light.forward);
+        local_atten = 1.0f;
+        return;
+    }
+
+    // soft minimum distance, treats analytical lights as small spheres so the inverse square does not blow up at the surface
+    const float soft_radius = 0.05f;
+
+    if (light.is_area())
+    {
+        float3 closest    = light.compute_closest_point_on_area(sample_pos);
+        float3 to_light   = closest - sample_pos;
+        float  dist       = length(to_light);
+        light_dir         = (dist > 1e-4f) ? to_light / dist : light.forward;
+
+        float dist_eff    = max(dist, soft_radius);
+        float range_atten = light.compute_attenuation_range(dist);
+        // emitter only radiates into its front hemisphere, dot uses light forward and the direction from emitter to sample
+        float emission_cos = saturate(dot(light.forward, -light_dir));
+        local_atten        = (range_atten / (dist_eff * dist_eff)) * emission_cos;
+        return;
+    }
+
+    // point or spot
+    float3 to_light = light.position - sample_pos;
+    float  dist     = length(to_light);
+    light_dir       = (dist > 1e-4f) ? to_light / dist : float3(0.0f, 1.0f, 0.0f);
+
+    float dist_eff    = max(dist, soft_radius);
+    float range_atten = light.compute_attenuation_range(dist);
+    local_atten       = range_atten / (dist_eff * dist_eff);
+
+    if (light.is_spot())
+    {
+        float cos_outer   = cos(light.angle);
+        float cos_inner   = cos(light.angle * 0.9f);
+        float scale       = 1.0f / max(0.0001f, cos_inner - cos_outer);
+        // angle between the spot forward and the direction from light to sample, equals -light_dir
+        float cd          = dot(-light_dir, light.forward);
+        float angle_atten = saturate((cd - cos_outer) * scale);
+        local_atten      *= angle_atten * angle_atten;
+    }
+}
+
+// volumetric fog raymarch, single scattering with beer lambert transmittance
+// works for any light type, the per type differences are isolated in compute_volumetric_light_sample and visible
 float3 compute_volumetric_fog(Surface surface, Light light, uint2 pixel_pos)
 {
-    const float  fog_density     = pass_get_f3_value().y * 0.03f;
-    const float  total_distance  = surface.camera_to_pixel_length;
-    const float3 ray_origin      = get_camera_position();
-    const float3 ray_direction   = normalize(surface.camera_to_pixel);
-    
-    if (total_distance < 0.1f)
+    // sigma_s is the medium scattering coefficient in 1/m, sigma_t is extinction
+    // the engine packs the user facing fog density into pass_get_f3_value().y so r.fog scales it linearly
+    const float sigma_s        = pass_get_f3_value().y * 0.0008f;
+    const float sigma_t        = sigma_s; // pure scattering, no absorption
+    const float total_distance = surface.camera_to_pixel_length;
+
+    if (total_distance < 0.1f || sigma_s <= 0.0f)
         return 0.0f;
-    
-    // Adaptive step count: closer = more samples, distant = fewer (use smoothstep to avoid quantization bands)
-    const float  max_distance    = 1000.0f;
-    const uint   min_steps       = 16;
-    const uint   max_steps       = 64;
-    const float  distance_factor = saturate(total_distance / max_distance);
-    const float  smooth_factor   = smoothstep(0.0f, 1.0f, distance_factor);
-    const float  step_count_float = lerp((float)min_steps, (float)max_steps, smooth_factor);
-    const uint   step_count      = (uint)step_count_float;
-    const float  step_length     = total_distance / step_count_float;
+
+    const float3 ray_origin    = get_camera_position();
+    const float3 ray_direction = normalize(surface.camera_to_pixel);
+
+    // restrict the march to the slab of the ray where the light can actually contribute
+    // for punctual emitters this is the intersection with their range sphere, clamped to a volumetric horizon
+    // because 1/r^2 makes contribution invisible past a few tens of meters anyway
+    // without this clip, sky pixels (depth at the far plane) would spread the same sample budget over kilometers
+    // and step density would collapse to where small beams disappear into noise
+    float march_start = 0.0f;
+    float march_end   = total_distance;
+
+    if (!light.is_directional())
+    {
+        const float volumetric_horizon = 60.0f;
+        float effective_range          = min(light.far, volumetric_horizon);
+
+        // ray sphere intersection around the light position
+        float3 oc = ray_origin - light.position;
+        float  b  = dot(oc, ray_direction);
+        float  c  = dot(oc, oc) - effective_range * effective_range;
+        float  h  = b * b - c;
+        if (h < 0.0f)
+            return 0.0f;
+
+        h = sqrt(h);
+        march_start = max(0.0f, -b - h);
+        march_end   = min(total_distance, -b + h);
+        if (march_end <= march_start)
+            return 0.0f;
+    }
+
+    const float march_length = march_end - march_start;
+    if (march_length < 0.1f)
+        return 0.0f;
+
+    // step count proportional to march length, ~1m per sample for fine beam capture, hard capped on both ends
+    const uint  min_steps        = 16;
+    const uint  max_steps        = 64;
+    const float target_step      = 1.0f;
+    const float step_count_float = clamp(march_length / target_step, (float)min_steps, (float)max_steps);
+    const uint  step_count       = (uint)step_count_float;
+    const float step_length      = march_length / step_count_float;
     const float3 ray_step        = ray_direction * step_length;
-    
-    // Temporal dithering for ray start offset (reduces banding)
-    float temporal_noise = noise_interleaved_gradient(pixel_pos, true);
-    float noise_offset = (temporal_noise * 2.0f - 1.0f) * step_length * 0.5f;
-    float3 ray_pos     = ray_origin + ray_direction * noise_offset;
-    
-    const float phase_g = 0.7f; // Phase function: forward scattering
-    const bool is_directional = light.is_directional();
-    float3 light_dir_directional = is_directional ? normalize(-light.forward) : 0.0f;
-    float3 inscatter = 0.0f;
-    float  transmittance = 1.0f;
-    
-    if (surface.is_sky())
+
+    // temporal jitter, taa resolves the noise into smooth scattering
+    const float temporal_noise = noise_interleaved_gradient(pixel_pos, true);
+    float3 ray_pos = ray_origin + ray_direction * (march_start + temporal_noise * step_length);
+
+    // moderate forward scattering, dust beams readable for punctual lights without producing a bright sun halo
+    const float phase_g           = 0.6f;
+    const float min_transmittance = 0.005f;
+
+    // start with the extinction accumulated over the unmarched segment from camera to march_start
+    float3 inscatter     = 0.0f;
+    float  transmittance = exp(-sigma_t * march_start);
+
+    [loop]
+    for (uint i = 0; i < step_count; i++)
     {
-        // Sky: raymarch through entire volume for proper volumetric fog (don't use simplified approximation)
-        const float min_transmittance = 0.01f;
-        float step_noise_seed = frac(temporal_noise * 7.13f);
-        
-        for (uint i = 0; i < step_count; i++)
+        if (transmittance < min_transmittance)
+            break;
+
+        float3 light_dir;
+        float  local_atten;
+        compute_volumetric_light_sample(light, ray_pos, light_dir, local_atten);
+
+        if (local_atten > 0.0f)
         {
-            if (transmittance < min_transmittance)
-                break;
-            
-            // Compute light direction per step
-            float3 light_dir;
-            if (is_directional)
-            {
-                light_dir = light_dir_directional;
-            }
-            else
-            {
-                float3 to_light = light.position - ray_pos;
-                float dist_to_light = length(to_light);
-                light_dir = (dist_to_light > 1e-6f) ? to_light / dist_to_light : float3(0.0f, 1.0f, 0.0f);
-            }
-            
-            // Compute phase function per step
-            float cos_theta = dot(ray_direction, light_dir);
-            float phase = henyey_greenstein_phase(cos_theta, phase_g);
-            
-            // Sample density at current position
+            float cos_theta  = dot(ray_direction, light_dir);
+            float phase      = henyey_greenstein_phase(cos_theta, phase_g);
             float visibility = visible(ray_pos, light, pixel_pos);
-            float attenuation = light.compute_attenuation_volumetric(ray_pos);
-            float local_density = fog_density * visibility * attenuation;
-            
-            // Per-step dithering
-            float step_jitter = (frac(step_noise_seed + (float)i * 0.618f) * 2.0f - 1.0f) * 0.1f;
-            float jittered_step_length = step_length * (1.0f + step_jitter);
-            
-            // Transmittance through step (Beer's law)
-            float step_tau = local_density * jittered_step_length;
-            float step_transmittance = exp(-step_tau);
-            
-            // Accumulate in-scatter
-            float3 step_inscatter = local_density * phase * transmittance * jittered_step_length;
-            inscatter += step_inscatter;
-            transmittance *= step_transmittance;
-            ray_pos += ray_step;
+
+            // single scattering integrand, sigma_s * phase * incident_radiance * transmittance * dt
+            inscatter += sigma_s * phase * visibility * local_atten * transmittance * step_length;
         }
+
+        transmittance *= exp(-sigma_t * step_length);
+        ray_pos       += ray_step;
     }
-    else
-    {
-        // Raymarch through volume
-        const float min_transmittance = 0.01f; // Early exit
-        float step_noise_seed = frac(temporal_noise * 7.13f);
-        
-        for (uint i = 0; i < step_count; i++)
-        {
-            if (transmittance < min_transmittance)
-                break;
-            
-            // Compute light direction per step for point/spot lights (fixes incorrect approximation)
-            float3 light_dir;
-            if (is_directional)
-            {
-                light_dir = light_dir_directional;
-            }
-            else
-            {
-                // Compute actual light direction from current ray position
-                float3 to_light = light.position - ray_pos;
-                float dist_to_light = length(to_light);
-                light_dir = (dist_to_light > 1e-6f) ? to_light / dist_to_light : float3(0.0f, 1.0f, 0.0f);
-            }
-            
-            // Compute phase function per step (important for point/spot lights)
-            float cos_theta = dot(ray_direction, light_dir);
-            float phase = henyey_greenstein_phase(cos_theta, phase_g);
-            
-            // Sample density at current position
-            float visibility = visible(ray_pos, light, pixel_pos);
-            float attenuation = light.compute_attenuation_volumetric(ray_pos);
-            float local_density = fog_density * visibility * attenuation;
-            
-            // Per-step dithering to reduce banding (subtle jitter on step length)
-            float step_jitter = (frac(step_noise_seed + (float)i * 0.618f) * 2.0f - 1.0f) * 0.1f;
-            float jittered_step_length = step_length * (1.0f + step_jitter);
-            
-            // Transmittance through step (Beer's law)
-            float step_tau = local_density * jittered_step_length;
-            float step_transmittance = exp(-step_tau);
-            
-            // Accumulate in-scatter: density * phase * transmittance * step_length
-            float3 step_inscatter = local_density * phase * transmittance * jittered_step_length;
-            inscatter += step_inscatter;
-            transmittance *= step_transmittance;
-            ray_pos += ray_step;
-        }
-    }
-    
-    // Multiply by light properties (inscatter is already in correct units: density * phase * transmittance * distance)
-    float3 result = inscatter * light.intensity * light.color;
-    return result;
+
+    // light radiance scaling, color and intensity are constants along the ray so they pull out of the integral
+    return inscatter * light.intensity * light.color;
 }
