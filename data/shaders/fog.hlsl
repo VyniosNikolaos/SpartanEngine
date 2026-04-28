@@ -288,5 +288,17 @@ float3 compute_volumetric_fog(Surface surface, Light light, uint2 pixel_pos)
     }
 
     // light radiance scaling, color and intensity are constants along the ray so they pull out of the integral
-    return inscatter * light.intensity * light.color;
+    float3 result = inscatter * light.intensity * light.color;
+
+    // fade the contribution by surface distance for non sky pixels
+    // the inscatter is largest near the camera and becomes a constant additive haze on every pixel
+    // whose ray passes through the light volume, without this fade it lights up the entire ground
+    // plane out to the horizon as a uniform glow that does not match the falling off surface lighting
+    // sky pixels keep the full inscatter so the beams stay visible against the horizon
+    if (!surface.is_sky())
+    {
+        result *= exp(-total_distance * 0.005f);
+    }
+
+    return result;
 }

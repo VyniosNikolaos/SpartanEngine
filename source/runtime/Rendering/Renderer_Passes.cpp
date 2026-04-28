@@ -1049,6 +1049,16 @@ namespace spartan
             cmd_list->SetTexture(Renderer_BindingsSrv::tex4, tex_skysphere);
             cmd_list->SetTexture(Renderer_BindingsSrv::tex5, tex_shadow_atlas);
             cmd_list->SetTexture(static_cast<uint32_t>(Renderer_BindingsUav::tex), tex_reflections, rhi_all_mips, 0, true);
+
+            // bind tlas for inline ray traced shadows at the hit, every light type uses this
+            // path so reflections darken correctly inside enclosed or shadowed geometry
+            if (RHI_AccelerationStructure* tlas = GetTopLevelAccelerationStructure())
+            {
+                if (tlas->GetRhiResource())
+                {
+                    cmd_list->SetAccelerationStructure(Renderer_BindingsSrv::tlas, tlas);
+                }
+            }
             
             m_pcb_pass_cpu.set_f3_value(static_cast<float>(m_count_active_lights), static_cast<float>(tex_skysphere->GetMipCount()));
             cmd_list->PushConstants(m_pcb_pass_cpu);

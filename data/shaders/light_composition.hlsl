@@ -146,8 +146,15 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
         float3 camera_position = get_camera_position();
         float3 view_dir        = normalize(surface.position - camera_position);
     
-        // sample sky in view direction
-        float2 view_uv        = direction_sphere_uv(view_dir);
+        // sample sky in view direction, clamped to the upper hemisphere with a soft fade across
+        // the horizon, the skysphere mirrors the lower hemisphere at 0.3x luminance for ibl which
+        // produces a hard black band at the horizon when distant ground pixels (view_dir.y just
+        // below zero) sample the dimmed half while sky pixels just above sample the bright half
+        // atmospheric haze in real life is lit by the sky above regardless of which way the ray
+        // points, so we lift y toward the upper hemisphere for the fog tint
+        float3 view_dir_sky = float3(view_dir.x, max(view_dir.y, 0.0f), view_dir.z);
+        view_dir_sky        = normalize(view_dir_sky);
+        float2 view_uv        = direction_sphere_uv(view_dir_sky);
         float3 sky_color_view = tex2.SampleLevel(samplers[sampler_trilinear_clamp], view_uv, sky_mip).rgb;
     
         // sample sky in the light direction
@@ -169,14 +176,28 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
         float fog_atmospheric = get_fog_atmospheric(distance_from_camera, surface.position.y);
         float3 fog_volumetric = tex5.SampleLevel(samplers[sampler_point_clamp], surface.uv, 0).rgb;
         
-        // fog blending: atmospheric (base), volumetric (additive with shadows)
-        // base atmospheric fog in-scatter (no shadows)
-        float3 fog_inscatter = fog_atmospheric * sky_color;
-        
-        // add volumetric fog (already includes all lights with shadows)
-        // volumetric fog is computed per-light in light.hlsl and accumulated
-        // it already accounts for shadow maps, so we can add it directly
-        light_atmospheric = fog_inscatter + fog_volumetric;
+        if (surface.is_sky())
+        {
+            // sky already integrates atmospheric scattering inside skysphere.hlsl, the
+            // previous code added fog_atmospheric * sky_color on top which roughly
+            // doubled the sky brightness and amplified the discontinuity against any
+            // unlit ground edge below, only volumetric beams (god rays) should be
+            // additive on the sky
+            light_atmospheric = fog_volumetric;
+        }
+        else
+        {
+            // proper extinction based fog blending, surface lighting fades along the
+            // optical path while sky inscatter fills in the missing energy, the
+            // previous purely additive form left distant unlit ground pitch black no
+            // matter how dense the fog became
+            float transmittance = 1.0f - fog_atmospheric;
+            light_diffuse  *= transmittance;
+            light_specular *= transmittance;
+            light_emissive *= transmittance;
+            light_gi       *= transmittance;
+            light_atmospheric = fog_atmospheric * sky_color + fog_volumetric;
+        }
     }
 
     // transparent surfaces sample background via refraction, no need to blend
