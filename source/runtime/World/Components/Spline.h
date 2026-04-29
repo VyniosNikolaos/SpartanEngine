@@ -25,6 +25,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "Component.h"
 #include "../../Math/Vector2.h"
 #include "../../Math/Vector3.h"
+#include "../../Core/Event.h"
 //=============================
 
 namespace spartan
@@ -139,6 +140,9 @@ namespace spartan
         void SetInstanceRandomYaw(float degrees)                { m_instance_random_yaw = degrees; }
 
     private:
+        // regenerate the mesh after the world finishes loading
+        void OnWorldLoaded();
+
         // gather control point world positions from child entities
         std::vector<math::Vector3> GetControlPoints() const;
 
@@ -154,6 +158,9 @@ namespace spartan
 
         // generalized mesh extrusion along the spline using the given cross-section
         void GenerateMesh(const std::vector<math::Vector3>& spline_points, const std::vector<math::Vector2>& profile_points, bool close_profile);
+
+        // capture current property/control point state to compare against next tick
+        void SnapshotState();
 
         // catmull-rom interpolation between four points
         static math::Vector3 CatmullRom(
@@ -219,6 +226,9 @@ namespace spartan
 
         // generated mesh
         std::shared_ptr<Mesh> m_mesh;
+
+        // event subscription handle for WorldLoaded
+        subscription_handle m_world_loaded_handle = 0;
 
         // snapshot of previous state for auto-regeneration
         bool m_prev_closed_loop                         = false;

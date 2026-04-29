@@ -73,6 +73,8 @@ namespace spartan
         WindowFullScreenToggled,       // The window has been toggled to full screen
         // Display
         HdrToggled,                    // HDR output has been toggled on or off
+        // World
+        WorldLoaded,                   // a world finished loading and entities are ready
         // Max
         Max
     };

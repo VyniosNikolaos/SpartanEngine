@@ -29,6 +29,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "../Profiling/Profiler.h"
 #include "../Core/ProgressTracker.h"
 #include "../Core/ThreadPool.h"
+#include "../Core/Event.h"
 #include "Components/Render.h"
 #include "Components/Camera.h"
 #include "Components/Light.h"
@@ -66,6 +67,8 @@ namespace spartan
         uint32_t audio_source_count = 0;
         atomic<bool> resolve        = false;
         bool was_in_editor_mode     = false;
+        // tracks observed loading transition so the WorldLoaded event fires exactly once per load
+        bool was_loading            = false;
         BoundingBox bounding_box    = BoundingBox::Unit;
         Entity* camera              = nullptr;
         Entity* light               = nullptr;
@@ -798,9 +801,22 @@ namespace spartan
     {
         // loading can happen in the background
         if (ProgressTracker::IsLoading())
+        {
+            was_loading = true;
             return;
+        }
 
         SP_PROFILE_CPU();
+
+        // detect the loading -> not loading transition and notify listeners
+        // we move pending entities into the active list first so any subscribers
+        // that traverse the world see a fully populated scene
+        if (was_loading)
+        {
+            was_loading = false;
+            ProcessPendingAdditions();
+            SP_FIRE_EVENT(EventType::WorldLoaded);
+        }
 
         // detect game toggling
         const bool started = Engine::IsFlagSet(EngineMode::Playing) && was_in_editor_mode;

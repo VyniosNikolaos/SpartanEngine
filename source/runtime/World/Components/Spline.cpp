@@ -46,11 +46,18 @@ namespace spartan
 
     Spline::Spline(Entity* entity) : Component(entity)
     {
-
+        // regenerate the mesh on scene boot so meshes appear without requiring play mode
+        m_world_loaded_handle = SP_SUBSCRIBE_TO_EVENT(EventType::WorldLoaded, SP_EVENT_HANDLER(OnWorldLoaded));
     }
 
     Spline::~Spline()
     {
+        if (m_world_loaded_handle != 0)
+        {
+            SP_UNSUBSCRIBE_FROM_EVENT(EventType::WorldLoaded, m_world_loaded_handle);
+            m_world_loaded_handle = 0;
+        }
+
         ClearRoadMesh();
 
         // don't call ClearInstances() here because during destruction the world's entity
@@ -59,18 +66,43 @@ namespace spartan
         // the world already removes all descendants when an entity is removed or shut down.
     }
 
+    void Spline::OnWorldLoaded()
+    {
+        // only regenerate when the saved scene actually had a generated mesh
+        if (!m_needs_road_regeneration)
+            return;
+
+        m_needs_road_regeneration = false;
+
+        if (m_mesh_enabled && GetControlPointCount() >= 2)
+        {
+            GenerateRoadMesh();
+            SnapshotState();
+        }
+    }
+
+    void Spline::SnapshotState()
+    {
+        m_prev_closed_loop        = m_closed_loop;
+        m_prev_resolution         = m_resolution;
+        m_prev_road_width         = m_road_width;
+        m_prev_road_width_end     = m_road_width_end;
+        m_prev_profile            = m_profile;
+        m_prev_height             = m_height;
+        m_prev_thickness          = m_thickness;
+        m_prev_tube_sides         = m_tube_sides;
+        m_prev_uv_tiling_u        = m_uv_tiling_u;
+        m_prev_uv_tiling_v        = m_uv_tiling_v;
+        m_prev_sidewalk_enabled   = m_sidewalk_enabled;
+        m_prev_sidewalk_width     = m_sidewalk_width;
+        m_prev_curb_height        = m_curb_height;
+        m_prev_conform_to_terrain = m_conform_to_terrain;
+        m_prev_terrain_offset     = m_terrain_offset;
+        m_prev_control_points     = GetControlPointsLocal();
+    }
+
     void Spline::Tick()
     {
-        // if the spline had a mesh when saved, regenerate it now that child entities are loaded
-        if (m_needs_road_regeneration)
-        {
-            m_needs_road_regeneration = false;
-            if (m_mesh_enabled)
-            {
-                GenerateRoadMesh();
-            }
-        }
-
         // only draw spline visualization in edit mode
         if (Engine::IsFlagSet(EngineMode::Playing))
             return;
@@ -102,23 +134,7 @@ namespace spartan
             if (dirty || mesh_missing)
             {
                 GenerateRoadMesh();
-
-                m_prev_closed_loop        = m_closed_loop;
-                m_prev_resolution         = m_resolution;
-                m_prev_road_width         = m_road_width;
-                m_prev_road_width_end     = m_road_width_end;
-                m_prev_profile            = m_profile;
-                m_prev_height             = m_height;
-                m_prev_thickness          = m_thickness;
-                m_prev_tube_sides         = m_tube_sides;
-                m_prev_uv_tiling_u        = m_uv_tiling_u;
-                m_prev_uv_tiling_v        = m_uv_tiling_v;
-                m_prev_sidewalk_enabled   = m_sidewalk_enabled;
-                m_prev_sidewalk_width     = m_sidewalk_width;
-                m_prev_curb_height        = m_curb_height;
-                m_prev_conform_to_terrain = m_conform_to_terrain;
-                m_prev_terrain_offset     = m_terrain_offset;
-                m_prev_control_points     = current_points;
+                SnapshotState();
             }
         }
         else if (m_mesh_enabled && control_point_count < 2 && HasRoadMesh())
