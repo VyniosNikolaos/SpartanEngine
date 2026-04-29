@@ -501,18 +501,26 @@ namespace spartan
         if (!mesh_car)
             return nullptr;
 
-        Entity* car_entity = mesh_car->GetRootEntity();
+        Entity* mesh_root = mesh_car->GetRootEntity();
+        if (!mesh_root)
+            return nullptr;
+
+        // mesh root is shared via the resource cache, clone so every car instance gets its own hierarchy
+        Entity* car_entity = mesh_root->Clone();
+        car_entity->SetActive(true);
+        mesh_root->SetActive(false);
+
         car_entity->SetObjectName("ferrari_laferrari");
         car_entity->SetScale(2.0f);
 
-        if (remove_wheels)
+        auto to_lower = [](std::string s)
         {
-            auto to_lower = [](std::string s)
-            {
-                std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::tolower(c); });
-                return s;
-            };
+            std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::tolower(c); });
+            return s;
+        };
 
+        // sync tire and brake disc active state with remove_wheels so cloned bodies match the requested config
+        {
             std::vector<Entity*> descendants;
             car_entity->GetDescendants(&descendants);
 
@@ -520,15 +528,17 @@ namespace spartan
             {
                 std::string entity_name = to_lower(descendant->GetObjectName());
 
-                if (entity_name.find("tire 1")    != std::string::npos ||
-                    entity_name.find("tire 2")    != std::string::npos ||
-                    entity_name.find("tire 3")    != std::string::npos ||
-                    entity_name.find("tire 4")    != std::string::npos ||
-                    entity_name.find("brakerear") != std::string::npos)
-                {
-                    descendant->SetActive(false);
+                bool is_excluded_part = entity_name.find("tire 1")    != std::string::npos ||
+                                       entity_name.find("tire 2")    != std::string::npos ||
+                                       entity_name.find("tire 3")    != std::string::npos ||
+                                       entity_name.find("tire 4")    != std::string::npos ||
+                                       entity_name.find("brakerear") != std::string::npos;
 
-                    if (out_excluded_entities)
+                if (is_excluded_part)
+                {
+                    descendant->SetActive(!remove_wheels);
+
+                    if (remove_wheels && out_excluded_entities)
                     {
                         out_excluded_entities->push_back(descendant);
                     }

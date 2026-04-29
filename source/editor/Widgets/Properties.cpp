@@ -1918,6 +1918,10 @@ void Properties::ShowSpline(spartan::Spline* spline) const
         bool mesh_enabled           = spline->GetMeshEnabled();
         float inst_spacing          = spline->GetInstanceSpacing();
         bool inst_align             = spline->GetAlignInstancesToSpline();
+        uint64_t inst_template_id   = spline->GetInstanceTemplateId();
+        float inst_lateral_offset   = spline->GetInstanceLateralOffset();
+        bool inst_mirror            = spline->GetInstanceMirror();
+        bool inst_face_inward       = spline->GetInstanceFaceInward();
         float inst_random_offset    = spline->GetInstanceRandomOffset();
         float inst_random_scale_min = spline->GetInstanceRandomScaleMin();
         float inst_random_scale_max = spline->GetInstanceRandomScaleMax();
@@ -2100,18 +2104,61 @@ void Properties::ShowSpline(spartan::Spline* spline) const
         layout::separator();
         layout::section_header("Instancing");
 
+        // template entity picker (any entity in the world that is not the spline itself)
+        const vector<Entity*>& all_entities = World::GetEntities();
+        vector<string> template_names;
+        vector<uint64_t> template_ids;
+        uint32_t template_selected_index = 0;
+
+        template_names.push_back("(default cylinder)");
+        template_ids.push_back(0);
+
+        for (Entity* candidate : all_entities)
+        {
+            if (!candidate || candidate == spline->GetEntity())
+                continue;
+
+            template_ids.push_back(candidate->GetObjectId());
+            template_names.push_back(candidate->GetObjectName());
+
+            if (candidate->GetObjectId() == inst_template_id)
+            {
+                template_selected_index = static_cast<uint32_t>(template_names.size() - 1);
+            }
+        }
+
+        if (property_combo("Template", template_names, &template_selected_index, "entity hierarchy to clone for each instance"))
+        {
+            spline->SetInstanceTemplateId(template_ids[template_selected_index]);
+        }
+
         if (property_float("Spacing", &inst_spacing, 0.1f, 0.5f, 100.0f, "distance between instances in meters", "%.1f m"))
         {
             spline->SetInstanceSpacing(inst_spacing);
         }
 
-        if (property_toggle("Align to Spline", &inst_align, "rotate instances to follow the spline direction"))
+        if (property_float("Lateral Offset", &inst_lateral_offset, 0.1f, 0.0f, 100.0f, "perpendicular distance from the spline centerline", "%.2f m"))
+        {
+            spline->SetInstanceLateralOffset(inst_lateral_offset);
+        }
+
+        if (property_toggle("Mirror", &inst_mirror, "also spawn a mirrored instance on the opposite side"))
+        {
+            spline->SetInstanceMirror(inst_mirror);
+        }
+
+        if (property_toggle("Face Inward", &inst_face_inward, "orient instances so their local +z faces the spline centerline"))
+        {
+            spline->SetInstanceFaceInward(inst_face_inward);
+        }
+
+        if (property_toggle("Align to Spline", &inst_align, "rotate instances to follow the spline direction (ignored when face inward is on)"))
         {
             spline->SetAlignInstancesToSpline(inst_align);
         }
 
         // procedural placement randomization
-        if (property_float("Random Offset", &inst_random_offset, 0.1f, 0.0f, 50.0f, "random lateral offset from the spline", "%.1f m"))
+        if (property_float("Random Offset", &inst_random_offset, 0.1f, 0.0f, 50.0f, "random lateral jitter in addition to the lateral offset", "%.1f m"))
         {
             spline->SetInstanceRandomOffset(inst_random_offset);
         }

@@ -129,6 +129,22 @@ namespace spartan
         const std::string& GetInstanceMeshPath() const          { return m_instance_mesh_path; }
         void SetInstanceMeshPath(const std::string& path)       { m_instance_mesh_path = path; }
 
+        // template entity to clone for each instance (0 = use built-in cylinder)
+        uint64_t GetInstanceTemplateId() const                  { return m_instance_template_id; }
+        void SetInstanceTemplateId(uint64_t id)                 { m_instance_template_id = id; }
+
+        // perpendicular offset from the spline centerline (along the right vector)
+        float GetInstanceLateralOffset() const                  { return m_instance_lateral_offset; }
+        void SetInstanceLateralOffset(float offset)             { m_instance_lateral_offset = offset; }
+
+        // also spawn a mirrored instance on the opposite side
+        bool GetInstanceMirror() const                          { return m_instance_mirror; }
+        void SetInstanceMirror(bool mirror)                     { m_instance_mirror = mirror; }
+
+        // orient instances so their local +z faces the spline centerline (overrides align_to_spline)
+        bool GetInstanceFaceInward() const                      { return m_instance_face_inward; }
+        void SetInstanceFaceInward(bool face_inward)            { m_instance_face_inward = face_inward; }
+
         // procedural placement randomization
         float GetInstanceRandomOffset() const                   { return m_instance_random_offset; }
         void SetInstanceRandomOffset(float offset)              { m_instance_random_offset = offset; }
@@ -216,6 +232,10 @@ namespace spartan
         float m_instance_spacing              = 5.0f;
         bool m_align_instances_to_spline      = true;
         std::string m_instance_mesh_path;
+        uint64_t m_instance_template_id       = 0;
+        float m_instance_lateral_offset       = 0.0f;
+        bool m_instance_mirror                = false;
+        bool m_instance_face_inward           = false;
         float m_instance_random_offset        = 0.0f;
         float m_instance_random_scale_min     = 1.0f;
         float m_instance_random_scale_max     = 1.0f;

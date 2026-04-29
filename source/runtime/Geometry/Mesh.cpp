@@ -256,6 +256,10 @@ namespace spartan
     {
         SP_ASSERT_MSG(indices != nullptr || vertices != nullptr, "Indices and vertices vectors can't both be null");
 
+        // lock for the duration of the read so concurrent AddGeometry/AddLod calls cannot
+        // reallocate m_vertices/m_indices and invalidate the iterators we are reading from
+        lock_guard lock(m_mutex);
+
         // validate sub-mesh index
         if (sub_mesh_index >= m_sub_meshes.size())
         {
@@ -275,6 +279,7 @@ namespace spartan
         if (indices)
         {
             SP_ASSERT_MSG(lod.index_count != 0, "Index count can't be 0");
+            SP_ASSERT_MSG(static_cast<size_t>(lod.index_offset) + lod.index_count <= m_indices.size(), "Index range out of bounds");
 
             indices->resize(lod.index_count); // allocate once (caller can reuse buffer)
             copy(m_indices.begin() + lod.index_offset,
@@ -285,6 +290,7 @@ namespace spartan
         if (vertices)
         {
             SP_ASSERT_MSG(lod.vertex_count != 0, "Vertex count can't be 0");
+            SP_ASSERT_MSG(static_cast<size_t>(lod.vertex_offset) + lod.vertex_count <= m_vertices.size(), "Vertex range out of bounds");
 
             vertices->resize(lod.vertex_count); // allocate once (caller can reuse buffer)
             copy(m_vertices.begin() + lod.vertex_offset,

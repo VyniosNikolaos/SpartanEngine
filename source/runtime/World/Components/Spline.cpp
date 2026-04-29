@@ -68,16 +68,23 @@ namespace spartan
 
     void Spline::OnWorldLoaded()
     {
-        // only regenerate when the saved scene actually had a generated mesh
-        if (!m_needs_road_regeneration)
-            return;
-
-        m_needs_road_regeneration = false;
-
-        if (m_mesh_enabled && GetControlPointCount() >= 2)
+        // regenerate the road mesh if the saved scene had one
+        if (m_needs_road_regeneration)
         {
-            GenerateRoadMesh();
-            SnapshotState();
+            m_needs_road_regeneration = false;
+
+            if (m_mesh_enabled && GetControlPointCount() >= 2)
+            {
+                GenerateRoadMesh();
+                SnapshotState();
+            }
+        }
+
+        // auto-spawn instances when a template is configured
+        // spawned instances are transient (not saved) so they always regenerate from the spline config
+        if (m_instance_template_id != 0 && GetControlPointCount() >= 2)
+        {
+            SpawnInstances();
         }
     }
 
@@ -219,6 +226,10 @@ namespace spartan
         node.append_attribute("instance_spacing")          = m_instance_spacing;
         node.append_attribute("align_instances")           = m_align_instances_to_spline;
         node.append_attribute("instance_mesh_path")        = m_instance_mesh_path.c_str();
+        node.append_attribute("instance_template_id")      = m_instance_template_id;
+        node.append_attribute("instance_lateral_offset")   = m_instance_lateral_offset;
+        node.append_attribute("instance_mirror")           = m_instance_mirror;
+        node.append_attribute("instance_face_inward")      = m_instance_face_inward;
         node.append_attribute("instance_random_offset")    = m_instance_random_offset;
         node.append_attribute("instance_random_scale_min") = m_instance_random_scale_min;
         node.append_attribute("instance_random_scale_max") = m_instance_random_scale_max;
@@ -257,6 +268,10 @@ namespace spartan
         m_instance_spacing           = node.attribute("instance_spacing").as_float(5.0f);
         m_align_instances_to_spline  = node.attribute("align_instances").as_bool(true);
         m_instance_mesh_path         = node.attribute("instance_mesh_path").as_string("");
+        m_instance_template_id       = node.attribute("instance_template_id").as_ullong(0);
+        m_instance_lateral_offset    = node.attribute("instance_lateral_offset").as_float(0.0f);
+        m_instance_mirror            = node.attribute("instance_mirror").as_bool(false);
+        m_instance_face_inward       = node.attribute("instance_face_inward").as_bool(false);
         m_instance_random_offset     = node.attribute("instance_random_offset").as_float(0.0f);
         m_instance_random_scale_min  = node.attribute("instance_random_scale_min").as_float(1.0f);
         m_instance_random_scale_max  = node.attribute("instance_random_scale_max").as_float(1.0f);
@@ -453,19 +468,43 @@ namespace spartan
             return;
         }
 
-        // walk along the spline at arc-length intervals and place instances
-        uint32_t instance_count = static_cast<uint32_t>(spline_length / m_instance_spacing);
-        uint32_t total_samples  = static_cast<uint32_t>(points.size()) * m_resolution * 4; // dense sampling for arc-length
-        float step              = 1.0f / static_cast<float>(total_samples);
+        // resolve template entity (optional)
+        Entity* template_entity = nullptr;
+        if (m_instance_template_id != 0)
+        {
+            template_entity = World::GetEntityById(m_instance_template_id);
+            if (template_entity == m_entity_ptr)
+            {
+                SP_LOG_WARNING("instance template cannot be the spline entity itself");
+                template_entity = nullptr;
+            }
+        }
 
-        float accumulated_distance  = 0.0f;
-        float next_spawn_distance   = 0.0f;
-        Vector3 prev_position       = EvaluatePoint(points, 0.0f);
-        uint32_t spawned            = 0;
+        // sides: -1 = left, +1 = right (along the spline's right vector)
+        // lateral_offset = 0 + mirror = false keeps the legacy behavior of one centerline instance
+        vector<int> sides;
+        if (m_instance_mirror)
+        {
+            sides.push_back(+1);
+            sides.push_back(-1);
+        }
+        else
+        {
+            sides.push_back(+1);
+        }
+
+        // walk along the spline at arc-length intervals and place instances
+        uint32_t total_samples = static_cast<uint32_t>(points.size()) * m_resolution * 4; // dense sampling for arc-length
+        float step             = 1.0f / static_cast<float>(total_samples);
+
+        float accumulated_distance = 0.0f;
+        float next_spawn_distance  = 0.0f;
+        Vector3 prev_position      = EvaluatePoint(points, 0.0f);
+        uint32_t spawned           = 0;
 
         for (uint32_t i = 0; i <= total_samples; i++)
         {
-            float t         = static_cast<float>(i) * step;
+            float t          = static_cast<float>(i) * step;
             Vector3 position = EvaluatePoint(points, t);
 
             if (i > 0)
@@ -474,37 +513,67 @@ namespace spartan
             }
             prev_position = position;
 
-            if (accumulated_distance >= next_spawn_distance)
+            if (accumulated_distance < next_spawn_distance)
+                continue;
+
+            // tangent and right vector for this sample
+            Vector3 tangent = EvaluateTangent(points, t);
+            tangent.Normalize();
+            Vector3 horiz_tangent = Vector3(tangent.x, 0.0f, tangent.z);
+            if (horiz_tangent.LengthSquared() < 1e-6f)
             {
-                Entity* instance = World::CreateEntity();
+                horiz_tangent = tangent;
+            }
+            horiz_tangent.Normalize();
+            Vector3 right = horiz_tangent.Cross(Vector3::Up);
+            right.Normalize();
+
+            for (int side : sides)
+            {
+                Entity* instance = nullptr;
+                if (template_entity)
+                {
+                    instance = template_entity->Clone();
+                }
+                else
+                {
+                    instance = World::CreateEntity();
+                    Render* renderable = instance->AddComponent<Render>();
+                    renderable->SetMesh(MeshType::Cylinder);
+                    renderable->SetDefaultMaterial();
+                }
+
                 instance->SetObjectName(prefix_instance + to_string(spawned));
                 instance->SetParent(m_entity_ptr);
+                instance->SetTransient(true);
 
-                // apply random lateral offset perpendicular to the spline
-                Vector3 final_position = position;
+                // base position + lateral offset + optional random jitter
+                Vector3 final_position = position + right * (m_instance_lateral_offset * static_cast<float>(side));
                 if (m_instance_random_offset > 0.0f)
                 {
-                    Vector3 tangent_dir = EvaluateTangent(points, t);
-                    tangent_dir.Normalize();
-                    Vector3 lateral = tangent_dir.Cross(Vector3::Up);
-                    lateral.Normalize();
-                    float offset = math::random<float>(-m_instance_random_offset, m_instance_random_offset);
-                    final_position = final_position + lateral * offset;
+                    float jitter   = math::random<float>(-m_instance_random_offset, m_instance_random_offset);
+                    final_position = final_position + right * jitter;
                 }
                 instance->SetPositionLocal(final_position);
 
-                // rotation: align to spline + optional random yaw
+                // rotation: face inward overrides align-to-spline; optional random yaw on top
                 Quaternion rotation = Quaternion::Identity;
-                if (m_align_instances_to_spline)
+                if (m_instance_face_inward)
                 {
-                    Vector3 tangent = EvaluateTangent(points, t);
-                    tangent.Normalize();
+                    Vector3 face_dir = right * static_cast<float>(-side);
+                    if (face_dir.LengthSquared() > 0.0f)
+                    {
+                        rotation = Quaternion::FromLookRotation(face_dir, Vector3::Up);
+                    }
+                }
+                else if (m_align_instances_to_spline)
+                {
                     rotation = Quaternion::FromLookRotation(tangent, Vector3::Up);
                 }
                 if (m_instance_random_yaw > 0.0f)
                 {
                     float yaw = math::random<float>(-m_instance_random_yaw, m_instance_random_yaw);
-                    rotation = rotation * Quaternion::FromAxisAngle(Vector3::Up, yaw * math::deg_to_rad);
+                    rotation  = rotation * Quaternion::FromAxisAngle(Vector3::Up, yaw * math::deg_to_rad);
                 }
                 instance->SetRotationLocal(rotation);
 
@@ -515,13 +584,10 @@ namespace spartan
                     instance->SetScaleLocal(Vector3(scale, scale, scale));
                 }
 
-                Render* renderable = instance->AddComponent<Render>();
-                renderable->SetMesh(MeshType::Cylinder);
-                renderable->SetDefaultMaterial();
-
                 spawned++;
-                next_spawn_distance += m_instance_spacing;
             }
+
+            next_spawn_distance += m_instance_spacing;
         }
 
         SP_LOG_INFO("spawned %u instances along spline (%.1f m, spacing %.1f m)", spawned, spline_length, m_instance_spacing);
