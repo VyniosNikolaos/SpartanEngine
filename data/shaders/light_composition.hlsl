@@ -94,6 +94,13 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
     Surface surface;
     surface.Build(thread_id.xy, resolution_out, true, false);
 
+    // skip opaque pixels during the transparent composition pass, the opaque pass
+    // already wrote final lighting + fog for them so re running this for transparents
+    // would just stack a second fog term on the same pixel and dim the world behind
+    // the glass which is then sampled by the refraction pass as the background
+    if (pass_is_transparent() && surface.is_opaque())
+        return;
+
     // initialize
     float3 light_diffuse       = 0.0f;
     float3 light_specular      = 0.0f;
@@ -223,7 +230,9 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
         }
     }
 
-    // transparent surfaces sample background via refraction, no need to blend
-    float accumulate = (pass_is_transparent() && !surface.is_transparent()) ? 1.0f : 0.0f;
-    tex_uav[thread_id.xy] = validate_output(float4(light_diffuse * surface.albedo + light_specular + light_emissive + light_atmospheric + light_gi, alpha) + tex_uav[thread_id.xy] * accumulate);
+    // transparent surfaces sample the background via the refraction pass, no need to
+    // blend with the existing opaque content here, opaque pixels in this pass were
+    // already short circuited at the top, so each pixel reaches this point exactly
+    // once per frame and a straight write is safe
+    tex_uav[thread_id.xy] = validate_output(float4(light_diffuse * surface.albedo + light_specular + light_emissive + light_atmospheric + light_gi, alpha));
 }

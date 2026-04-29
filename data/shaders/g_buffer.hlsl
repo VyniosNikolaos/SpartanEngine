@@ -139,7 +139,20 @@ gbuffer main_ps(gbuffer_vertex vertex, bool is_front_face : SV_IsFrontFace)
     MaterialParameters material = GetMaterial();
     Surface surface;
     surface.flags               = material.flags;
-    
+
+    // two sided transparents (glass, water) render with cull none so the back face of
+    // the shell is rasterized when the camera is on the other side, the geometric
+    // normal still points outward in that case which makes the gbuffer normal face
+    // away from the viewer, fresnel collapses to grazing in the refraction pass and
+    // the surface ends up looking opaque/mirror like instead of transparent, flipping
+    // both normal and tangent here keeps the shading frame oriented towards the
+    // camera regardless of which face is hit
+    if (pass_is_transparent() && !is_front_face)
+    {
+        vertex.normal  = -vertex.normal;
+        vertex.tangent = -vertex.tangent;
+    }
+
     float4 albedo   = material.color;
     float3 normal   = vertex.normal.xyz;
     float roughness = material.roughness;
