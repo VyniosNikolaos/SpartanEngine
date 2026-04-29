@@ -46,7 +46,7 @@ namespace spartan
 {
     Camera::Camera(Entity* entity) : Component(entity)
     {
-        m_entity_ptr->SetPosition(Vector3(0.0f, 3.0f, -5.0f));
+        // do not override the entity's transform here, otherwise loading a saved scene clobbers the persisted camera position
         SetFlag(CameraFlags::CanBeControlled, true);
         SetFlag(CameraFlags::PhysicalBodyAnimation, true);
         m_pick_hits.reserve(256);

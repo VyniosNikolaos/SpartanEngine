@@ -28,6 +28,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <string>
 #include <functional>
 #include <mutex>
+#include <filesystem>
 //===================================
 
 enum FileDialog_Type
@@ -144,6 +145,8 @@ private:
     void EmptyAreaContextMenu();
     void HandleKeyboardNavigation();
     void ShowOverwriteDialog(std::string* directory, std::string* file_path);
+    void WatchDirectory();
+    void RenameItemInline(FileDialogItem* item, float width);
 
     // flags
     bool m_is_window;
@@ -187,10 +190,16 @@ private:
 
     // renaming
     bool m_is_renaming;
+    bool m_rename_request_focus;
     std::string m_rename_buffer;
     uint32_t m_rename_item_id;
 
     // callbacks
     std::function<void(const std::string&)> m_callback_on_item_clicked;
     std::function<void(const std::string&)> m_callback_on_item_double_clicked;
+
+    // directory watching for auto refresh on external changes
+    std::filesystem::file_time_type m_watch_dir_time{};
+    std::chrono::steady_clock::time_point m_watch_last_check{};
+    std::string m_watch_path;
 };

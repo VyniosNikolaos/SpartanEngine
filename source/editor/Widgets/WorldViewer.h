@@ -47,7 +47,6 @@ private:
     // misc
     void Popups();
     void PopupContextMenu() const;
-    void PopupEntityRename() const;
     void HandleKeyShortcuts();
 
     // context menu actions

@@ -50,8 +50,12 @@ namespace
     Entity* entity_clicked = nullptr;
     Entity* entity_hovered = nullptr;
     ImGuiSp::DragDropPayload drag_drop_payload;
-    bool popup_rename_entity = false;
     Entity* entity_copied    = nullptr;
+
+    // inline rename state
+    uint64_t rename_entity_id     = 0;
+    bool     rename_request_focus = false;
+    string   rename_buffer;
     ImRect selected_entity_rect;
     uint64_t last_selected_entity_id = 0;
     bool selection_from_click        = false;   // track if selection came from user click (no scroll needed)
@@ -159,6 +163,49 @@ namespace
         }
 
         return entity;
+    }
+
+    void rename_entity_inline(Entity* entity, float width)
+    {
+        if (rename_request_focus)
+        {
+            ImGui::SetKeyboardFocusHere();
+            rename_request_focus = false;
+        }
+
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4, 1));
+        ImGui::SetNextItemWidth(width);
+
+        const ImGuiInputTextFlags flags = ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll;
+        const bool committed            = ImGui::InputText("##rename_entity_inline", &rename_buffer, flags);
+        const bool deactivated          = ImGui::IsItemDeactivated();
+        const bool escape_pressed       = ImGui::IsKeyPressed(ImGuiKey_Escape);
+
+        ImGui::PopStyleVar(2);
+
+        auto try_commit = [&]()
+        {
+            if (!rename_buffer.empty() && rename_buffer != entity->GetObjectName())
+            {
+                entity->SetObjectName(rename_buffer);
+            }
+        };
+
+        if (committed)
+        {
+            try_commit();
+            rename_entity_id = 0;
+        }
+        else if (escape_pressed)
+        {
+            rename_entity_id = 0;
+        }
+        else if (deactivated)
+        {
+            try_commit();
+            rename_entity_id = 0;
+        }
     }
 
     RHI_Texture* component_to_image(Entity* entity)
@@ -619,12 +666,24 @@ void WorldViewer::TreeAddEntity(Entity* entity)
         next_x                = icon_max.x + ImGui::GetStyle().ItemSpacing.x;
     }
 
-    // draw text (still on foreground channel)
-    const ImVec2 text_pos = ImVec2(next_x, row_pos.y - (ImGui::GetTextLineHeightWithSpacing() - ImGui::GetTextLineHeight()) * 0.25f);
-    dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), text_pos, ImGui::GetColorU32(ImGuiCol_Text), entity->GetObjectName().c_str());
+    // draw text (still on foreground channel) skipped while inline renaming this entity
+    const bool is_renaming_this = rename_entity_id == entity->GetObjectId();
+    const ImVec2 text_pos       = ImVec2(next_x, row_pos.y - (ImGui::GetTextLineHeightWithSpacing() - ImGui::GetTextLineHeight()) * 0.25f);
+    if (!is_renaming_this)
+    {
+        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), text_pos, ImGui::GetColorU32(ImGuiCol_Text), entity->GetObjectName().c_str());
+    }
 
     // merge channels before processing children (they will have their own channel splits)
     dl->ChannelsMerge();
+
+    // inline rename input drawn on top of where the label would go
+    if (is_renaming_this)
+    {
+        ImGui::SetCursorScreenPos(ImVec2(next_x, row_pos.y));
+        const float available_width = ImGui::GetContentRegionAvail().x;
+        rename_entity_inline(entity, available_width);
+    }
 
     // note: selection is handled in OnTickVisible on mouse release to avoid double-selection
 
@@ -723,7 +782,6 @@ void WorldViewer::SetSelectedEntity(Entity* entity)
 void WorldViewer::Popups()
 {
     PopupContextMenu();
-    PopupEntityRename();
 }
 
 void WorldViewer::PopupContextMenu() const
@@ -782,7 +840,9 @@ void WorldViewer::PopupContextMenu() const
 
     if (ImGui::MenuItem("Rename") && on_entity && !multiple_selected)
     {
-        popup_rename_entity = true;
+        rename_entity_id     = selected_entity->GetObjectId();
+        rename_request_focus = true;
+        rename_buffer        = selected_entity->GetObjectName();
     }
 
     if (ImGui::MenuItem("Focus") && on_entity)
@@ -907,42 +967,12 @@ void WorldViewer::PopupContextMenu() const
     ImGui::EndPopup();
 }
 
-void WorldViewer::PopupEntityRename() const
-{
-    if (popup_rename_entity)
-    {
-        ImGui::OpenPopup("##RenameEntity");
-        popup_rename_entity = false;
-    }
-
-    if (ImGui::BeginPopup("##RenameEntity"))
-    {
-        Entity* selected_entity = World::GetCamera()->GetSelectedEntity();
-        if (!selected_entity)
-        {
-            ImGui::CloseCurrentPopup();
-            ImGui::EndPopup();
-            return;
-        }
-
-        string name = selected_entity->GetObjectName();
-        ImGui::Text("Name:");
-        ImGui::InputText("##edit", &name);
-        selected_entity->SetObjectName(string(name));
-
-        if (ImGuiSp::button("Ok"))
-        { 
-            ImGui::CloseCurrentPopup();
-            ImGui::EndPopup();
-            return;
-        }
-
-        ImGui::EndPopup();
-    }
-}
-
 void WorldViewer::HandleKeyShortcuts()
 {
+    // skip engine shortcuts while inline rename input or any other text field is active
+    if (rename_entity_id != 0 || ImGui::GetIO().WantTextInput)
+        return;
+
     // Delete - deletes all selected entities
     if (Input::GetKey(KeyCode::Delete))
     {
@@ -1132,6 +1162,7 @@ void WorldViewer::ActionEntityCreateCamera()
     auto entity = ActionEntityCreateEmpty();
     entity->AddComponent<Camera>();
     entity->SetObjectName("Camera");
+    entity->SetPosition(math::Vector3(0.0f, 3.0f, -5.0f));
 }
 
 void WorldViewer::ActionEntityCreateTerrain()

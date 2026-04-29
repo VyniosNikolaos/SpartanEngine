@@ -106,7 +106,16 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
     // during the compute pass, fill in the sky pixels
     if (surface.is_sky() && pass_is_opaque())
     {
-        light_emissive       = tex2.SampleLevel(samplers[sampler_bilinear_clamp], direction_sphere_uv(surface.camera_to_pixel), 0).rgb;
+        // skysphere.hlsl mirrors below horizon directions to the upper hemisphere and dims
+        // them to 0.3x for ibl correctness, sampling the texture at view_dir.y just below
+        // zero therefore returns the dimmed sky and produces a hard dark band right where
+        // the camera ray crosses the horizon (which is exactly where rays past the edge
+        // of the floor land), clamping y to the upper hemisphere here keeps the visible
+        // sky uniform across the horizon line so it can no longer show a dark strip
+        float3 view_dir_sky  = surface.camera_to_pixel;
+        view_dir_sky.y       = max(view_dir_sky.y, 0.0f);
+        view_dir_sky         = normalize(view_dir_sky);
+        light_emissive       = tex2.SampleLevel(samplers[sampler_bilinear_clamp], direction_sphere_uv(view_dir_sky), 0).rgb;
         alpha                = 0.0f;
         distance_from_camera = FLT_MAX_16;
     }
@@ -187,16 +196,30 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
         }
         else
         {
+            // ground horizon haze, fades upward facing surfaces (floor, water) into the
+            // sky color when the camera ray points nearly horizontal at them, this is
+            // exactly the floor at the horizon, the dual gate (camera ray near
+            // horizontal AND normal pointing up) keeps the effect from touching the car
+            // body, walls, or anything else in the foreground because none of those
+            // satisfy both conditions at once, atmospheric fog density alone can never
+            // fully bridge the gap in small scenes (a 200m floor in a 10km camera far
+            // plane gives a fog factor of just a few percent which leaves the floor
+            // edge dark while the sky pixel above it is at full brightness)
+            float view_horizon  = smoothstep(0.10f, 0.0f, abs(view_dir.y));
+            float ground_facing = smoothstep(0.70f, 0.95f, surface.normal.y);
+            float horizon_haze  = view_horizon * ground_facing;
+            
             // proper extinction based fog blending, surface lighting fades along the
             // optical path while sky inscatter fills in the missing energy, the
             // previous purely additive form left distant unlit ground pitch black no
             // matter how dense the fog became
-            float transmittance = 1.0f - fog_atmospheric;
+            float fog_factor    = max(fog_atmospheric, horizon_haze);
+            float transmittance = 1.0f - fog_factor;
             light_diffuse  *= transmittance;
             light_specular *= transmittance;
             light_emissive *= transmittance;
             light_gi       *= transmittance;
-            light_atmospheric = fog_atmospheric * sky_color + fog_volumetric;
+            light_atmospheric = fog_factor * sky_color + fog_volumetric;
         }
     }
 

@@ -157,6 +157,7 @@ FileDialog::FileDialog(const bool standalone_window, const FileDialog_Type type,
     m_selected_item_id                = UINT32_MAX;
     m_hover_animation                 = 0.0f;
     m_is_renaming                     = false;
+    m_rename_request_focus            = false;
     m_rename_item_id                  = UINT32_MAX;
     m_context_menu_id                 = 0;
 }
@@ -197,6 +198,8 @@ bool FileDialog::Show(bool* is_visible, Editor* editor, string* directory /*= nu
     }
 
     update_colors();
+
+    WatchDirectory();
 
     m_selection_made     = false;
     m_is_hovering_item   = false;
@@ -812,22 +815,30 @@ void FileDialog::RenderGridView()
         float label_x       = card_min.x + (item_width - 4 - min(text_size.x, label_max_w)) * 0.5f;
         float label_y       = card_min.y + grid_item_padding + icon_area + 4; // below icon
 
-        // render with ellipsis if needed
-        ImGui::RenderTextEllipsis(
-            draw_list,
-            ImVec2(label_x, label_y),
-            ImVec2(card_max.x - grid_item_padding, card_max.y),
-            card_max.x - grid_item_padding,
-            card_max.x - grid_item_padding,
-            label.c_str(),
-            nullptr,
-            nullptr
-        );
-
-        // tooltip for truncated labels
-        if (is_hovered && text_size.x > label_max_w)
+        const bool is_renaming_this = m_is_renaming && m_rename_item_id == item.GetId();
+        if (is_renaming_this)
         {
-            ImGui::SetTooltip("%s", label.c_str());
+            ImGui::SetCursorScreenPos(ImVec2(card_min.x + grid_item_padding, label_y - 2));
+            RenameItemInline(&item, label_max_w);
+        }
+        else
+        {
+            ImGui::RenderTextEllipsis(
+                draw_list,
+                ImVec2(label_x, label_y),
+                ImVec2(card_max.x - grid_item_padding, card_max.y),
+                card_max.x - grid_item_padding,
+                card_max.x - grid_item_padding,
+                label.c_str(),
+                nullptr,
+                nullptr
+            );
+
+            // tooltip for truncated labels
+            if (is_hovered && text_size.x > label_max_w)
+            {
+                ImGui::SetTooltip("%s", label.c_str());
+            }
         }
 
         // handle click on release, but only if the user didn't drag
@@ -1007,8 +1018,15 @@ void FileDialog::RenderListView()
                 }
             }
 
-            // name
-            ImGui::TextUnformatted(item.GetLabel().c_str());
+            // name (or inline rename input)
+            if (m_is_renaming && m_rename_item_id == item.GetId())
+            {
+                RenameItemInline(&item, -1.0f);
+            }
+            else
+            {
+                ImGui::TextUnformatted(item.GetLabel().c_str());
+            }
 
             // type column
             ImGui::TableSetColumnIndex(1);
@@ -1174,9 +1192,10 @@ void FileDialog::ItemContextMenu(FileDialogItem* item)
 
         if (ImGui::MenuItem("Rename"))
         {
-            m_is_renaming    = true;
-            m_rename_buffer  = item->GetLabel();
-            m_rename_item_id = item->GetId();
+            m_is_renaming          = true;
+            m_rename_request_focus = true;
+            m_rename_buffer        = item->GetLabel();
+            m_rename_item_id       = item->GetId();
         }
 
         if (FileSystem::IsEngineLuaFile(item->GetPath()))
@@ -1214,58 +1233,6 @@ void FileDialog::ItemContextMenu(FileDialogItem* item)
     }
 
     ImGui::PopStyleVar(2);
-
-    // rename dialog
-    if (m_is_renaming && m_rename_item_id == item->GetId())
-    {
-        ImGui::OpenPopup("##rename_dialog");
-
-        ImGui::SetNextWindowSize(ImVec2(300, 0), ImGuiCond_Always);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16, 16));
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
-
-        if (ImGui::BeginPopupModal("##rename_dialog", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar))
-        {
-            ImGui::Text("Rename");
-            ImGui::Separator();
-            ImGui::Spacing();
-
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
-            ImGui::SetNextItemWidth(-1);
-            ImGui::InputText("##rename_input", &m_rename_buffer);
-            ImGui::PopStyleVar();
-
-            ImGui::Spacing();
-            ImGui::Spacing();
-
-            float button_width = 80.0f;
-            float buttons_x    = ImGui::GetContentRegionAvail().x - button_width * 2 - 8;
-            ImGui::SetCursorPosX(buttons_x);
-
-            if (ImGui::Button("Cancel", ImVec2(button_width, 0)))
-            {
-                m_is_renaming = false;
-                ImGui::CloseCurrentPopup();
-            }
-
-            ImGui::SameLine(0, 8);
-
-            ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyle().Colors[ImGuiCol_CheckMark]);
-            if (ImGui::Button("Rename", ImVec2(button_width, 0)))
-            {
-                string new_path = FileSystem::GetDirectoryFromFilePath(item->GetPath()) + m_rename_buffer;
-                FileSystem::Rename(item->GetPath(), new_path);
-                m_is_dirty    = true;
-                m_is_renaming = false;
-                ImGui::CloseCurrentPopup();
-            }
-            ImGui::PopStyleColor();
-
-            ImGui::EndPopup();
-        }
-
-        ImGui::PopStyleVar(2);
-    }
 }
 
 void FileDialog::DialogUpdateFromDirectory(const string& file_path)
@@ -1276,9 +1243,20 @@ void FileDialog::DialogUpdateFromDirectory(const string& file_path)
         return;
     }
 
+    // capture watch baseline so the auto refresh watcher only triggers on subsequent external changes
+    try
+    {
+        m_watch_path     = file_path;
+        m_watch_dir_time = filesystem::last_write_time(file_path);
+    }
+    catch (...) {}
+
     lock_guard<mutex> lock(m_mutex_items);
     m_items.clear();
-    m_selected_item_id = UINT32_MAX;
+    m_selected_item_id     = UINT32_MAX;
+    m_is_renaming          = false;
+    m_rename_request_focus = false;
+    m_rename_item_id       = UINT32_MAX;
 
     // directories first
     auto directories = FileSystem::GetDirectoriesInDirectory(file_path);
@@ -1385,6 +1363,95 @@ void FileDialog::DialogUpdateFromDirectory(const string& file_path)
 
         return false;
     });
+}
+
+void FileDialog::RenameItemInline(FileDialogItem* item, float width)
+{
+    if (m_rename_request_focus)
+    {
+        ImGui::SetKeyboardFocusHere();
+        m_rename_request_focus = false;
+    }
+
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4, 2));
+    ImGui::SetNextItemWidth(width);
+
+    const ImGuiInputTextFlags flags = ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll;
+    const bool committed            = ImGui::InputText("##rename_inline", &m_rename_buffer, flags);
+    const bool deactivated          = ImGui::IsItemDeactivated();
+    const bool escape_pressed       = ImGui::IsKeyPressed(ImGuiKey_Escape);
+
+    ImGui::PopStyleVar(2);
+
+    auto try_commit = [&]()
+    {
+        if (!m_rename_buffer.empty() && m_rename_buffer != item->GetLabel())
+        {
+            const string new_path = FileSystem::GetDirectoryFromFilePath(item->GetPath()) + m_rename_buffer;
+            FileSystem::Rename(item->GetPath(), new_path);
+            m_is_dirty = true;
+        }
+    };
+
+    if (committed)
+    {
+        try_commit();
+        m_is_renaming = false;
+    }
+    else if (escape_pressed)
+    {
+        m_is_renaming = false;
+    }
+    else if (deactivated)
+    {
+        try_commit();
+        m_is_renaming = false;
+    }
+}
+
+void FileDialog::WatchDirectory()
+{
+    // throttle polling so we don't hit the filesystem every frame
+    auto now = chrono::steady_clock::now();
+    if (now - m_watch_last_check < chrono::milliseconds(500))
+        return;
+
+    m_watch_last_check = now;
+
+    // resolve the directory we should be watching
+    string dir = m_current_path;
+    if (FileSystem::IsFile(dir))
+    {
+        dir = FileSystem::GetDirectoryFromFilePath(dir);
+    }
+
+    if (!FileSystem::IsDirectory(dir))
+        return;
+
+    // if the watched path changed, just sync the baseline without triggering a refresh
+    if (dir != m_watch_path)
+    {
+        try
+        {
+            m_watch_path     = dir;
+            m_watch_dir_time = filesystem::last_write_time(dir);
+        }
+        catch (...) {}
+        return;
+    }
+
+    // creating, deleting or renaming entries bumps the parent directory mtime
+    try
+    {
+        auto current_time = filesystem::last_write_time(dir);
+        if (current_time != m_watch_dir_time)
+        {
+            m_watch_dir_time = current_time;
+            m_is_dirty       = true;
+        }
+    }
+    catch (...) {}
 }
 
 void FileDialog::EmptyAreaContextMenu()
