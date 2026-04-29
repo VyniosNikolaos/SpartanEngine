@@ -257,9 +257,5 @@ ModelManifest.xml
 .idea/
 /third_party/libraries/libraries.7z
 /assets
-/assets
-/build_scripts/__pycache__/file_utilities.cpython-312.pyc
-/build_scripts/__pycache__/file_utilities.cpython-313.pyc
 /spartan.slnx
-*.pyc
 /nul

@@ -27,6 +27,19 @@ TARGET_DIR       = "../binaries"
 API_CPP_DEFINE   = ""
 ARG_API_GRAPHICS = _ARGS[1]
 
+local setup = dofile(path.join(_MAIN_SCRIPT_DIR or _SCRIPT_DIR, "setup.lua"))
+
+newaction {
+    trigger     = "setup",
+    description = "download dependencies and stage runtime files",
+    execute     = function() setup.run() end
+}
+
+local generation_actions = { vs2026 = true, vs2022 = true, gmake2 = true, gmake = true, codelite = true, xcode4 = true }
+if generation_actions[_ACTION] and not setup.is_already_set_up() then
+    setup.run()
+end
+
 function configure_graphics_api()
     if ARG_API_GRAPHICS == "d3d12" then
         API_CPP_DEFINE = "API_GRAPHICS_D3D12"
@@ -180,6 +193,8 @@ function spartan_project_configuration()
             links { "assimp", "FreeImageLib", "freetype", "SDL3", "Compressonator_MT" }
 end
 
-configure_graphics_api()
-solution_configuration()
-spartan_project_configuration()
+if generation_actions[_ACTION] then
+    configure_graphics_api()
+    solution_configuration()
+    spartan_project_configuration()
+end

@@ -4,10 +4,10 @@
   <Variable name="r.restir_pt" value="1.000000" />
  </ConsoleVariables>
  <Entities>
-  <Entity name="physics_body_camera" id="96622692557092671" active="true" position="21.3009 3.97594 4.4257" rotation="0 0 0 1" scale="1 1 1">
-   <audio_source path="project/music/footsteps_carpet.wav" is_3d="false" mute="false" loop="false" play_on_start="false" volume="0.5" pitch="0.965035498" reverb_enabled="false" reverb_room_size="0.5" reverb_decay="0.5" reverb_wet="0.300000012" />
+  <Entity name="physics_body_camera" id="96622692557092671" active="true" position="15.9483 4.31874 4.75096" rotation="0 0 0 1" scale="1 1 1">
+   <audio_source path="project/music/footsteps_carpet.wav" is_3d="false" mute="false" loop="false" play_on_start="false" volume="0.5" pitch="1.0295856" reverb_enabled="false" reverb_room_size="0.5" reverb_decay="0.5" reverb_wet="0.300000012" />
    <physics mass="1" friction="0.400000006" friction_rolling="0.400000006" restitution="0.200000003" is_static="false" is_kinematic="false" position_lock_x="0" position_lock_y="0" position_lock_z="0" rotation_lock_x="0" rotation_lock_y="0" rotation_lock_z="0" center_of_mass_x="0" center_of_mass_y="0" center_of_mass_z="0" body_type="6" cloth_stiffness="0.899999976" cloth_damping="0.00999999978" cloth_iterations="8" cloth_wind_enabled="true" />
-   <Entity name="component_camera" id="96799266697307222" active="true" position="0 0.77 0" rotation="-0.00734937 -0.832616 -0.0114312 0.553683" scale="1 1 1">
+   <Entity name="component_camera" id="96799266697307222" active="true" position="0 0.77 0" rotation="0.0116252 -0.810672 0.015746 0.585174" scale="1 1 1">
     <camera aperture="11" shutter_speed="0.00800000038" iso="100" fov_horizontal="1.57079637" near_plane="0.100000001" far_plane="10000" projection="0" flags="17" />
     <script file_path="../worlds/footsteps.lua" />
    </Entity>
@@ -96,7 +96,7 @@
    <light flags="3" light_type="0" color_r="1" color_g="0.72007829" color_b="0.482821107" temperature="3200" intensity="8" intensity_photometric="0" range="3.40282347e+38" angle="0.52359879" index="0" preset="2" area_width="1" area_height="1" />
   </Entity>
   <Entity name="Area" id="15433749284114940480" active="true" position="0 9.1 0" rotation="0.707282 0 0 0.706931" scale="1 1 1">
-   <light flags="1" light_type="3" color_r="1" color_g="0.653803825" color_b="0.342766613" temperature="2700" intensity="8" intensity_photometric="203920" range="276.200012" angle="0.52359879" index="1" preset="5" area_width="1" area_height="1" />
+   <light flags="5" light_type="3" color_r="1" color_g="0.653803825" color_b="0.342766613" temperature="2700" intensity="8" intensity_photometric="203920" range="82.8000031" angle="0.52359879" index="1" preset="5" area_width="2" area_height="2" />
   </Entity>
  </Entities>
 </World>
