@@ -808,9 +808,8 @@ namespace spartan
 
         SP_PROFILE_CPU();
 
-        // detect the loading -> not loading transition and notify listeners
-        // we move pending entities into the active list first so any subscribers
-        // that traverse the world see a fully populated scene
+        // notify listeners on the first tick after loading completes
+        // pending entities are moved into the active list so subscribers see a fully populated scene
         if (was_loading)
         {
             was_loading = false;

@@ -91,8 +91,8 @@ namespace
     ImGuiTextFilter search_filter;
 
     // double-click timing
-    float last_click_time = -1.0f;
-    int last_click_index  = -1;
+    float last_click_time       = -1.0f;
+    int last_click_index        = -1;
     bool last_click_was_default = true;
 
     // asset download configuration

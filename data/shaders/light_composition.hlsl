@@ -203,24 +203,10 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
         }
         else
         {
-            // ground horizon haze, fades upward facing surfaces (floor, water) into the
-            // sky color when the camera ray points nearly horizontal at them, this is
-            // exactly the floor at the horizon, the dual gate (camera ray near
-            // horizontal AND normal pointing up) keeps the effect from touching the car
-            // body, walls, or anything else in the foreground because none of those
-            // satisfy both conditions at once, atmospheric fog density alone can never
-            // fully bridge the gap in small scenes (a 200m floor in a 10km camera far
-            // plane gives a fog factor of just a few percent which leaves the floor
-            // edge dark while the sky pixel above it is at full brightness)
-            float view_horizon  = smoothstep(0.10f, 0.0f, abs(view_dir.y));
-            float ground_facing = smoothstep(0.70f, 0.95f, surface.normal.y);
-            float horizon_haze  = view_horizon * ground_facing;
-            
-            // proper extinction based fog blending, surface lighting fades along the
-            // optical path while sky inscatter fills in the missing energy, the
-            // previous purely additive form left distant unlit ground pitch black no
-            // matter how dense the fog became
-            float fog_factor    = max(fog_atmospheric, horizon_haze);
+            // extinction based fog blending, surface lighting fades along the optical
+            // path while sky inscatter fills in the missing energy, distance based so
+            // close geometry stays crisp and only far pixels haze toward the sky
+            float fog_factor    = fog_atmospheric;
             float transmittance = 1.0f - fog_factor;
             light_diffuse  *= transmittance;
             light_specular *= transmittance;

@@ -35,8 +35,7 @@ namespace spartan
     {
         static array<map<subscription_handle, subscriber>, static_cast<uint32_t>(EventType::Max)> event_subscribers;
         static subscription_handle next_subscription_id = 1;
-        // guards subscribe/unsubscribe/fire so components created on worker threads
-        // (e.g. during async world loading) can subscribe safely
+        // guards subscribe/unsubscribe/fire so components created on worker threads can subscribe safely
         static mutex event_mutex;
     }
 
