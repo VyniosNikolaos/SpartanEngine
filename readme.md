@@ -57,7 +57,7 @@ The most demanding world: **256 million** procedurally generated grass blades (i
 
 | Liminal Space | Showroom |
 |:-:|:-:|
-| <img src="https://raw.githubusercontent.com/PanosK92/SpartanEngine/master/.github/images/world_liminal.jpg"/><br>Reality shifts to a nearby frequency | <img src="https://raw.githubusercontent.com/PanosK92/SpartanEngine/master/.github/images/world_showroom.png"/><br>Clean showcase—no experimental tech |
+| <img src="https://raw.githubusercontent.com/PanosK92/SpartanEngine/master/.github/images/world_liminal.jpg"/><br>Reality shifts to a nearby frequency | <img src="https://raw.githubusercontent.com/PanosK92/SpartanEngine/master/.github/images/world_showroom_a.png"/><br>Clean showcase—no experimental tech |
 
 | [The Plan](plan.md) |
 |:-:|
