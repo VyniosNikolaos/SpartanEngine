@@ -55,13 +55,13 @@ The most demanding world: **256 million** procedurally generated grass blades (i
 |:-:|:-:|
 | <img src="https://raw.githubusercontent.com/PanosK92/SpartanEngine/master/.github/images/world_sponza.png"/><br>Classic Dubrovnik building—ideal for path tracing | <img src="https://raw.githubusercontent.com/PanosK92/SpartanEngine/master/.github/images/world_cornell.jpg"/><br>Contains some render test objects |
 
-| San Miguel | Liminal Space |
+| Liminal Space | Showroom |
 |:-:|:-:|
-| <img src="https://raw.githubusercontent.com/PanosK92/SpartanEngine/master/.github/images/world_san_miguel.jpg"/><br>Detailed courtyard scene with complex geometry and lighting | <img src="https://raw.githubusercontent.com/PanosK92/SpartanEngine/master/.github/images/world_liminal.jpg"/><br>Reality shifts to a nearby frequency |
+| <img src="https://raw.githubusercontent.com/PanosK92/SpartanEngine/master/.github/images/world_liminal.jpg"/><br>Reality shifts to a nearby frequency | <img src="https://raw.githubusercontent.com/PanosK92/SpartanEngine/master/.github/images/world_showroom.png"/><br>Clean showcase—no experimental tech |
 
-| Showroom | [The Plan](plan.md) |
-|:-:|:-:|
-| <img src="https://raw.githubusercontent.com/PanosK92/SpartanEngine/master/.github/images/world_showroom.png"/><br>Clean showcase—no experimental tech | <img src="https://raw.githubusercontent.com/PanosK92/SpartanEngine/master/.github/images/world_car_playground.png"/><br>A neon-soaked city, built to push the engine toward real-time path-traced driving through rain-slicked streets at 60fps, that's the plan. |
+| [The Plan](plan.md) |
+|:-:|
+| <img src="https://raw.githubusercontent.com/PanosK92/SpartanEngine/master/.github/images/world_car_playground.png"/><br>A neon-soaked city, built to push the engine toward real-time path-traced driving through rain-slicked streets at 60fps, that's the plan. |
 
 ---
 
