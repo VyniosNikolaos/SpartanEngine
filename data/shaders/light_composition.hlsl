@@ -94,11 +94,12 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
     Surface surface;
     surface.Build(thread_id.xy, resolution_out, true, false);
 
-    // skip opaque pixels during the transparent composition pass, the opaque pass
-    // already wrote final lighting + fog for them so re running this for transparents
-    // would just stack a second fog term on the same pixel and dim the world behind
-    // the glass which is then sampled by the refraction pass as the background
-    if (pass_is_transparent() && surface.is_opaque())
+    // skip non transparent pixels during the transparent composition pass, the opaque pass
+    // already wrote final lighting + fog for opaque surfaces and the full sky texture for sky pixels
+    // re running this for either would just stack a second fog term and the sky branch only fires
+    // in the opaque pass which means sky pixels here would write light_atmospheric on its own and
+    // overwrite the stars, moon and atmosphere that the opaque pass already composed
+    if (pass_is_transparent() && !surface.is_transparent())
         return;
 
     // initialize

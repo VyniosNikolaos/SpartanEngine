@@ -966,6 +966,21 @@ void Properties::ShowLight(spartan::Light* light) const
 
         const bool is_directional = static_cast<LightType>(selection_index) == LightType::Directional;
 
+        // sky preset for directional lights, sets time of day, color, intensity and rotation in one click
+        if (is_directional)
+        {
+            static vector<string> sky_presets = { "Dawn", "Day", "Dusk", "Night", "David Lynch", "Custom" };
+            uint32_t preset_index             = static_cast<uint32_t>(light->GetPreset());
+            if (property_combo("Sky Preset", sky_presets, &preset_index, "applies a full time of day setup, time, sun rotation, color and intensity"))
+            {
+                light->SetPreset(static_cast<LightPreset>(preset_index));
+                // refresh local copies so the map-back at the bottom does not revert the new values
+                intensity          = light->GetIntensityPhotometric();
+                temperature_kelvin = light->GetTemperature();
+                m_colorPicker_light->SetColor(light->GetColor());
+            }
+        }
+
         layout::separator();
         layout::section_header("Appearance");
 

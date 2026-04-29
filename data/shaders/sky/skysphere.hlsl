@@ -390,7 +390,7 @@ struct stars
                 {
                     float2 star_pos = cell_center + (hash - 0.5) * 0.5;
                     float dist = length(star_uv - star_pos);
-                    float brightness = exp(-dist * dist / 0.0016) * (hash.x - 0.97) * 30.0;
+                    float brightness = exp(-dist * dist / 0.0016) * (hash.x - 0.97) * 150.0;
                     color += blackbody(lerp(4000.0, 12000.0, hash.y)) * brightness * night;
                 }
             }
@@ -810,7 +810,14 @@ void main_cs(uint3 tid : SV_DispatchThreadID)
     luminance *= day_factor;
     
     float night_factor = 1.0 - day_factor;
-    float3 night_ambient = float3(0.001, 0.002, 0.004) * night_factor;
+    // base night sky tint from skyglow and integrated starlight, slightly cool blue
+    float3 night_ambient = float3(0.030, 0.050, 0.095) * night_factor;
+    // moonlight atmospheric scatter, brightens the sky toward the moon and falls off with angular
+    // distance the same way the daytime sky brightens around the sun, gives the night a real moonlit
+    // glow instead of leaving everything pitch black between the stars
+    float3 moon_dir_grad = -sun_dir;
+    float moon_proximity = saturate(dot(view_dir, moon_dir_grad));
+    night_ambient += float3(0.090, 0.130, 0.190) * pow(moon_proximity, 4.0) * night_factor;
     
     // clouds with checkerboard temporal distribution
     // only compute clouds for half the pixels per frame, interpolate the rest
@@ -848,8 +855,14 @@ void main_cs(uint3 tid : SV_DispatchThreadID)
             clouds_moon = cloud_compute(orig_view, moon_dir, light.intensity * day_night_factor, day_night_factor, time_val, uv,
                                         tex, tex2, GET_SAMPLER(sampler_bilinear_clamp));
             float fade = saturate((0.1 - sun_elev) * 5.0) * saturate(moon_elev * 3.0);
-            clouds_moon.color *= fade;
-            clouds_moon.alpha *= fade;
+            // night clouds read as dark silhouettes against the sky, only weakly lit by moonlight
+            // hard color attenuation and a cool tint match the small amount of blue scatter that
+            // makes it through, alpha stays at full strength so they still occlude stars and moon
+            float3 moon_tint   = float3(0.55, 0.7, 1.0);
+            float3 night_scale = moon_tint * 0.04;
+            clouds_moon.color     *= night_scale * fade;
+            clouds_moon.inscatter *= night_scale * fade;
+            clouds_moon.alpha     *= fade;
         }
     }
     
@@ -872,12 +885,17 @@ void main_cs(uint3 tid : SV_DispatchThreadID)
         // sun/moon/stars should be BEHIND clouds - occlude based on cloud density
         float celestial_occ = smoothstep(0.02, 0.15, cloud_alpha);
         
-        float3 sky_behind = (luminance + night_ambient) * intensity;
-        float3 sky_through = sky_behind * cloud_trans;
+        float3 sky_dome    = (luminance + night_ambient) * intensity;
+        float3 sky_through = sky_dome * cloud_trans;
         
-        // clouds in front of sky
-        final_color = sky_through * (1.0 - cloud_alpha) + cloud_color +
-                      cloud_inscatter * (1.0 - cloud_alpha * 0.5);
+        // clouds in front of sky, cloud_color and cloud_inscatter accumulate with pre-multiplied
+        // alpha inside the ray march so they go directly in, scale them by intensity to track the
+        // sky brightness, then add a portion of the sky dome weighted by cloud_alpha as ambient
+        // light on the cloud surface so opaque cloud regions pick up moonlight scatter and skyglow
+        // at night instead of reading as pitch black holes against the sky
+        float3 cloud_ambient = sky_dome * 0.6 * cloud_alpha;
+        final_color = sky_through * (1.0 - cloud_alpha) + cloud_color * intensity + cloud_ambient +
+                      cloud_inscatter * (1.0 - cloud_alpha * 0.5) * intensity;
         
         // celestial bodies behind clouds - strongly attenuated
         float3 celestials = (sun_col + star_col + moon_col) * cloud_trans * cloud_trans;
