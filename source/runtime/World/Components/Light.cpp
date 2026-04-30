@@ -108,6 +108,8 @@ namespace spartan
         SP_REGISTER_ATTRIBUTE_VALUE_VALUE(m_color_rgb, Color);
         SP_REGISTER_ATTRIBUTE_VALUE_VALUE(m_temperature_kelvin, float);
         SP_REGISTER_ATTRIBUTE_VALUE_VALUE(m_draw_distance, float);
+        SP_REGISTER_ATTRIBUTE_VALUE_VALUE(m_distance_shadows, float);
+        SP_REGISTER_ATTRIBUTE_VALUE_VALUE(m_distance_volumetric, float);
         SP_REGISTER_ATTRIBUTE_VALUE_VALUE(m_bounding_box, math::BoundingBox);
         SP_REGISTER_ATTRIBUTE_VALUE_VALUE(m_far_cascade_min, math::Vector3);
         SP_REGISTER_ATTRIBUTE_VALUE_VALUE(m_far_cascade_max, math::Vector3);
@@ -192,6 +194,9 @@ namespace spartan
         node.append_attribute("preset")        = static_cast<int>(m_preset);
         node.append_attribute("area_width")    = m_area_width;
         node.append_attribute("area_height")   = m_area_height;
+        node.append_attribute("draw_distance")       = m_draw_distance;
+        node.append_attribute("distance_shadows")    = m_distance_shadows;
+        node.append_attribute("distance_volumetric") = m_distance_volumetric;
     }
 
     void Light::Load(pugi::xml_node& node)
@@ -216,6 +221,9 @@ namespace spartan
         m_preset               = static_cast<LightPreset>(node.attribute("preset").as_int(static_cast<int>(LightPreset::custom)));
         m_area_width           = node.attribute("area_width").as_float(1.0f);
         m_area_height          = node.attribute("area_height").as_float(1.0f);
+        m_draw_distance        = node.attribute("draw_distance").as_float(512.0f);
+        m_distance_shadows     = node.attribute("distance_shadows").as_float(64.0f);
+        m_distance_volumetric  = node.attribute("distance_volumetric").as_float(32.0f);
         m_screen_space_shadows_slice_index = 0;
 
         if (m_light_type != LightType::Directional || !(m_flags & LightFlags::Shadows))
@@ -286,6 +294,11 @@ namespace spartan
 
             "SetDrawDistance",              &Light::SetDrawDistance,
             "GetDrawDistance",              &Light::GetDrawDistance,
+
+            "SetShadowDistance",            &Light::SetShadowDistance,
+            "GetShadowDistance",            &Light::GetShadowDistance,
+            "SetVolumetricDistance",        &Light::SetVolumetricDistance,
+            "GetVolumetricDistance",        &Light::GetVolumetricDistance,
 
             "GetLightType",                 &Light::GetLightType,
             "SetLightType",                 &Light::SetLightType,
@@ -872,6 +885,46 @@ namespace spartan
         {
             m_bounding_box = math::BoundingBox::Infinite;
         }
+    }
+
+    namespace
+    {
+        // shared helper, returns true for directional or when the light is within the given distance from the camera
+        bool is_within_distance(const Light* light, float distance_meters)
+        {
+            if (light->GetLightType() == LightType::Directional)
+                return true;
+
+            Camera* camera = World::GetCamera();
+            if (!camera)
+                return false;
+
+            const Vector3 light_pos  = light->GetEntity()->GetPosition();
+            const Vector3 camera_pos = camera->GetEntity()->GetPosition();
+            const float distance_squared = Vector3::DistanceSquared(light_pos, camera_pos);
+            return distance_squared <= distance_meters * distance_meters;
+        }
+    }
+
+    bool Light::IsActiveByDistance() const
+    {
+        return is_within_distance(this, m_draw_distance);
+    }
+
+    bool Light::IsShadowEffective() const
+    {
+        if (!(m_flags & static_cast<uint32_t>(LightFlags::Shadows)))
+            return false;
+
+        return is_within_distance(this, m_distance_shadows);
+    }
+
+    bool Light::IsVolumetricEffective() const
+    {
+        if (!(m_flags & static_cast<uint32_t>(LightFlags::Volumetric)))
+            return false;
+
+        return is_within_distance(this, m_distance_volumetric);
     }
 
     bool Light::IsInViewFrustum(Render* renderable, const uint32_t array_index) const

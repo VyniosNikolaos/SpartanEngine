@@ -1163,9 +1163,6 @@ namespace spartan
 
     void Renderer::UpdateLights(RHI_CommandList* cmd_list)
     {
-        const Entity* camera_entity = World::GetCamera() ? World::GetCamera()->GetEntity() : nullptr;
-        const Vector3 camera_pos    = camera_entity ? camera_entity->GetPosition() : Vector3::Zero;
-    
         m_bindless_lights.fill(Sb_Light());
         
         m_count_active_lights    = 0; 
@@ -1183,8 +1180,12 @@ namespace spartan
                 light_buffer_entry.transform[i] = light_component->GetViewProjectionMatrix(i);
             }
 
+            // distance based lod, directional lights are always considered effective
+            const bool shadows_effective    = light_component->IsShadowEffective();
+            const bool volumetric_effective = light_component->IsVolumetricEffective();
+
             const bool has_screen_space_shadows                  = light_component->GetLightType() == LightType::Directional &&
-                                                                    light_component->GetFlag(LightFlags::Shadows) &&
+                                                                    shadows_effective &&
                                                                     light_component->GetFlag(LightFlags::ShadowsScreenSpace);
 
             light_buffer_entry.screen_space_shadow_slice_index   = has_screen_space_shadows ? light_component->GetScreenSpaceShadowsSliceIndex() : 0;
@@ -1201,9 +1202,9 @@ namespace spartan
             light_buffer_entry.flags                            |= light_component->GetLightType() == LightType::Directional ? (1 << 0) : 0;
             light_buffer_entry.flags                            |= light_component->GetLightType() == LightType::Point       ? (1 << 1) : 0;
             light_buffer_entry.flags                            |= light_component->GetLightType() == LightType::Spot        ? (1 << 2) : 0;
-            light_buffer_entry.flags                            |= light_component->GetFlag(LightFlags::Shadows)             ? (1 << 3) : 0;
+            light_buffer_entry.flags                            |= shadows_effective                                         ? (1 << 3) : 0;
             light_buffer_entry.flags                            |= has_screen_space_shadows                                  ? (1 << 4) : 0;
-            light_buffer_entry.flags                            |= light_component->GetFlag(LightFlags::Volumetric)          ? (1 << 5) : 0;
+            light_buffer_entry.flags                            |= volumetric_effective                                      ? (1 << 5) : 0;
             light_buffer_entry.flags                            |= light_component->GetLightType() == LightType::Area        ? (1 << 6) : 0;
     
             for (uint32_t i = 0; i < 6; i++)
@@ -1266,13 +1267,8 @@ namespace spartan
                         continue;
                 }
     
-                if (light_component->GetLightType() != LightType::Directional)
-                {
-                    const float distance_squared      = Vector3::DistanceSquared(light_component->GetEntity()->GetPosition(), camera_pos);
-                    const float draw_distance_squared = light_component->GetDrawDistance() * light_component->GetDrawDistance();
-                    if (distance_squared > draw_distance_squared)
-                        continue;
-                }
+                if (!light_component->IsActiveByDistance())
+                    continue;
     
                 fill_light(light_component);
             }
@@ -1760,6 +1756,10 @@ namespace spartan
             Light* light = entity->GetComponent<Light>();
             light->ClearAtlasRectangles();
             if (light->GetIndex() == numeric_limits<uint32_t>::max())
+                continue;
+            // skip lights that are out of shadow distance, the shader and shadow pass
+            // both rely on rect.IsDefined() so leaving them unallocated is enough
+            if (!light->IsShadowEffective())
                 continue;
             for (uint32_t i = 0; i < light->GetSliceCount(); ++i)
             {

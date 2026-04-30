@@ -270,7 +270,7 @@ namespace spartan
                 node.append_attribute("scale") = ss.str().c_str();
             }
 
-            // if this entity has prefab data, save the prefab reference instead of components/children
+            // save the prefab reference first so it is recreated before any user-added components are loaded
             if (HasPrefabData())
             {
                 pugi::xml_node prefab_node = node.append_child("prefab");
@@ -285,11 +285,9 @@ namespace spartan
                 {
                     prefab_node.append_attribute(key.c_str()) = value.c_str();
                 }
-
-                return; // don't save components or children - prefab will recreate them
             }
 
-            // components
+            // components (user-added components persist alongside prefab data)
             for (shared_ptr<Component>& component : m_components)
             {
                 if (component)
@@ -301,14 +299,17 @@ namespace spartan
             }
         }
 
-        // children (skip transient entities - they are dynamically created and shouldn't be serialized)
-        for (Entity* child : m_children)
+        // children (skip when this entity is a prefab, the prefab recreates its own hierarchy)
+        if (!HasPrefabData())
         {
-            if (child->IsTransient())
-                continue;
+            for (Entity* child : m_children)
+            {
+                if (child->IsTransient())
+                    continue;
 
-            pugi::xml_node child_node = node.append_child("Entity");
-            child->Save(child_node);
+                pugi::xml_node child_node = node.append_child("Entity");
+                child->Save(child_node);
+            }
         }
     }
 

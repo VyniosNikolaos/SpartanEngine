@@ -157,9 +157,22 @@ namespace spartan
         void SetScreenSpaceShadowsSliceIndex(const uint32_t index) { m_screen_space_shadows_slice_index = index; }
         uint32_t GetScreenSpaceShadowsSliceIndex() const           { return m_screen_space_shadows_slice_index; }
 
-        // draw distance
+        // draw distance, beyond this the light is fully culled
         void SetDrawDistance(const float distance) { m_draw_distance = distance; }
         float GetDrawDistance() const              { return m_draw_distance; }
+
+        // shadow distance, beyond this shadow maps stop being rendered for this light
+        void SetShadowDistance(const float distance) { m_distance_shadows = distance; }
+        float GetShadowDistance() const              { return m_distance_shadows; }
+
+        // volumetric distance, beyond this volumetric scattering stops being computed
+        void SetVolumetricDistance(const float distance) { m_distance_volumetric = distance; }
+        float GetVolumetricDistance() const              { return m_distance_volumetric; }
+
+        // distance based effective state, directional lights are always effective
+        bool IsActiveByDistance() const;
+        bool IsShadowEffective() const;
+        bool IsVolumetricEffective() const;
 
         // misc
         bool NeedsSkysphereUpdate() const;
@@ -198,6 +211,8 @@ namespace spartan
         math::Vector3 m_far_cascade_max  = math::Vector3::Zero;
         bool m_is_active_previous_frame  = false;
         float m_draw_distance            = 512.0f; // max distance at which light will affect objects (meters)
+        float m_distance_shadows         = 64.0f;  // max distance at which shadow maps are rendered (meters)
+        float m_distance_volumetric      = 32.0f;  // max distance at which volumetric scattering is computed (meters)
 
         // matrices/frustums per slice/face/cascade
         std::array<math::Frustum, 6> m_frustums;

@@ -1077,6 +1077,15 @@ void Properties::ShowLight(spartan::Light* light) const
             layout::separator();
             layout::section_header("Attenuation");
             property_float("Range", &range, 0.1f, 0.0f, 1000.0f, "cutoff distance in meters. lighting stays inverse-square until this distance, then becomes zero", "%.1f m");
+
+            layout::separator();
+            layout::section_header("Performance");
+            float draw_distance       = light->GetDrawDistance();
+            float shadow_distance     = light->GetShadowDistance();
+            float volumetric_distance = light->GetVolumetricDistance();
+            if (property_float("Draw Distance",       &draw_distance,       1.0f, 0.0f, 10000.0f, "beyond this distance from the camera the light is fully culled",                  "%.0f m")) light->SetDrawDistance(draw_distance);
+            if (property_float("Shadow Distance",     &shadow_distance,     1.0f, 0.0f, 10000.0f, "beyond this distance the shadow map stops being rendered for this light",        "%.0f m")) light->SetShadowDistance(shadow_distance);
+            if (property_float("Volumetric Distance", &volumetric_distance, 1.0f, 0.0f, 10000.0f, "beyond this distance volumetric scattering stops being computed for this light", "%.0f m")) light->SetVolumetricDistance(volumetric_distance);
         }
 
         // spot angle
