@@ -278,13 +278,18 @@ namespace car
             body->addForce(drag_force_vec, PxForceMode::eFORCE);
         }
 
-        // side force
+        // side force, applied at the geometric centre of the side silhouette (mid-z between
+        // the front and rear aero centres) so it produces a real yaw moment about the CG
+        // this is the weather-vane effect, stabilising for forward motion when the CG is
+        // ahead of the side aero centre, destabilising for rear-biased CGs which is realistic
         PxVec3 side_force_vec(0);
         if (tuning::spec.yaw_aero_enabled && fabsf(lateral_speed) > 1.0f)
         {
             float side_force = 0.5f * tuning::air_density * tuning::spec.yaw_side_force_coeff * tuning::spec.side_area * lateral_speed * fabsf(lateral_speed);
             side_force_vec = -local_right * side_force;
-            body->addForce(side_force_vec, PxForceMode::eFORCE);
+            float side_aero_z = (tuning::spec.aero_center_front_z + tuning::spec.aero_center_rear_z) * 0.5f;
+            PxVec3 side_aero_pos = pose.p + pose.q.rotate(PxVec3(0, aero_height, side_aero_z));
+            PxRigidBodyExt::addForceAtPos(*body, side_force_vec, side_aero_pos, PxForceMode::eFORCE);
         }
 
         // downforce

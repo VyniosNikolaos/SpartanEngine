@@ -26,6 +26,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "CarEngineSoundSynthesis.h"
 #include "CarTireSquealSynthesis.h"
 #include "../Input/Input.h"
+#include "../Core/Window.h"
 #include "../Rendering/Renderer.h"
 #include "../Resource/ResourceCache.h"
 #include "../World/World.h"
@@ -249,6 +250,17 @@ namespace spartan
         m_is_occupied = false;
         m_chase_camera.initialized = false;
 
+        // restore mouse cursor if orbit was active
+        if (m_orbit_mouse_active)
+        {
+            Input::SetMousePosition(m_orbit_mouse_last_position);
+            if (!Window::IsFullScreen())
+            {
+                Input::SetMouseCursorVisible(true);
+            }
+            m_orbit_mouse_active = false;
+        }
+
         // stop the car: clear all inputs and apply handbrake
         if (m_vehicle_entity)
         {
@@ -435,19 +447,16 @@ namespace spartan
     void Car::AddCameraOrbitYaw(float delta)
     {
         m_chase_camera.yaw_bias += delta;
-        m_chase_camera.yaw_bias = std::clamp(m_chase_camera.yaw_bias, -yaw_bias_max, yaw_bias_max);
+        // wrap to keep float precision after many rotations, sin and cos give identical results
+        const float two_pi = 2.0f * math::pi;
+        if (m_chase_camera.yaw_bias >  math::pi) m_chase_camera.yaw_bias -= two_pi;
+        if (m_chase_camera.yaw_bias < -math::pi) m_chase_camera.yaw_bias += two_pi;
     }
 
     void Car::AddCameraOrbitPitch(float delta)
     {
         m_chase_camera.pitch_bias += delta;
         m_chase_camera.pitch_bias = std::clamp(m_chase_camera.pitch_bias, -pitch_bias_max, pitch_bias_max);
-    }
-
-    void Car::DecayCameraOrbit(float dt)
-    {
-        m_chase_camera.yaw_bias   *= expf(-orbit_bias_decay * dt);
-        m_chase_camera.pitch_bias *= expf(-orbit_bias_decay * dt);
     }
 
     // private helpers
@@ -825,7 +834,7 @@ namespace spartan
         // osd hint
         if (m_is_occupied)
         {
-            Renderer::DrawString("R2: Gas | L2: Brake | O: Handbrake | Triangle: View | L1/R1: Shift | X: Reset", 
+            Renderer::DrawString("R2: Gas | L2: Brake | O: Handbrake | Triangle: View | L1/R1: Shift | X: Reset | R3 or C: Recenter Camera",
                                math::Vector2(0.005f, 0.98f));
         }
     }
@@ -873,29 +882,63 @@ namespace spartan
         physics->SetVehicleSteering(steering);
         physics->SetVehicleHandbrake(handbrake);
 
-        // camera orbit
-        if (is_gamepad_connected)
+        // camera orbit (mouse right_click drag and or gamepad right thumb stick)
+        if (m_current_view == CarView::Chase)
         {
-            math::Vector2 right_stick = Input::GetGamepadThumbStickRight();
+            // mouse right_click drag
+            {
+                bool rmb_down      = Input::GetKeyDown(KeyCode::Click_Right);
+                bool rmb_held      = Input::GetKey(KeyCode::Click_Right);
+                bool mouse_in_view = Input::GetMouseIsInViewport();
 
-            float stick_x = fabsf(right_stick.x);
-            if (stick_x > 0.3f)
-            {
-                AddCameraOrbitYaw(right_stick.x * orbit_bias_speed * dt);
-            }
-            else if (stick_x < 0.1f && fabsf(m_chase_camera.yaw_bias) > 0.01f)
-            {
-                m_chase_camera.yaw_bias *= expf(-orbit_bias_decay * dt);
+                if (rmb_down && mouse_in_view && !m_orbit_mouse_active)
+                {
+                    m_orbit_mouse_active        = true;
+                    m_orbit_mouse_last_position = Input::GetMousePosition();
+                    if (!Window::IsFullScreen())
+                    {
+                        Input::SetMouseCursorVisible(false);
+                    }
+                }
+                else if (m_orbit_mouse_active && !rmb_held)
+                {
+                    Input::SetMousePosition(m_orbit_mouse_last_position);
+                    if (!Window::IsFullScreen())
+                    {
+                        Input::SetMouseCursorVisible(true);
+                    }
+                    m_orbit_mouse_active = false;
+                }
+
+                if (m_orbit_mouse_active)
+                {
+                    math::Vector2 mouse_delta = Input::GetMouseDelta();
+                    AddCameraOrbitYaw(mouse_delta.x * mouse_orbit_sensitivity_yaw);
+                    AddCameraOrbitPitch(mouse_delta.y * mouse_orbit_sensitivity_pitch);
+                }
             }
 
-            float stick_y = fabsf(right_stick.y);
-            if (stick_y > 0.3f)
+            // gamepad right thumb stick
+            if (is_gamepad_connected)
             {
-                AddCameraOrbitPitch(right_stick.y * orbit_bias_speed * dt);
+                math::Vector2 right_stick = Input::GetGamepadThumbStickRight();
+
+                if (fabsf(right_stick.x) > 0.3f)
+                {
+                    AddCameraOrbitYaw(right_stick.x * orbit_bias_speed * dt);
+                }
+
+                if (fabsf(right_stick.y) > 0.3f)
+                {
+                    AddCameraOrbitPitch(right_stick.y * orbit_bias_speed * dt);
+                }
             }
-            else if (stick_y < 0.1f && fabsf(m_chase_camera.pitch_bias) > 0.01f)
+
+            // manual recenter, keyboard c or right stick click
+            if (Input::GetKeyDown(KeyCode::C) || Input::GetKeyDown(KeyCode::Right_Stick))
             {
-                m_chase_camera.pitch_bias *= expf(-orbit_bias_decay * dt);
+                m_chase_camera.yaw_bias   = 0.0f;
+                m_chase_camera.pitch_bias = 0.0f;
             }
         }
 

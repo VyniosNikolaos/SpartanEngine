@@ -329,10 +329,10 @@ namespace car
 
     inline void apply_self_aligning_torque()
     {
-        // real SAT only comes from the steered (front) axle: the pneumatic trail offset of
-        // the lateral force from the steering axis produces a yaw moment about the car.
-        // the rears used to be mixed into the same sum with a 0.4 weight which conflated two
-        // different effects - they now just contribute slip-angle-proportional yaw damping.
+        // pneumatic trail moves the lateral force pressure centre behind the geometric contact
+        // patch by trail along wheel_fwd, so the correction to the body yaw is
+        // delta_M = (-trail * wheel_fwd) x (lat_f * wheel_lat) = -trail * lat_f * up
+        // this slightly reduces the body yaw response to lateral force, it does not amplify it
         float front_sat   = 0.0f;
         float rear_damp   = 0.0f;
         for (int i = 0; i < wheel_count; i++)
@@ -345,9 +345,9 @@ namespace car
             float trail   = PxMax(tuning::spec.pneumatic_trail_max * (1.0f - sa_norm), 0.0f);
 
             if (is_front(i))
-                front_sat += wheels[i].lateral_force * trail;
+                front_sat -= wheels[i].lateral_force * trail;
             else
-                rear_damp += wheels[i].lateral_force * trail * 0.4f;
+                rear_damp -= wheels[i].lateral_force * trail * 0.4f;
         }
 
         PxVec3 up = body->getGlobalPose().q.rotate(PxVec3(0, 1, 0));

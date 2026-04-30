@@ -24,6 +24,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //= INCLUDES ===================
 #include <vector>
 #include <memory>
+#include "../Math/Vector2.h"
 #include "../Math/Vector3.h"
 #include "../Math/BoundingBox.h"
 //==============================
@@ -105,7 +106,6 @@ namespace spartan
         // camera orbit (right stick control)
         void AddCameraOrbitYaw(float delta);
         void AddCameraOrbitPitch(float delta);
-        void DecayCameraOrbit(float dt);
 
     private:
         Car() = default;
@@ -155,9 +155,10 @@ namespace spartan
         static constexpr float chase_look_ahead_amount  = 2.5f;
         static constexpr float chase_speed_reference    = 50.0f;
         static constexpr float orbit_bias_speed         = 1.5f;
-        static constexpr float orbit_bias_decay         = 4.0f;
-        static constexpr float yaw_bias_max             = 3.14159265f;
-        static constexpr float pitch_bias_max           = 1.2f;
+        static constexpr float pitch_bias_max           = 1.5f;
+        // mouse orbit (right_click drag) tuning, radians per pixel
+        static constexpr float mouse_orbit_sensitivity_yaw   = 0.005f;
+        static constexpr float mouse_orbit_sensitivity_pitch = 0.004f;
 
         // instance state
         Entity*           m_vehicle_entity  = nullptr;  // root entity for drivable cars
@@ -171,6 +172,10 @@ namespace spartan
         bool              m_was_playing     = false;    // tracks play mode state for auto-enter
         CarView           m_current_view    = CarView::Chase;
         ChaseCameraState  m_chase_camera;
+
+        // mouse orbit state (right_click drag)
+        bool              m_orbit_mouse_active        = false;
+        math::Vector2     m_orbit_mouse_last_position = math::Vector2(0.0f, 0.0f);
 
         // sound state
         float m_tire_squeal_volume = 0.0f;

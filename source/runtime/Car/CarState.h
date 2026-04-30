@@ -33,6 +33,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <physx/PxPhysicsAPI.h>
 #include <vector>
 #include <cstring>
+#include <cstdlib>
 #include "../Logging/Log.h"
 #include "../Core/Engine.h"
 #include "CarPresets.h"
@@ -73,7 +74,9 @@ namespace car
         inline bool draw_suspension = true;
         inline bool log_pacejka     = false;
         inline bool log_telemetry   = false;
-        inline bool log_to_file     = false;
+        // writes a per-tick csv (car_telemetry.csv) to the working directory
+        // path is logged on first open so it's easy to find
+        inline bool log_to_file     = true;
     }
 
     inline void load_car(const car_preset& new_spec) { tuning::spec = new_spec; }
@@ -226,12 +229,15 @@ namespace car
     inline static float           road_bump_phase         = 0.0f;
     inline static PxVec3          prev_velocity           = PxVec3(0);
 
-    // telemetry: writes a per-tick csv of the rear-wheel state + gearbox. opens the file
-    // lazily, closes it when tuning::log_to_file is turned off, and flushes periodically.
+    // telemetry: writes a per-tick csv of body + per-wheel state to car_telemetry.csv
+    // in the working directory. opens lazily, closes when tuning::log_to_file is off,
+    // and flushes periodically so the file survives a crash. columns are tuned for
+    // diagnosing handling issues (spin-out, self-alignment, weight transfer)
     struct telemetry_dump
     {
         FILE* file          = nullptr;
         int   frame_counter = 0;
+        float elapsed_time  = 0.0f;
 
         ~telemetry_dump()      { close(); }
         void close()
@@ -242,6 +248,7 @@ namespace car
                 file = nullptr;
             }
             frame_counter = 0;
+            elapsed_time  = 0.0f;
         }
 
         bool open_if_needed()
@@ -249,48 +256,102 @@ namespace car
             if (file) return true;
             fopen_s(&file, "car_telemetry.csv", "w");
             if (!file) return false;
+
+            // log absolute path so the user can find the file
+            char abs_path[1024] = {};
+            if (_fullpath(abs_path, "car_telemetry.csv", sizeof(abs_path)))
+                SP_LOG_INFO("car telemetry: writing to %s", abs_path);
+
             fprintf(file,
-                "frame,dt,"
-                "engine_rpm,speed_kmh,forward_speed_ms,"
-                "gear,is_shifting,shift_timer,shift_cooldown,"
-                "clutch,throttle,brake,"
-                "rl_ang_vel,rr_ang_vel,rl_slip_ratio,rr_slip_ratio,"
-                "rl_tire_load,rr_tire_load,rl_long_force,rr_long_force,"
-                "rl_grounded,rr_grounded,"
-                "tc_active,tc_reduction\n");
+                // time + body state
+                "frame,time,dt,"
+                "pos_x,pos_y,pos_z,"
+                "speed_kmh,forward_speed_ms,lateral_speed_ms,"
+                "yaw_rate,body_slip_deg,"
+                "long_accel,lat_accel,"
+                // inputs
+                "throttle,brake,steering,handbrake,"
+                // drivetrain
+                "gear,engine_rpm,is_shifting,clutch,tc_active,tc_reduction,"
+                // per-wheel grounded
+                "fl_grounded,fr_grounded,rl_grounded,rr_grounded,"
+                // per-wheel slip
+                "fl_slip_angle,fr_slip_angle,rl_slip_angle,rr_slip_angle,"
+                "fl_slip_ratio,fr_slip_ratio,rl_slip_ratio,rr_slip_ratio,"
+                // per-wheel forces and loads
+                "fl_lat_force,fr_lat_force,rl_lat_force,rr_lat_force,"
+                "fl_long_force,fr_long_force,rl_long_force,rr_long_force,"
+                "fl_tire_load,fr_tire_load,rl_tire_load,rr_tire_load,"
+                // per-wheel angular velocity
+                "fl_ang_vel,fr_ang_vel,rl_ang_vel,rr_ang_vel\n");
             frame_counter = 0;
+            elapsed_time  = 0.0f;
             return true;
         }
 
         void tick(float dt, float speed_kmh)
         {
-            if (!tuning::log_to_file)
-            {
-                close();
-                return;
-            }
-            if (!open_if_needed()) return;
+            if (!tuning::log_to_file) { close(); return; }
+            if (!open_if_needed())    return;
+            if (!body)                return;
 
-            float fwd_speed = body->getLinearVelocity().dot(body->getGlobalPose().q.rotate(PxVec3(0, 0, 1)));
+            elapsed_time += dt;
+
+            PxTransform pose    = body->getGlobalPose();
+            PxVec3      vel     = body->getLinearVelocity();
+            PxVec3      ang_vel = body->getAngularVelocity();
+            PxVec3      fwd     = pose.q.rotate(PxVec3(0, 0, 1));
+            PxVec3      right   = pose.q.rotate(PxVec3(1, 0, 0));
+            PxVec3      up      = pose.q.rotate(PxVec3(0, 1, 0));
+
+            float forward_speed = vel.dot(fwd);
+            float lateral_speed = vel.dot(right);
+            float yaw_rate      = ang_vel.dot(up);
+
+            // body slip: angle between velocity vector and car forward, in degrees
+            // a stable car holds this near zero, a spinning car has it growing toward 90+
+            float body_slip_deg = 0.0f;
+            if (vel.magnitude() > 0.5f)
+                body_slip_deg = atan2f(lateral_speed, forward_speed) * 180.0f / PxPi;
+
             fprintf(file,
-                "%d,%.4f,"
-                "%.1f,%.2f,%.3f,"
-                "%d,%d,%.4f,%.4f,"
-                "%.4f,%.3f,%.3f,"
-                "%.3f,%.3f,%.4f,%.4f,"
+                "%d,%.3f,%.4f,"
+                "%.2f,%.2f,%.2f,"
+                "%.2f,%.3f,%.3f,"
+                "%.4f,%.2f,"
+                "%.3f,%.3f,"
+                "%.3f,%.3f,%.3f,%.3f,"
+                "%d,%.0f,%d,%.3f,%d,%.3f,"
+                "%d,%d,%d,%d,"
+                "%.4f,%.4f,%.4f,%.4f,"
+                "%.4f,%.4f,%.4f,%.4f,"
                 "%.1f,%.1f,%.1f,%.1f,"
-                "%d,%d,"
-                "%d,%.4f\n",
-                frame_counter, dt,
-                engine_rpm, speed_kmh, fwd_speed,
-                current_gear, is_shifting ? 1 : 0, shift_timer, shift_cooldown,
-                clutch, input.throttle, input.brake,
-                wheels[rear_left].angular_velocity, wheels[rear_right].angular_velocity,
-                wheels[rear_left].slip_ratio, wheels[rear_right].slip_ratio,
-                wheels[rear_left].tire_load, wheels[rear_right].tire_load,
-                wheels[rear_left].longitudinal_force, wheels[rear_right].longitudinal_force,
-                wheels[rear_left].grounded ? 1 : 0, wheels[rear_right].grounded ? 1 : 0,
-                tc_active ? 1 : 0, tc_reduction);
+                "%.1f,%.1f,%.1f,%.1f,"
+                "%.1f,%.1f,%.1f,%.1f,"
+                "%.3f,%.3f,%.3f,%.3f\n",
+                frame_counter, elapsed_time, dt,
+                pose.p.x, pose.p.y, pose.p.z,
+                speed_kmh, forward_speed, lateral_speed,
+                yaw_rate, body_slip_deg,
+                longitudinal_accel, lateral_accel,
+                input.throttle, input.brake, input.steering, input.handbrake,
+                current_gear, engine_rpm, is_shifting ? 1 : 0, clutch, tc_active ? 1 : 0, tc_reduction,
+                wheels[front_left].grounded  ? 1 : 0,
+                wheels[front_right].grounded ? 1 : 0,
+                wheels[rear_left].grounded   ? 1 : 0,
+                wheels[rear_right].grounded  ? 1 : 0,
+                wheels[front_left].slip_angle,  wheels[front_right].slip_angle,
+                wheels[rear_left].slip_angle,   wheels[rear_right].slip_angle,
+                wheels[front_left].slip_ratio,  wheels[front_right].slip_ratio,
+                wheels[rear_left].slip_ratio,   wheels[rear_right].slip_ratio,
+                wheels[front_left].lateral_force,  wheels[front_right].lateral_force,
+                wheels[rear_left].lateral_force,   wheels[rear_right].lateral_force,
+                wheels[front_left].longitudinal_force,  wheels[front_right].longitudinal_force,
+                wheels[rear_left].longitudinal_force,   wheels[rear_right].longitudinal_force,
+                wheels[front_left].tire_load,  wheels[front_right].tire_load,
+                wheels[rear_left].tire_load,   wheels[rear_right].tire_load,
+                wheels[front_left].angular_velocity,  wheels[front_right].angular_velocity,
+                wheels[rear_left].angular_velocity,   wheels[rear_right].angular_velocity);
 
             if (frame_counter % 200 == 0)
                 fflush(file);
